@@ -1,0 +1,135 @@
+# Jutsu Labs Engine Configuration
+# Copy this file to config/config.yaml and adjust for your environment
+
+application:
+  name: "Jutsu Labs Backtesting Engine"
+  version: "0.1.0"
+  environment: "development"  # development, staging, production
+
+database:
+  # SQLite (Development)
+  type: "sqlite"
+  path: "data/market_data.db"
+
+  # PostgreSQL (Production) - uncomment and configure when needed
+  # type: "postgresql"
+  # host: "localhost"
+  # port: 5432
+  # database: "jutsu_engine"
+  # username: "jutsu_user"
+  # password: "${POSTGRES_PASSWORD}"  # Use environment variable
+
+  # Connection pool settings
+  pool_size: 5
+  max_overflow: 10
+  pool_timeout: 30
+  pool_recycle: 3600
+
+data_sources:
+  schwab:
+    enabled: true
+    rate_limit:
+      requests_per_second: 2
+      requests_per_minute: 120
+    timeout: 30
+    retry:
+      max_attempts: 3
+      backoff_factor: 2
+
+  csv:
+    enabled: true
+    default_directory: "data/csv/"
+
+  # Future data sources
+  # yahoo_finance:
+  #   enabled: false
+  # binance:
+  #   enabled: false
+
+backtesting:
+  defaults:
+    initial_capital: 100000
+    commission_per_share: 0.01
+    slippage_percent: 0.0
+    position_size_percent: 1.0
+
+  risk_management:
+    max_position_size_percent: 0.20
+    max_drawdown_percent: 0.15
+    stop_loss_percent: 0.05
+
+logging:
+  version: 1
+  disable_existing_loggers: false
+
+  formatters:
+    standard:
+      format: "%(asctime)s | %(name)s | %(levelname)s | %(message)s"
+      datefmt: "%Y-%m-%d %H:%M:%S"
+
+    detailed:
+      format: "%(asctime)s | %(name)s | %(levelname)s | %(filename)s:%(lineno)d | %(message)s"
+
+  handlers:
+    console:
+      class: "logging.StreamHandler"
+      level: "INFO"
+      formatter: "standard"
+      stream: "ext://sys.stdout"
+
+    file:
+      class: "logging.handlers.RotatingFileHandler"
+      level: "DEBUG"
+      formatter: "detailed"
+      filename: "logs/jutsu_engine.log"
+      maxBytes: 10485760  # 10MB
+      backupCount: 5
+
+  loggers:
+    jutsu_engine:
+      level: "DEBUG"
+      handlers: ["console", "file"]
+      propagate: false
+
+    "jutsu_engine.data":
+      level: "INFO"
+
+    "jutsu_engine.portfolio":
+      level: "DEBUG"
+
+    "jutsu_engine.strategy":
+      level: "DEBUG"
+
+performance:
+  metrics:
+    # Core metrics (always calculated)
+    - "total_return"
+    - "annualized_return"
+    - "sharpe_ratio"
+    - "max_drawdown"
+    - "win_rate"
+
+    # Optional metrics (calculated on demand)
+    - "sortino_ratio"
+    - "calmar_ratio"
+    - "profit_factor"
+
+  risk_free_rate: 0.04  # 4% annual risk-free rate
+
+strategies:
+  # Strategy-specific configurations
+  sma_crossover:
+    short_period: 20
+    long_period: 50
+
+  # Add more strategy configurations here
+
+api:
+  # Future API service configuration
+  enabled: false
+  host: "0.0.0.0"
+  port: 8000
+  workers: 4
+  cors_origins:
+    - "http://localhost:3000"
+    - "http://localhost:8080"
