@@ -150,7 +150,13 @@ class Strategy(ABC):
 
     # Helper methods provided to strategies
 
-    def buy(self, symbol: str, portfolio_percent: Decimal, price: Optional[Decimal] = None):
+    def buy(
+        self,
+        symbol: str,
+        portfolio_percent: Decimal,
+        price: Optional[Decimal] = None,
+        risk_per_share: Optional[Decimal] = None
+    ):
         """
         Generate BUY signal with portfolio allocation percentage.
 
@@ -163,15 +169,25 @@ class Strategy(ABC):
             portfolio_percent: Percentage of portfolio to allocate (0.0 to 1.0)
                               e.g., Decimal('0.8') for 80% allocation
             price: Optional limit price (None for market order)
+            risk_per_share: Optional dollar risk per share for ATR-based position sizing
+                          When provided, Portfolio calculates shares as:
+                          shares = (portfolio_value × portfolio_percent) / risk_per_share
+                          Typical value: ATR × stop_multiplier (e.g., $2.50 × 2.0 = $5.00)
 
         Raises:
             ValueError: If portfolio_percent is not in range [0.0, 1.0]
+            ValueError: If risk_per_share is provided but not positive
 
         Example:
-            # Allocate 80% of portfolio to AAPL
+            # Simple percentage allocation
             self.buy('AAPL', Decimal('0.8'))
 
-            # Allocate 50% with limit price
+            # ATR-based position sizing
+            atr = Decimal('2.50')
+            risk_per_share = atr * Decimal('2.0')  # $5.00
+            self.buy('TQQQ', Decimal('0.03'), risk_per_share=risk_per_share)
+
+            # With limit price
             self.buy('AAPL', Decimal('0.5'), price=Decimal('150.00'))
 
         Note:
@@ -180,11 +196,18 @@ class Strategy(ABC):
             - Current portfolio value
             - Margin requirements (100% for longs)
             - Commission and slippage
+            - risk_per_share if provided (ATR-based sizing)
         """
         # Validate portfolio_percent range
         if not (Decimal('0.0') <= portfolio_percent <= Decimal('1.0')):
             raise ValueError(
                 f"Portfolio percent must be between 0.0 and 1.0, got {portfolio_percent}"
+            )
+
+        # Validate risk_per_share if provided
+        if risk_per_share is not None and risk_per_share <= Decimal('0.0'):
+            raise ValueError(
+                f"risk_per_share must be positive, got {risk_per_share}"
             )
 
         signal = SignalEvent(
@@ -195,10 +218,17 @@ class Strategy(ABC):
             portfolio_percent=portfolio_percent,
             strategy_name=self.name,
             price=price,
+            risk_per_share=risk_per_share,
         )
         self._signals.append(signal)
 
-    def sell(self, symbol: str, portfolio_percent: Decimal, price: Optional[Decimal] = None):
+    def sell(
+        self,
+        symbol: str,
+        portfolio_percent: Decimal,
+        price: Optional[Decimal] = None,
+        risk_per_share: Optional[Decimal] = None
+    ):
         """
         Generate SELL signal with portfolio allocation percentage.
 
@@ -211,15 +241,25 @@ class Strategy(ABC):
             portfolio_percent: Percentage of portfolio to allocate (0.0 to 1.0)
                               e.g., Decimal('0.8') for 80% allocation
             price: Optional limit price (None for market order)
+            risk_per_share: Optional dollar risk per share for ATR-based position sizing
+                          When provided, Portfolio calculates shares as:
+                          shares = (portfolio_value × portfolio_percent) / risk_per_share
+                          Typical value: ATR × stop_multiplier (e.g., $2.50 × 2.0 = $5.00)
 
         Raises:
             ValueError: If portfolio_percent is not in range [0.0, 1.0]
+            ValueError: If risk_per_share is provided but not positive
 
         Example:
-            # Short 80% of portfolio in AAPL
+            # Simple percentage allocation
             self.sell('AAPL', Decimal('0.8'))
 
-            # Short 50% with limit price
+            # ATR-based position sizing
+            atr = Decimal('2.50')
+            risk_per_share = atr * Decimal('2.0')  # $5.00
+            self.sell('SQQQ', Decimal('0.03'), risk_per_share=risk_per_share)
+
+            # With limit price
             self.sell('AAPL', Decimal('0.5'), price=Decimal('150.00'))
 
         Note:
@@ -228,11 +268,18 @@ class Strategy(ABC):
             - Current portfolio value
             - Margin requirements (150% for shorts)
             - Commission and slippage
+            - risk_per_share if provided (ATR-based sizing)
         """
         # Validate portfolio_percent range
         if not (Decimal('0.0') <= portfolio_percent <= Decimal('1.0')):
             raise ValueError(
                 f"Portfolio percent must be between 0.0 and 1.0, got {portfolio_percent}"
+            )
+
+        # Validate risk_per_share if provided
+        if risk_per_share is not None and risk_per_share <= Decimal('0.0'):
+            raise ValueError(
+                f"risk_per_share must be positive, got {risk_per_share}"
             )
 
         signal = SignalEvent(
@@ -243,6 +290,7 @@ class Strategy(ABC):
             portfolio_percent=portfolio_percent,
             strategy_name=self.name,
             price=price,
+            risk_per_share=risk_per_share,
         )
         self._signals.append(signal)
 

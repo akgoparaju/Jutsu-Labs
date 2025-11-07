@@ -84,6 +84,11 @@ class SignalEvent:
             - Must be in range [0.0, 1.0]
         strategy_name: Name of strategy generating signal
         price: Optional limit price
+        risk_per_share: Optional dollar risk per share for ATR-based position sizing
+            - When provided, Portfolio uses: shares = (portfolio_value * portfolio_percent) / risk_per_share
+            - When None, Portfolio uses: shares = (portfolio_value * portfolio_percent) / price
+            - Must be positive if provided
+            - Typical value: ATR * stop_multiplier (e.g., $2.50 * 2.0 = $5.00)
     """
 
     symbol: str
@@ -93,6 +98,7 @@ class SignalEvent:
     portfolio_percent: Decimal
     strategy_name: str = "unknown"
     price: Optional[Decimal] = None  # Limit price (optional)
+    risk_per_share: Optional[Decimal] = None  # ATR-based risk per share (optional)
 
     def __post_init__(self):
         """Validate signal parameters."""
@@ -107,6 +113,13 @@ class SignalEvent:
             raise ValueError(
                 f"Portfolio percent must be between 0.0 and 1.0, got {self.portfolio_percent}"
             )
+
+        # Validate risk_per_share if provided
+        if self.risk_per_share is not None:
+            if self.risk_per_share <= Decimal('0.0'):
+                raise ValueError(
+                    f"risk_per_share must be positive, got {self.risk_per_share}"
+                )
 
 
 @dataclass(frozen=True)

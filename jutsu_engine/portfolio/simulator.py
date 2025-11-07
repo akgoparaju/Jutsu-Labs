@@ -341,10 +341,18 @@ class PortfolioSimulator:
         # Calculate shares based on signal type (normal allocation)
         if signal.signal_type == 'BUY':
             # Long position calculation
-            quantity = self._calculate_long_shares(allocation_amount, price)
+            quantity = self._calculate_long_shares(
+                allocation_amount,
+                price,
+                risk_per_share=signal.risk_per_share
+            )
         elif signal.signal_type == 'SELL':
             # Short position calculation
-            quantity = self._calculate_short_shares(allocation_amount, price)
+            quantity = self._calculate_short_shares(
+                allocation_amount,
+                price,
+                risk_per_share=signal.risk_per_share
+            )
         else:  # HOLD
             logger.debug(f"HOLD signal for {signal.symbol}, skipping execution")
             return None
@@ -395,77 +403,109 @@ class PortfolioSimulator:
     def _calculate_long_shares(
         self,
         allocation_amount: Decimal,
-        price: Decimal
+        price: Decimal,
+        risk_per_share: Optional[Decimal] = None
     ) -> int:
         """
         Calculate maximum shares for long position.
 
-        For long positions, the calculation accounts for the share price
-        plus commission per share. This ensures we don't exceed available
-        cash when buying shares.
+        Supports two position sizing modes:
+        1. ATR-based sizing (when risk_per_share provided)
+        2. Percentage-based sizing (when risk_per_share is None)
 
         Args:
             allocation_amount: Dollar amount to allocate
             price: Current share price
+            risk_per_share: Optional ATR-based risk per share
 
         Returns:
             Maximum affordable shares for long purchase
 
-        Formula:
+        Formula (ATR-based, when risk_per_share provided):
+            shares = allocation_amount / risk_per_share
+
+        Formula (Percentage-based, when risk_per_share is None):
             shares = allocation_amount / (price + commission_per_share)
 
-        Example:
+        Example (ATR-based):
+            allocation = Decimal('1500')   # Dollar risk
+            risk_per_share = Decimal('5.00')  # ATR * stop_multiplier
+            # Result: 1500 / 5.00 = 300 shares
+
+        Example (Percentage-based):
             allocation = Decimal('80000')  # $80,000
             price = Decimal('150.00')      # $150 per share
             commission = Decimal('0.01')   # $0.01 per share
             # Result: 80000 / 150.01 = 533 shares
         """
-        cost_per_share = price + self.commission_per_share
+        if risk_per_share is not None:
+            # ATR-based position sizing
+            if risk_per_share <= 0:
+                logger.error(f"Invalid risk_per_share: {risk_per_share}")
+                return 0
 
-        if cost_per_share <= 0:
-            logger.error(f"Invalid cost per share: {cost_per_share}")
-            return 0
+            shares = allocation_amount / risk_per_share
+            shares_int = int(shares)
 
-        shares = allocation_amount / cost_per_share
+            logger.debug(
+                f"ATR-based long sizing: ${allocation_amount:,.2f} / "
+                f"${risk_per_share:.2f} risk/share = {shares_int} shares"
+            )
+        else:
+            # Percentage-based position sizing (legacy)
+            cost_per_share = price + self.commission_per_share
 
-        # Convert to integer (floor)
-        shares_int = int(shares)
+            if cost_per_share <= 0:
+                logger.error(f"Invalid cost per share: {cost_per_share}")
+                return 0
 
-        logger.debug(
-            f"Long position sizing: ${allocation_amount:,.2f} / "
-            f"${cost_per_share:.2f} = {shares_int} shares"
-        )
+            shares = allocation_amount / cost_per_share
+            shares_int = int(shares)
+
+            logger.debug(
+                f"Percentage-based long sizing: ${allocation_amount:,.2f} / "
+                f"${cost_per_share:.2f} = {shares_int} shares"
+            )
 
         return shares_int
 
     def _calculate_short_shares(
         self,
         allocation_amount: Decimal,
-        price: Decimal
+        price: Decimal,
+        risk_per_share: Optional[Decimal] = None
     ) -> int:
         """
         Calculate maximum shares for short position.
 
-        For short positions, Regulation T requires 150% margin. This means
-        we need to reserve 1.5x the short value as collateral, plus commission.
-        This method fixes the original bug where strategies calculated shorts
-        without accounting for margin requirements.
+        Supports two position sizing modes:
+        1. ATR-based sizing (when risk_per_share provided)
+        2. Percentage-based sizing with margin (when risk_per_share is None)
 
         Args:
             allocation_amount: Dollar amount to allocate
             price: Current share price
+            risk_per_share: Optional ATR-based risk per share
 
         Returns:
             Maximum affordable shares for short sale
 
-        Formula:
+        Formula (ATR-based, when risk_per_share provided):
+            shares = allocation_amount / risk_per_share
+
+        Formula (Percentage-based, when risk_per_share is None):
             shares = allocation_amount / (price * 1.5 + commission_per_share)
 
         Note:
             SHORT_MARGIN_REQUIREMENT = 1.5 (150% margin per Regulation T)
             This ensures sufficient collateral is reserved for the short position.
 
-        Example:
+        Example (ATR-based):
+            allocation = Decimal('1500')   # Dollar risk
+            risk_per_share = Decimal('5.00')  # ATR * stop_multiplier
+            # Result: 1500 / 5.00 = 300 shares
+
+        Example (Percentage-based):
             allocation = Decimal('80000')  # $80,000
             price = Decimal('150.00')      # $150 per share
             margin_req = 1.5               # 150% Regulation T margin
@@ -473,23 +513,36 @@ class PortfolioSimulator:
             # Cost per share: 150 * 1.5 + 0.01 = $225.01
             # Result: 80000 / 225.01 = 355 shares
         """
-        # Calculate collateral needed per share (price * margin + commission)
-        collateral_per_share = (price * SHORT_MARGIN_REQUIREMENT) + self.commission_per_share
+        if risk_per_share is not None:
+            # ATR-based position sizing
+            if risk_per_share <= 0:
+                logger.error(f"Invalid risk_per_share: {risk_per_share}")
+                return 0
 
-        if collateral_per_share <= 0:
-            logger.error(f"Invalid collateral per share: {collateral_per_share}")
-            return 0
+            shares = allocation_amount / risk_per_share
+            shares_int = int(shares)
 
-        shares = allocation_amount / collateral_per_share
+            logger.debug(
+                f"ATR-based short sizing: ${allocation_amount:,.2f} / "
+                f"${risk_per_share:.2f} risk/share = {shares_int} shares"
+            )
+        else:
+            # Percentage-based position sizing with margin (legacy)
+            # Calculate collateral needed per share (price * margin + commission)
+            collateral_per_share = (price * SHORT_MARGIN_REQUIREMENT) + self.commission_per_share
 
-        # Convert to integer (floor)
-        shares_int = int(shares)
+            if collateral_per_share <= 0:
+                logger.error(f"Invalid collateral per share: {collateral_per_share}")
+                return 0
 
-        logger.debug(
-            f"Short position sizing: ${allocation_amount:,.2f} / "
-            f"${collateral_per_share:.2f} = {shares_int} shares "
-            f"(margin requirement: {SHORT_MARGIN_REQUIREMENT}x)"
-        )
+            shares = allocation_amount / collateral_per_share
+            shares_int = int(shares)
+
+            logger.debug(
+                f"Percentage-based short sizing: ${allocation_amount:,.2f} / "
+                f"${collateral_per_share:.2f} = {shares_int} shares "
+                f"(margin requirement: {SHORT_MARGIN_REQUIREMENT}x)"
+            )
 
         return shares_int
 

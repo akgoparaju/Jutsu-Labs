@@ -19,10 +19,12 @@ Usage:
 import click
 import importlib
 import inspect
+import os
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
+from dotenv import load_dotenv
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -36,6 +38,47 @@ from jutsu_engine.data.models import Base
 from jutsu_engine.strategies.sma_crossover import SMA_Crossover
 
 logger = setup_logger('CLI', log_to_console=True)
+
+# Load environment variables from .env file
+load_dotenv()
+
+
+# Known index symbols that require $ prefix in database
+INDEX_SYMBOLS = {'VIX', 'DJI', 'SPX', 'NDX', 'RUT', 'VXN'}
+
+
+def normalize_index_symbols(symbols: tuple) -> tuple:
+    """
+    Normalize index symbols by adding $ prefix if missing.
+
+    Allows users to type 'VIX' instead of escaping '$VIX' in shell.
+
+    Args:
+        symbols: Tuple of symbol strings
+
+    Returns:
+        Tuple with normalized symbols (index symbols get $ prefix)
+
+    Examples:
+        ('QQQ', 'VIX', 'TQQQ') → ('QQQ', '$VIX', 'TQQQ')
+        ('QQQ', '$VIX', 'TQQQ') → ('QQQ', '$VIX', 'TQQQ')  # Already prefixed
+        ('AAPL', 'MSFT') → ('AAPL', 'MSFT')  # No change
+    """
+    if not symbols:
+        return symbols
+
+    normalized = []
+    for symbol in symbols:
+        # Check if it's a known index symbol WITHOUT $ prefix
+        if symbol.upper() in INDEX_SYMBOLS and not symbol.startswith('$'):
+            normalized_symbol = f'${symbol.upper()}'
+            logger.info(f"Normalized index symbol: {symbol} → {normalized_symbol}")
+            normalized.append(normalized_symbol)
+        else:
+            # Keep as is (regular symbols or already prefixed)
+            normalized.append(symbol.upper())
+
+    return tuple(normalized)
 
 
 @click.group()
@@ -202,7 +245,7 @@ def parse_symbols_callback(ctx, param, value):
     '--symbols',
     multiple=True,
     callback=parse_symbols_callback,
-    help='Stock ticker symbols for multi-symbol strategies (space/comma-separated or repeated: --symbols "QQQ TQQQ SQQQ" OR --symbols QQQ,TQQQ,SQQQ)'
+    help='Stock ticker symbols for multi-symbol strategies. Index symbols (VIX, DJI, SPX) are auto-normalized with $ prefix. Examples: --symbols QQQ,VIX,TQQQ,SQQQ (comma-separated) OR --symbols "QQQ VIX TQQQ SQQQ" (space-separated in quotes)'
 )
 @click.option(
     '--timeframe',
@@ -264,6 +307,55 @@ def parse_symbols_callback(ctx, param, value):
     default=None,
     help='Custom path for trade log CSV (default: auto-generated as trades/{strategy}_{timestamp}.csv)',
 )
+# Momentum-ATR Strategy Parameters (override .env values)
+@click.option(
+    '--macd-fast-period',
+    type=int,
+    default=None,
+    help='MACD fast period (default from .env: STRATEGY_MACD_FAST_PERIOD)',
+)
+@click.option(
+    '--macd-slow-period',
+    type=int,
+    default=None,
+    help='MACD slow period (default from .env: STRATEGY_MACD_SLOW_PERIOD)',
+)
+@click.option(
+    '--macd-signal-period',
+    type=int,
+    default=None,
+    help='MACD signal period (default from .env: STRATEGY_MACD_SIGNAL_PERIOD)',
+)
+@click.option(
+    '--vix-kill-switch',
+    type=float,
+    default=None,
+    help='VIX kill switch level (default from .env: STRATEGY_VIX_KILL_SWITCH)',
+)
+@click.option(
+    '--atr-period',
+    type=int,
+    default=None,
+    help='ATR period (default from .env: STRATEGY_ATR_PERIOD)',
+)
+@click.option(
+    '--atr-stop-multiplier',
+    type=float,
+    default=None,
+    help='ATR stop multiplier (default from .env: STRATEGY_ATR_STOP_MULTIPLIER)',
+)
+@click.option(
+    '--risk-strong-trend',
+    type=float,
+    default=None,
+    help='Risk percent for strong trends (default from .env: STRATEGY_RISK_STRONG_TREND)',
+)
+@click.option(
+    '--risk-waning-trend',
+    type=float,
+    default=None,
+    help='Risk percent for waning trends (default from .env: STRATEGY_RISK_WANING_TREND)',
+)
 def backtest(
     symbol: Optional[str],
     symbols: tuple,
@@ -278,6 +370,15 @@ def backtest(
     commission: float,
     output: Optional[str],
     export_trades: Optional[str],
+    # Momentum-ATR parameters
+    macd_fast_period: Optional[int],
+    macd_slow_period: Optional[int],
+    macd_signal_period: Optional[int],
+    vix_kill_switch: Optional[float],
+    atr_period: Optional[int],
+    atr_stop_multiplier: Optional[float],
+    risk_strong_trend: Optional[float],
+    risk_waning_trend: Optional[float],
 ):
     """
     Run a backtest with specified parameters.
@@ -286,26 +387,26 @@ def backtest(
 
     Single-symbol example:
         jutsu backtest --symbol AAPL --start 2024-01-01 --end 2024-12-31
-        jutsu backtest --symbol MSFT --start 2024-01-01 --end 2024-12-31 \\
-            --capital 50000 --short-period 10 --long-period 30
 
     Multi-symbol examples:
+        # Index symbols auto-normalized (VIX → $VIX):
+        jutsu backtest --strategy Momentum_ATR --symbols QQQ,VIX,TQQQ,SQQQ \\
+            --start 2024-01-01 --end 2024-12-31 --capital 100000
+
         # Comma-separated (recommended):
-        jutsu backtest --strategy ADX_Trend --symbols QQQ,TQQQ,SQQQ \
+        jutsu backtest --strategy ADX_Trend --symbols QQQ,TQQQ,SQQQ \\
             --start 2023-01-01 --end 2024-12-31 --capital 10000
-        
+
         # Space-separated (use quotes):
-        jutsu backtest --strategy ADX_Trend --symbols "QQQ TQQQ SQQQ" \
-            --start 2023-01-01 --end 2024-12-31 --capital 10000
-        
-        # Repeated flag (also supported):
-        jutsu backtest --strategy ADX_Trend --symbols QQQ --symbols TQQQ --symbols SQQQ \
+        jutsu backtest --strategy ADX_Trend --symbols "QQQ TQQQ SQQQ" \\
             --start 2023-01-01 --end 2024-12-31 --capital 10000
     """
     # Determine which symbols to use
     if symbols:
         # Multi-symbol mode (--symbols takes precedence)
-        symbol_list = list(symbols)
+        # Normalize index symbols (add $ prefix for VIX, DJI, etc.)
+        normalized_symbols = normalize_index_symbols(symbols)
+        symbol_list = list(normalized_symbols)
         is_multi_symbol = True
     elif symbol:
         # Single-symbol mode (backward compatible)
@@ -354,16 +455,57 @@ def backtest(
             sig = inspect.signature(strategy_class.__init__)
             params = sig.parameters
             
+            # Load strategy parameters from .env with CLI overrides
+            # Priority: CLI args > .env values > strategy defaults
+            
+            # Load .env values (with fallbacks to strategy defaults)
+            env_macd_fast = int(os.getenv('STRATEGY_MACD_FAST_PERIOD', '12'))
+            env_macd_slow = int(os.getenv('STRATEGY_MACD_SLOW_PERIOD', '26'))
+            env_macd_signal = int(os.getenv('STRATEGY_MACD_SIGNAL_PERIOD', '9'))
+            env_vix_kill_switch = float(os.getenv('STRATEGY_VIX_KILL_SWITCH', '30.0'))
+            env_atr_period = int(os.getenv('STRATEGY_ATR_PERIOD', '14'))
+            env_atr_stop_multiplier = float(os.getenv('STRATEGY_ATR_STOP_MULTIPLIER', '2.0'))
+            env_risk_strong = float(os.getenv('STRATEGY_RISK_STRONG_TREND', '0.03'))
+            env_risk_waning = float(os.getenv('STRATEGY_RISK_WANING_TREND', '0.015'))
+            
+            # Apply CLI overrides (if provided)
+            final_macd_fast = macd_fast_period if macd_fast_period is not None else env_macd_fast
+            final_macd_slow = macd_slow_period if macd_slow_period is not None else env_macd_slow
+            final_macd_signal = macd_signal_period if macd_signal_period is not None else env_macd_signal
+            final_vix_kill_switch = vix_kill_switch if vix_kill_switch is not None else env_vix_kill_switch
+            final_atr_period = atr_period if atr_period is not None else env_atr_period
+            final_atr_stop_multiplier = atr_stop_multiplier if atr_stop_multiplier is not None else env_atr_stop_multiplier
+            final_risk_strong = risk_strong_trend if risk_strong_trend is not None else env_risk_strong
+            final_risk_waning = risk_waning_trend if risk_waning_trend is not None else env_risk_waning
+            
             # Build kwargs based on what the strategy constructor accepts
             strategy_kwargs = {}
             
-            # Add parameters only if they exist in the constructor
+            # Legacy parameters (for backward compatibility with old strategies)
             if 'short_period' in params:
                 strategy_kwargs['short_period'] = short_period
             if 'long_period' in params:
                 strategy_kwargs['long_period'] = long_period
             if 'position_size' in params:
                 strategy_kwargs['position_size'] = position_size
+            
+            # Momentum-ATR parameters (only add if strategy accepts them)
+            if 'macd_fast_period' in params:
+                strategy_kwargs['macd_fast_period'] = final_macd_fast
+            if 'macd_slow_period' in params:
+                strategy_kwargs['macd_slow_period'] = final_macd_slow
+            if 'macd_signal_period' in params:
+                strategy_kwargs['macd_signal_period'] = final_macd_signal
+            if 'vix_kill_switch' in params:
+                strategy_kwargs['vix_kill_switch'] = Decimal(str(final_vix_kill_switch))
+            if 'atr_period' in params:
+                strategy_kwargs['atr_period'] = final_atr_period
+            if 'atr_stop_multiplier' in params:
+                strategy_kwargs['atr_stop_multiplier'] = Decimal(str(final_atr_stop_multiplier))
+            if 'risk_strong_trend' in params:
+                strategy_kwargs['risk_strong_trend'] = Decimal(str(final_risk_strong))
+            if 'risk_waning_trend' in params:
+                strategy_kwargs['risk_waning_trend'] = Decimal(str(final_risk_waning))
             # NOTE: Let strategy use its own default position_size_percent
             # CLI --position-size is for old share-based strategies
             # if 'position_size_percent' in params:

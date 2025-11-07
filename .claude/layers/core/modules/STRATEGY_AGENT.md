@@ -535,7 +535,87 @@ integration_tests:
 
 ## Common Tasks
 
-### Task 0: Implement Regime-Based Multi-Symbol Strategy (Example: ADX-Trend)
+### Task 0: Implement MACD_Trend_v2 Strategy (All-Weather V6.0 - Completed 2025-11-06)
+```yaml
+completed: 2025-11-06
+strategy_name: "MACD_Trend_v2 (All-Weather V6.0)"
+status: "COMPLETE - All tests passing, 87% coverage"
+
+description: |
+  5-regime adaptive trend-following strategy using QQQ signals with dual position sizing.
+  Trades TQQQ (3x bull), QQQ (1x defensive), SQQQ (3x bear), and CASH based on:
+  - Main Trend: 100-day EMA (Price > EMA = Up, Price < EMA = Down)
+  - Momentum: MACD Line vs Signal Line (bullish/bearish) and Zero-Line (strong bear check)
+  - Volatility Filter: VIX Kill Switch (>30 → CASH)
+  - Dual Position Sizing:
+    * ATR-based for TQQQ/SQQQ (2.5% risk, 3.0 ATR stop)
+    * Flat 50% allocation for QQQ (NO ATR stop, regime-managed exit)
+
+regimes:
+  1: "VIX FEAR (Priority 1): VIX > 30 → CASH 100%"
+  2: "STRONG BULL (Priority 2): Price > EMA AND MACD_Line > Signal_Line → TQQQ 2.5% risk"
+  3: "WEAK BULL/PAUSE (Priority 3): Price > EMA AND MACD_Line <= Signal_Line → QQQ 50% flat"
+  4: "STRONG BEAR (Priority 4): Price < EMA AND MACD_Line < 0 → SQQQ 2.5% risk"
+  5: "CHOP/WEAK BEAR (Priority 5): All other conditions → CASH 100%"
+
+key_features:
+  - "4 symbols: QQQ (signal + trading), $VIX (filter), TQQQ (3x bull), SQQQ (3x bear)"
+  - "Priority-based regime system (VIX overrides all)"
+  - "MACD zero-line check for strong bear regime"
+  - "Dual position sizing: ATR for leveraged, flat % for QQQ"
+  - "QQQ regime-managed exits (NO ATR stop)"
+  - "Wide 3.0 ATR stops for TQQQ/SQQQ (allows trends to breathe)"
+  - "INVERSE stop for SQQQ (stop ABOVE entry)"
+
+files:
+  implementation: "jutsu_engine/strategies/MACD_Trend_v2.py (668 lines)"
+  tests: "tests/unit/strategies/test_macd_trend_v2.py (981 lines, 56 tests)"
+  specification: "jutsu_engine/strategies/MACD_Trend-v2.md (90 lines)"
+
+test_results:
+  total_tests: 56
+  passed: 56
+  failed: 0
+  coverage: "87% (exceeds >80% target)"
+  runtime: "~2 seconds"
+
+test_categories:
+  initialization: "6 tests - parameters, state, symbols"
+  symbol_validation: "5 tests - all required symbols present"
+  regime_determination: "13 tests - all 5 regimes, priority order, edge cases"
+  position_sizing: "8 tests - dual mode (ATR vs flat), tracking, parameters"
+  regime_transitions: "10 tests - all transitions, exits, complex scenarios"
+  multi_symbol: "6 tests - symbol filtering, dual role, stop checks"
+  edge_cases: "4 tests - VIX=30, MACD=0, Price=EMA, MACD=Signal"
+  on_bar: "4 tests - insufficient bars, symbol validation, processing"
+
+implementation_highlights:
+  - "Priority-based if/elif ladder enforces regime precedence"
+  - "MACD_Line <= Signal_Line for regime 3 (includes equality case)"
+  - "Separate entry methods: _enter_tqqq, _enter_qqq, _enter_sqqq"
+  - "QQQ position regime tracking for regime-managed exits"
+  - "Leveraged position stop-loss tracking (TQQQ/SQQQ only)"
+  - "Symbol validation on first on_bar() call after sufficient bars"
+
+critical_implementation_notes:
+  - "MACD zero-line check: macd_line < Decimal('0.0') for regime 4"
+  - "SQQQ inverse stop: stop_price = entry_price + dollar_risk_per_share"
+  - "QQQ NO risk_per_share parameter (flat allocation mode)"
+  - "Priority 3 uses <= (not <) to handle MACD == Signal edge case"
+
+changes_from_specification:
+  fixes:
+    - "Fixed regime 3 condition to use <= instead of < (handles MACD == Signal)"
+    - "Fixed ATR mocking in 4 tests (use pandas Series instead of MagicMock)"
+
+lessons_learned:
+  - "Edge case testing critical for regime boundary conditions"
+  - "Dual position sizing requires clear mode separation (ATR vs flat)"
+  - "Pandas Series mocking needs actual Series object, not MagicMock"
+  - "Regime-managed exits require explicit tracking (qqq_position_regime)"
+```
+
+### Task 1: Implement Regime-Based Multi-Symbol Strategy (Example: ADX-Trend)
 ```yaml
 request: "Implement regime-based strategy with multi-symbol trading"
 
