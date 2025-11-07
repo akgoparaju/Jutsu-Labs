@@ -162,6 +162,9 @@ class EventLoop:
 
             # Step 6: Record portfolio value
             self.portfolio.record_portfolio_value(bar.timestamp)
+            
+            # Step 7: Record daily portfolio snapshot for CSV export
+            self.portfolio.record_daily_snapshot(bar.timestamp)
 
             # Periodic logging
             if bar_count % 100 == 0:
