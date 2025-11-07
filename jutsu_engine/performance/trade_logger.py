@@ -431,3 +431,56 @@ class TradeLogger:
             for symbol, pct in sorted(allocation.items())
         ]
         return ", ".join(parts)
+    
+    def export_trades_csv(
+        self,
+        output_path: str,
+        strategy_name: str
+    ) -> str:
+        """
+        Export trade records to CSV file.
+        
+        Creates CSV file in output directory with filename format:
+        {strategy_name}_{timestamp}_trades.csv
+        
+        Args:
+            output_path: Directory or full file path for CSV output
+            strategy_name: Strategy name for filename generation
+            
+        Returns:
+            Full path to generated CSV file
+            
+        Raises:
+            ValueError: If no trade records exist
+        """
+        if not self._trade_records:
+            raise ValueError("Cannot export: No trade records available")
+        
+        # Convert to DataFrame
+        df = self.to_dataframe()
+        
+        # Determine output file path
+        path = Path(output_path)
+        
+        if path.is_dir() or not path.suffix:
+            # Create directory if needed
+            path.mkdir(parents=True, exist_ok=True)
+            
+            # Generate filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{strategy_name}_{timestamp}_trades.csv"
+            output_file = str(path / filename)
+        else:
+            # Use provided file path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            output_file = str(path)
+        
+        # Write CSV
+        df.to_csv(output_file, index=False)
+        
+        logger.info(
+            f"Trades CSV exported: {output_file} "
+            f"({len(df)} trades, {len(df.columns)} columns)"
+        )
+        
+        return output_file

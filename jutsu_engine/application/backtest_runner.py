@@ -33,7 +33,7 @@ Example:
 from decimal import Decimal
 from datetime import datetime
 from typing import Dict, Any, Optional
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, and_
 from sqlalchemy.orm import sessionmaker
 
 from jutsu_engine.core.strategy_base import Strategy
@@ -165,7 +165,8 @@ class BacktestRunner:
     def run(
         self,
         strategy: Strategy,
-        trades_output_path: Optional[str] = None
+        trades_output_path: Optional[str] = None,
+        output_dir: str = "output"
     ) -> Dict[str, Any]:
         """
         Run backtest with given strategy.
@@ -173,7 +174,8 @@ class BacktestRunner:
         Args:
             strategy: Strategy instance to backtest
             trades_output_path: Custom path for trade log CSV (default: None)
-                If None, auto-generates path as trades/{strategy_name}_{timestamp}.csv
+                If None, uses output_dir with auto-generated timestamp filename
+            output_dir: Output directory for CSV files (default: "output")
 
         Returns:
             Dictionary with comprehensive backtest results
@@ -182,11 +184,13 @@ class BacktestRunner:
         Example:
             strategy = SMA_Crossover(short_period=20, long_period=50)
 
-            # Default - CSV auto-generated in trades/ folder
+            # Default - CSVs auto-generated in output/ folder
             results = runner.run(strategy)
+            # Creates: output/{strategy}_{timestamp}.csv (portfolio)
+            #          output/{strategy}_{timestamp}_trades.csv (trades)
 
-            # Custom path - user override
-            results = runner.run(strategy, trades_output_path='custom/my_backtest.csv')
+            # Custom output directory
+            results = runner.run(strategy, output_dir='custom/path')
 
             print(f"Total Return: {results['total_return']:.2%}")
             print(f"Sharpe Ratio: {results['sharpe_ratio']:.2f}")
@@ -252,6 +256,45 @@ class BacktestRunner:
         # Initialize strategy
         strategy.init()
 
+        # Extract signal_symbol from strategy for buy-and-hold comparison (if available)
+        signal_symbol = getattr(strategy, 'signal_symbol', None)
+        signal_prices = None
+
+        if signal_symbol:
+            logger.info(f"Buy-and-hold benchmark enabled: {signal_symbol}")
+
+            # Collect signal prices directly from database
+            try:
+                from jutsu_engine.data.models import MarketData
+
+                signal_bars = (
+                    self.session.query(MarketData)
+                    .filter(
+                        and_(
+                            MarketData.symbol == signal_symbol,
+                            MarketData.timeframe == self.config['timeframe'],
+                            MarketData.timestamp >= self.config['start_date'],
+                            MarketData.timestamp <= self.config['end_date'],
+                            MarketData.is_valid == True,  # noqa: E712
+                        )
+                    )
+                    .order_by(MarketData.timestamp.asc())
+                    .all()
+                )
+
+                signal_prices = {
+                    bar.timestamp.strftime("%Y-%m-%d"): bar.close
+                    for bar in signal_bars
+                }
+
+                logger.info(f"Collected {len(signal_prices)} price points for {signal_symbol}")
+
+            except Exception as e:
+                logger.warning(f"Failed to collect signal prices for {signal_symbol}: {e}")
+                signal_prices = None
+        else:
+            logger.debug("No signal_symbol found in strategy, skipping buy-and-hold benchmark")
+
         # Create and run event loop
         event_loop = EventLoop(
             data_handler=data_handler,
@@ -271,21 +314,45 @@ class BacktestRunner:
 
         metrics = analyzer.calculate_metrics()
 
-        # ALWAYS export trades to CSV (default behavior)
+        # ALWAYS export trades and portfolio CSVs to output directory
         try:
-            csv_path = analyzer.export_trades_to_csv(
-                trade_logger,
-                strategy.name,
-                trades_output_path
+            # Export trades CSV
+            trades_csv_path = trade_logger.export_trades_csv(
+                output_path=output_dir,
+                strategy_name=strategy.name
             )
-            metrics['trades_csv_path'] = csv_path
-            logger.info(f"Trade log exported to: {csv_path}")
+            metrics['trades_csv_path'] = trades_csv_path
+            logger.info(f"Trade log exported to: {trades_csv_path}")
         except ValueError as e:
             logger.warning(f"No trades to export: {e}")
             metrics['trades_csv_path'] = None
         except IOError as e:
             logger.error(f"Failed to export trades: {e}")
             metrics['trades_csv_path'] = None
+        
+        # Export portfolio daily snapshots CSV
+        try:
+            from jutsu_engine.performance.portfolio_exporter import PortfolioCSVExporter
+
+            exporter = PortfolioCSVExporter(initial_capital=self.config['initial_capital'])
+            portfolio_csv_path = exporter.export_daily_portfolio_csv(
+                daily_snapshots=portfolio.get_daily_snapshots(),
+                output_path=output_dir,
+                strategy_name=strategy.name,
+                signal_symbol=signal_symbol,
+                signal_prices=signal_prices,
+            )
+            metrics['portfolio_csv_path'] = portfolio_csv_path
+            logger.info(f"Portfolio CSV exported to: {portfolio_csv_path}")
+
+            if signal_symbol and signal_prices:
+                logger.info(f"Buy-and-hold benchmark included for {signal_symbol}")
+        except ValueError as e:
+            logger.warning(f"No daily snapshots to export: {e}")
+            metrics['portfolio_csv_path'] = None
+        except IOError as e:
+            logger.error(f"Failed to export portfolio CSV: {e}")
+            metrics['portfolio_csv_path'] = None
 
         # Add event loop results
         loop_results = event_loop.get_results()

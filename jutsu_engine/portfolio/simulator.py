@@ -83,6 +83,9 @@ class PortfolioSimulator:
         self.fills: List[FillEvent] = []
         self.portfolio_value_history: List[tuple[datetime, Decimal]] = []
 
+        # Daily portfolio snapshots for CSV export
+        self.daily_snapshots: List[Dict] = []
+
         # Latest prices for each symbol
         self._latest_prices: Dict[str, Decimal] = {}
         
@@ -845,6 +848,58 @@ class PortfolioSimulator:
                 print(f"{timestamp}: ${value:,.2f}")
         """
         return self.portfolio_value_history
+
+    def record_daily_snapshot(self, timestamp: datetime) -> None:
+        """
+        Record complete portfolio state snapshot for daily CSV reporting.
+
+        Called at end of each trading day by EventLoop. Captures cash,
+        positions, holdings, and total portfolio value for comprehensive
+        daily reporting and performance analysis.
+
+        Args:
+            timestamp: End-of-day timestamp for this snapshot
+
+        Example:
+            portfolio.record_daily_snapshot(bar.timestamp)
+        """
+        snapshot = {
+            'timestamp': timestamp,
+            'cash': self.cash,
+            'positions': self.positions.copy(),  # {symbol: qty}
+            'holdings': self.current_holdings.copy(),  # {symbol: market_value}
+            'total_value': self.get_portfolio_value()
+        }
+        self.daily_snapshots.append(snapshot)
+        logger.debug(
+            f"Daily snapshot recorded: {timestamp.date()}, "
+            f"value=${snapshot['total_value']:,.2f}, "
+            f"cash=${snapshot['cash']:,.2f}, "
+            f"positions={len(snapshot['positions'])}"
+        )
+
+    def get_daily_snapshots(self) -> List[Dict]:
+        """
+        Get all daily portfolio snapshots.
+
+        Returns complete portfolio state history including cash, positions,
+        holdings, and total value for each trading day. Used for CSV export
+        and detailed performance analysis.
+
+        Returns:
+            List of snapshot dictionaries with keys:
+                - timestamp: End-of-day timestamp
+                - cash: Available cash
+                - positions: Dict[symbol, quantity]
+                - holdings: Dict[symbol, market_value]
+                - total_value: Total portfolio value
+
+        Example:
+            snapshots = portfolio.get_daily_snapshots()
+            for snap in snapshots:
+                print(f"{snap['timestamp'].date()}: ${snap['total_value']:,.2f}")
+        """
+        return self.daily_snapshots.copy()
 
     def get_total_return(self) -> Decimal:
         """

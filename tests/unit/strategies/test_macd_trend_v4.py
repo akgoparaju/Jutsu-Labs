@@ -42,8 +42,8 @@ def custom_strategy():
         ema_period=50,
         atr_period=10,
         atr_stop_multiplier=Decimal('2.5'),
-        tqqq_risk=Decimal('0.02'),
-        qqq_allocation=Decimal('0.70'),
+        risk_bull=Decimal('0.02'),
+        allocation_defense=Decimal('0.70'),
     )
 
 
@@ -87,8 +87,8 @@ def test_initialization_default_parameters(strategy):
     assert strategy.ema_period == 100
     assert strategy.atr_period == 14
     assert strategy.atr_stop_multiplier == Decimal('3.0')
-    assert strategy.tqqq_risk == Decimal('0.025')
-    assert strategy.qqq_allocation == Decimal('0.60')
+    assert strategy.risk_bull == Decimal('0.025')
+    assert strategy.allocation_defense == Decimal('0.60')
 
 
 def test_initialization_custom_parameters(custom_strategy):
@@ -99,8 +99,8 @@ def test_initialization_custom_parameters(custom_strategy):
     assert custom_strategy.ema_period == 50
     assert custom_strategy.atr_period == 10
     assert custom_strategy.atr_stop_multiplier == Decimal('2.5')
-    assert custom_strategy.tqqq_risk == Decimal('0.02')
-    assert custom_strategy.qqq_allocation == Decimal('0.70')
+    assert custom_strategy.risk_bull == Decimal('0.02')
+    assert custom_strategy.allocation_defense == Decimal('0.70')
 
 
 def test_initialization_trading_symbols(strategy):

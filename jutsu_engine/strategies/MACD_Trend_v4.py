@@ -21,71 +21,75 @@ from jutsu_engine.indicators.technical import macd, ema, atr
 
 class MACD_Trend_v4(Strategy):
     """
-    Goldilocks Strategy: 3-regime trend-following using QQQ signals.
+    Goldilocks Strategy: 3-regime trend-following using configurable signal asset.
 
-    Trades TQQQ (3x bull), QQQ (1x defensive), or CASH based on:
-    - Primary Trend Filter: 100-day EMA (Price > EMA = Risk-On, Price < EMA = Risk-Off)
-    - Momentum Signal: MACD Line vs Signal Line (Strong vs Pause)
+    Trades bull (leveraged), defense (1x), or CASH based on:
+    - Primary Trend Filter: EMA on signal asset (default 100-day)
+    - Momentum Signal: MACD Line vs Signal Line
     - Position Sizing: DUAL MODE
-      * ATR-based for TQQQ (2.5% risk, 3.0 ATR stop)
-      * Flat 60% allocation for QQQ (NO ATR stop, regime-managed exit)
+      * ATR-based for bull symbol (default 2.5% risk, 3.0 ATR stop)
+      * Flat allocation for defense symbol (default 60%, NO ATR stop)
 
-    3 regimes with hierarchical priority (checked top to bottom):
-    1. RISK-OFF: Price < EMA → CASH 100%
-    2. RISK-ON (STRONG): Price > EMA AND MACD_Line > Signal_Line → TQQQ 2.5% risk
-    3. RISK-ON (PAUSE): Price > EMA AND MACD_Line <= Signal_Line → QQQ 60% flat
-
-    Entry Conditions by Regime:
-    - Regime CASH: Price < 100-EMA
-    - Regime TQQQ: Price > 100-EMA AND MACD_Line > Signal_Line
-    - Regime QQQ: Price > 100-EMA AND MACD_Line <= Signal_Line
-
-    Exit Conditions:
-    - TQQQ: Regime change OR ATR stop hit
-    - QQQ: Regime change ONLY (NO ATR stop)
-
-    Rebalances only on regime changes.
-    Stop-Loss: 3.0 ATR from entry for TQQQ (allows trend to breathe).
+    Parameters:
+        signal_symbol: Symbol for signal calculations (default: QQQ)
+        bull_symbol: Leveraged bull symbol for strong trends (default: TQQQ)
+        defense_symbol: Defensive 1x symbol for pause regime (default: QQQ)
+        macd_fast_period: MACD fast EMA period (default: 12)
+        macd_slow_period: MACD slow EMA period (default: 26)
+        macd_signal_period: MACD signal line period (default: 9)
+        ema_period: Trend filter EMA period (default: 100)
+        atr_period: ATR calculation period (default: 14)
+        atr_stop_multiplier: Stop-loss distance in ATR units (default: 3.0)
+        risk_bull: Portfolio risk for bull trades (default: 0.025 = 2.5%)
+        allocation_defense: Flat allocation for defense trades (default: 0.60 = 60%)
     """
 
     def __init__(
         self,
+        signal_symbol: str = 'QQQ',
+        bull_symbol: str = 'TQQQ',
+        defense_symbol: str = 'QQQ',
         macd_fast_period: int = 12,
         macd_slow_period: int = 26,
         macd_signal_period: int = 9,
         ema_period: int = 100,
         atr_period: int = 14,
         atr_stop_multiplier: Decimal = Decimal('3.0'),
-        tqqq_risk: Decimal = Decimal('0.025'),
-        qqq_allocation: Decimal = Decimal('0.60'),
+        risk_bull: Decimal = Decimal('0.025'),
+        allocation_defense: Decimal = Decimal('0.60'),
     ):
         """
         Initialize Goldilocks strategy.
 
         Args:
+            signal_symbol: Symbol for signal calculations (default: QQQ)
+            bull_symbol: Leveraged bull symbol (default: TQQQ)
+            defense_symbol: Defensive 1x symbol (default: QQQ)
             macd_fast_period: Period for fast MACD EMA (default: 12)
             macd_slow_period: Period for slow MACD EMA (default: 26)
             macd_signal_period: Period for MACD signal line (default: 9)
             ema_period: Period for trend EMA (default: 100)
             atr_period: Period for ATR calculation (default: 14)
             atr_stop_multiplier: Stop-loss distance in ATR units (default: 3.0)
-            tqqq_risk: Portfolio risk for TQQQ trades (default: 2.5%)
-            qqq_allocation: Flat allocation for QQQ trades (default: 60%)
+            risk_bull: Portfolio risk for bull trades (default: 2.5%)
+            allocation_defense: Flat allocation for defense trades (default: 60%)
         """
         super().__init__()
+
+        # Store symbol parameters first
+        self.signal_symbol = signal_symbol
+        self.bull_symbol = bull_symbol
+        self.defensive_symbol = defense_symbol
+
+        # Store all other parameters
         self.macd_fast_period = macd_fast_period
         self.macd_slow_period = macd_slow_period
         self.macd_signal_period = macd_signal_period
         self.ema_period = ema_period
         self.atr_period = atr_period
         self.atr_stop_multiplier = atr_stop_multiplier
-        self.tqqq_risk = tqqq_risk
-        self.qqq_allocation = qqq_allocation
-
-        # Trading symbols (2 symbols: signal + 2 vehicles)
-        self.signal_symbol = 'QQQ'    # Calculate indicators on QQQ (also trades QQQ)
-        self.bull_symbol = 'TQQQ'     # 3x leveraged long
-        self.defensive_symbol = 'QQQ'  # 1x defensive (same as signal)
+        self.risk_bull = risk_bull
+        self.allocation_defense = allocation_defense
 
         # State tracking
         self.current_regime: Optional[str] = None  # 'CASH', 'TQQQ', or 'QQQ'
@@ -204,8 +208,8 @@ class MACD_Trend_v4(Strategy):
         self._last_threshold_values = {
             'EMA_Period': self.ema_period,
             'ATR_Stop_Multiplier': self.atr_stop_multiplier,
-            'TQQQ_Risk': self.tqqq_risk,
-            'QQQ_Allocation': self.qqq_allocation
+            'TQQQ_Risk': self.risk_bull,
+            'QQQ_Allocation': self.allocation_defense
         }
 
         # Build decision reason
@@ -400,12 +404,12 @@ class MACD_Trend_v4(Strategy):
             )
 
         # Generate signal with ATR-based risk allocation
-        # Pass both tqqq_risk (2.5% dollar risk) and dollar_risk_per_share (ATR-based stop)
-        # Portfolio will calculate: shares = (portfolio_value × tqqq_risk) / dollar_risk_per_share
-        self.buy(trade_symbol, self.tqqq_risk, risk_per_share=dollar_risk_per_share)
+        # Pass both risk_bull (2.5% dollar risk) and dollar_risk_per_share (ATR-based stop)
+        # Portfolio will calculate: shares = (portfolio_value × risk_bull) / dollar_risk_per_share
+        self.buy(trade_symbol, self.risk_bull, risk_per_share=dollar_risk_per_share)
 
         self.log(
-            f"REGIME TQQQ: {regime_desc} → {trade_symbol} {self.tqqq_risk*100:.1f}% | "
+            f"REGIME TQQQ: {regime_desc} → {trade_symbol} {self.risk_bull*100:.1f}% | "
             f"ATR={current_atr:.2f}, Entry={current_price:.2f}, Stop={stop_price:.2f}"
         )
 
@@ -445,11 +449,11 @@ class MACD_Trend_v4(Strategy):
             )
 
         # Generate signal with FLAT allocation (NO risk_per_share parameter!)
-        # Portfolio will calculate: shares = (portfolio_value × qqq_allocation) / current_price
-        self.buy(trade_symbol, self.qqq_allocation)  # NO risk_per_share!
+        # Portfolio will calculate: shares = (portfolio_value × allocation_defense) / current_price
+        self.buy(trade_symbol, self.allocation_defense)  # NO risk_per_share!
 
         self.log(
-            f"REGIME QQQ: {regime_desc} → {trade_symbol} {self.qqq_allocation*100:.1f}% | "
+            f"REGIME QQQ: {regime_desc} → {trade_symbol} {self.allocation_defense*100:.1f}% | "
             f"Entry={current_price:.2f}, NO ATR STOP (regime-managed exit)"
         )
 

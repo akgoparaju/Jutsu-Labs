@@ -42,6 +42,24 @@ logger = setup_logger('CLI', log_to_console=True)
 # Load environment variables from .env file
 load_dotenv()
 
+# Load generic backtest parameters from .env
+env_initial_capital = float(os.getenv('INITIAL_CAPITAL', '100000'))
+env_commission = float(os.getenv('DEFAULT_COMMISSION', '0.01'))
+env_slippage = float(os.getenv('DEFAULT_SLIPPAGE', '0.0'))
+
+# Load MACD_Trend_v4 parameters from .env
+macd_v4_signal = os.getenv('STRATEGY_MACD_V4_SIGNAL_SYMBOL', 'QQQ')
+macd_v4_bull = os.getenv('STRATEGY_MACD_V4_BULL_SYMBOL', 'TQQQ')
+macd_v4_defense = os.getenv('STRATEGY_MACD_V4_DEFENSE_SYMBOL', 'QQQ')
+macd_v4_fast = int(os.getenv('STRATEGY_MACD_V4_FAST_PERIOD', '12'))
+macd_v4_slow = int(os.getenv('STRATEGY_MACD_V4_SLOW_PERIOD', '26'))
+macd_v4_signal_period = int(os.getenv('STRATEGY_MACD_V4_SIGNAL_PERIOD', '9'))
+macd_v4_ema = int(os.getenv('STRATEGY_MACD_V4_EMA_PERIOD', '100'))
+macd_v4_atr = int(os.getenv('STRATEGY_MACD_V4_ATR_PERIOD', '14'))
+macd_v4_atr_mult = float(os.getenv('STRATEGY_MACD_V4_ATR_STOP_MULTIPLIER', '3.0'))
+macd_v4_risk_bull = float(os.getenv('STRATEGY_MACD_V4_RISK_BULL', '0.025'))
+macd_v4_alloc_defense = float(os.getenv('STRATEGY_MACD_V4_ALLOCATION_DEFENSE', '0.60'))
+
 
 # Known index symbols that require $ prefix in database
 INDEX_SYMBOLS = {'VIX', 'DJI', 'SPX', 'NDX', 'RUT', 'VXN'}
@@ -264,9 +282,9 @@ def parse_symbols_callback(ctx, param, value):
 )
 @click.option(
     '--capital',
-    default=100000,
+    default=None,
     type=float,
-    help='Initial capital',
+    help='Initial capital (default from .env: INITIAL_CAPITAL)',
 )
 @click.option(
     '--strategy',
@@ -293,9 +311,15 @@ def parse_symbols_callback(ctx, param, value):
 )
 @click.option(
     '--commission',
-    default=0.01,
+    default=None,
     type=float,
-    help='Commission per share',
+    help='Commission per share (default from .env: DEFAULT_COMMISSION)',
+)
+@click.option(
+    '--slippage',
+    default=None,
+    type=float,
+    help='Slippage percent (default from .env: DEFAULT_SLIPPAGE)',
 )
 @click.option(
     '--output',
@@ -356,18 +380,56 @@ def parse_symbols_callback(ctx, param, value):
     default=None,
     help='Risk percent for waning trends (default from .env: STRATEGY_RISK_WANING_TREND)',
 )
+# MACD-Trend-v4 Strategy Parameters (override .env values)
+@click.option(
+    '--signal-symbol',
+    type=str,
+    default=None,
+    help='Signal symbol for MACD_Trend_v4 (default from .env: STRATEGY_MACD_V4_SIGNAL_SYMBOL)',
+)
+@click.option(
+    '--bull-symbol',
+    type=str,
+    default=None,
+    help='Bull symbol for MACD_Trend_v4 (default from .env: STRATEGY_MACD_V4_BULL_SYMBOL)',
+)
+@click.option(
+    '--defense-symbol',
+    type=str,
+    default=None,
+    help='Defense symbol for MACD_Trend_v4 (default from .env: STRATEGY_MACD_V4_DEFENSE_SYMBOL)',
+)
+@click.option(
+    '--ema-trend-period',
+    type=int,
+    default=None,
+    help='EMA trend period for MACD_Trend_v4 (default from .env: STRATEGY_MACD_V4_EMA_PERIOD)',
+)
+@click.option(
+    '--risk-bull',
+    type=float,
+    default=None,
+    help='Risk allocation for bull trades (default from .env: STRATEGY_MACD_V4_RISK_BULL)',
+)
+@click.option(
+    '--allocation-defense',
+    type=float,
+    default=None,
+    help='Allocation for defense trades (default from .env: STRATEGY_MACD_V4_ALLOCATION_DEFENSE)',
+)
 def backtest(
     symbol: Optional[str],
     symbols: tuple,
     timeframe: str,
     start: str,
     end: str,
-    capital: float,
+    capital: Optional[float],
     strategy: str,
     short_period: int,
     long_period: int,
     position_size: int,
-    commission: float,
+    commission: Optional[float],
+    slippage: Optional[float],
     output: Optional[str],
     export_trades: Optional[str],
     # Momentum-ATR parameters
@@ -379,6 +441,13 @@ def backtest(
     atr_stop_multiplier: Optional[float],
     risk_strong_trend: Optional[float],
     risk_waning_trend: Optional[float],
+    # MACD-Trend-v4 parameters
+    signal_symbol: Optional[str],
+    bull_symbol: Optional[str],
+    defense_symbol: Optional[str],
+    ema_trend_period: Optional[int],
+    risk_bull: Optional[float],
+    allocation_defense: Optional[float],
 ):
     """
     Run a backtest with specified parameters.
@@ -421,6 +490,17 @@ def backtest(
     start_date = datetime.strptime(start, '%Y-%m-%d').replace(tzinfo=timezone.utc)
     end_date = datetime.strptime(end, '%Y-%m-%d').replace(tzinfo=timezone.utc)
 
+    # Apply priority: CLI > .env > hardcoded
+    final_capital = capital if capital is not None else env_initial_capital
+    final_commission = commission if commission is not None else env_commission
+    final_slippage = slippage if slippage is not None else env_slippage
+
+    # Log loaded values
+    logger.info(
+        f"Backtest config: capital=${final_capital:,.2f}, "
+        f"commission={final_commission}, slippage={final_slippage}"
+    )
+
     # Display header
     click.echo("=" * 60)
     if is_multi_symbol:
@@ -428,7 +508,7 @@ def backtest(
     else:
         click.echo(f"BACKTEST: {symbol_list[0]} {timeframe}")
     click.echo(f"Period: {start_date.date()} to {end_date.date()}")
-    click.echo(f"Initial Capital: ${capital:,.2f}")
+    click.echo(f"Initial Capital: ${final_capital:,.2f}")
     click.echo("=" * 60)
 
     try:
@@ -438,8 +518,9 @@ def backtest(
             'timeframe': timeframe,
             'start_date': start_date,
             'end_date': end_date,
-            'initial_capital': Decimal(str(capital)),
-            'commission_per_share': Decimal(str(commission)),
+            'initial_capital': Decimal(str(final_capital)),
+            'commission_per_share': Decimal(str(final_commission)),
+            'slippage_percent': Decimal(str(final_slippage)),
         }
 
         # Create strategy - dynamically load from strategies module
@@ -477,7 +558,15 @@ def backtest(
             final_atr_stop_multiplier = atr_stop_multiplier if atr_stop_multiplier is not None else env_atr_stop_multiplier
             final_risk_strong = risk_strong_trend if risk_strong_trend is not None else env_risk_strong
             final_risk_waning = risk_waning_trend if risk_waning_trend is not None else env_risk_waning
-            
+
+            # Apply priority logic for MACD-Trend-v4 parameters: CLI > .env > strategy defaults
+            final_signal_symbol = signal_symbol if signal_symbol is not None else macd_v4_signal
+            final_bull_symbol = bull_symbol if bull_symbol is not None else macd_v4_bull
+            final_defense_symbol = defense_symbol if defense_symbol is not None else macd_v4_defense
+            final_ema_trend = ema_trend_period if ema_trend_period is not None else macd_v4_ema
+            final_risk_bull = risk_bull if risk_bull is not None else macd_v4_risk_bull
+            final_alloc_defense = allocation_defense if allocation_defense is not None else macd_v4_alloc_defense
+
             # Build kwargs based on what the strategy constructor accepts
             strategy_kwargs = {}
             
@@ -510,7 +599,21 @@ def backtest(
             # CLI --position-size is for old share-based strategies
             # if 'position_size_percent' in params:
             #     strategy_kwargs['position_size_percent'] = Decimal('1.0')
-            
+
+            # MACD-Trend-v4 parameters (only add if strategy accepts them)
+            if 'signal_symbol' in params:
+                strategy_kwargs['signal_symbol'] = final_signal_symbol
+            if 'bull_symbol' in params:
+                strategy_kwargs['bull_symbol'] = final_bull_symbol
+            if 'defense_symbol' in params:
+                strategy_kwargs['defense_symbol'] = final_defense_symbol
+            if 'ema_period' in params:  # Note: parameter name in strategy is 'ema_period'
+                strategy_kwargs['ema_period'] = final_ema_trend
+            if 'risk_bull' in params:
+                strategy_kwargs['risk_bull'] = Decimal(str(final_risk_bull))
+            if 'allocation_defense' in params:
+                strategy_kwargs['allocation_defense'] = Decimal(str(final_alloc_defense))
+
             # Instantiate strategy with only accepted parameters
             strategy_instance = strategy_class(**strategy_kwargs)
             
