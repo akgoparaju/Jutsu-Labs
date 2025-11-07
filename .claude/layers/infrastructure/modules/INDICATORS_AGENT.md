@@ -171,6 +171,14 @@ def calculate_stochastic(
     k_period: int = 14,
     d_period: int = 3
 ) -> Tuple[pd.Series, pd.Series]: ...
+
+# Trend Strength Indicators
+def adx(
+    high: Union[pd.Series, List],
+    low: Union[pd.Series, List],
+    close: Union[pd.Series, List],
+    period: int = 14
+) -> pd.Series: ...
 ```
 
 ### Key Functions
@@ -255,6 +263,52 @@ def calculate_bollinger_bands(
     """
 ```
 
+**`adx()`** - Average Directional Index (Added 2025-11-05)
+```python
+def adx(
+    high: Union[pd.Series, List],
+    low: Union[pd.Series, List],
+    close: Union[pd.Series, List],
+    period: int = 14
+) -> pd.Series:
+    """
+    Calculate Average Directional Index (ADX).
+
+    Measures trend strength on a 0-100 scale. Does NOT indicate direction.
+    - ADX > 25: Strong trend
+    - ADX 20-25: Building trend
+    - ADX < 20: Weak/no trend
+
+    Args:
+        high: High price series
+        low: Low price series
+        close: Union[pd.Series, List]
+        period: Lookback period (default: 14)
+
+    Returns:
+        ADX series (0-100 scale)
+
+    Performance:
+        <18ms for 1000 bars
+
+    Formula:
+        1. Calculate True Range (TR)
+        2. Calculate +DM and -DM (directional movement)
+        3. Smooth TR, +DM, -DM using EMA
+        4. Calculate +DI and -DI (directional indicators)
+        5. Calculate DX (directional index)
+        6. ADX = EMA of DX over period
+
+    Test Coverage:
+        11 tests, 100% coverage
+
+    Usage:
+        Used by ADX-Trend strategy for regime classification.
+        High ADX (>25) with bullish EMA crossover → allocate to TQQQ
+        Low ADX (<20) → allocate to cash or 1x vehicle
+    """
+```
+
 ### Performance Requirements
 ```python
 PERFORMANCE_TARGETS = {
@@ -265,7 +319,8 @@ PERFORMANCE_TARGETS = {
     "bollinger_1000_bars": "< 20ms",
     "atr_1000_bars": "< 15ms",
     "stochastic_1000_bars": "< 20ms",
-    "obv_1000_bars": "< 10ms"
+    "obv_1000_bars": "< 10ms",
+    "adx_1000_bars": "< 18ms"
 }
 ```
 

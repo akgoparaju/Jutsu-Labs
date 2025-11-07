@@ -131,6 +131,42 @@ This means:
 - **Portfolio state management** - Track positions, cash, PnL
 - **Performance calculations** - Sharpe, drawdown, win rate
 
+##### Strategy-Portfolio Separation of Concerns
+
+**Architectural Decision (2025-11-04)**:
+
+The Core layer separates trading intent (Strategy) from execution constraints (Portfolio):
+
+- **Strategy Responsibility**:
+  - Determine WHEN to trade (entry/exit signals)
+  - Determine HOW MUCH to allocate (portfolio_percent: 0.0-1.0)
+  - Focus on business logic and indicators
+
+- **Portfolio Responsibility**:
+  - Determine HOW MANY SHARES to trade (quantity calculation)
+  - Apply margin requirements (150% for shorts)
+  - Handle cash constraints and position limits
+  - Focus on execution and risk management
+
+**Benefits**:
+1. **Separation of Concerns**: Strategy = business logic, Portfolio = execution logic
+2. **Simplification**: Strategies ~15 lines simpler (no position sizing code)
+3. **Centralization**: Single source of truth for margin requirements
+4. **Scalability**: Adding new constraints only requires Portfolio changes
+
+**API**:
+```python
+# Strategy outputs signals with allocation %
+self.buy('AAPL', Decimal('0.8'))  # 80% of portfolio
+self.sell('AAPL', Decimal('0.0'))  # Close position
+
+# Portfolio calculates actual shares
+# For LONG: shares = (portfolio_value * 0.8) / (price + commission)
+# For SHORT: shares = (portfolio_value * 0.8) / (price * 1.5 + commission)
+```
+
+**Breaking Change**: Existing strategies must update from `buy(symbol, quantity)` to `buy(symbol, portfolio_percent)`.
+
 #### Layer 2: Application
 - **Use case orchestration** - Coordinates domain objects to achieve goals
 - **BacktestRunner** - Runs full backtest from start to finish
@@ -369,8 +405,11 @@ def sync_data(symbol: str, timeframe: str, source: str = 'schwab'):
 │  │ FOR EACH BAR:                  │  │
 │  │ 1. Emit MarketDataEvent        │  │
 │  │ 2. Strategy.on_bar()           │  │
+│  │    → Generates SignalEvent     │  │
+│  │      with portfolio_percent    │  │
 │  │ 3. Process signals             │  │
 │  │ 4. Update portfolio            │  │
+│  │    → Calculates shares from %  │  │
 │  │ 5. Log state                   │  │
 │  └────────────────────────────────┘  │
 └──────┬───────────────────────────────┘
@@ -378,6 +417,8 @@ def sync_data(symbol: str, timeframe: str, source: str = 'schwab'):
        ↓
 ┌──────────────────────────────────────┐
 │  PortfolioSimulator                   │
+│  - Receive SignalEvent w/ portfolio_% │
+│  - Calculate shares (with margin)     │
 │  - Execute trades                     │
 │  - Update positions & cash            │
 │  - Calculate mark-to-market PnL       │

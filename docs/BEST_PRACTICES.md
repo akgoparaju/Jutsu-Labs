@@ -231,6 +231,26 @@ class MarketData(Base):
 - Financial regulations require exact calculations
 - Prevents accumulation of rounding errors in long backtests
 
+### 2.1.1 Portfolio Allocation Values
+
+Always use `Decimal` for `portfolio_percent`:
+
+```python
+from decimal import Decimal
+
+# ✅ CORRECT
+self.buy('AAPL', Decimal('0.8'))
+
+# ❌ WRONG (float loses precision)
+self.buy('AAPL', 0.8)
+```
+
+**Common Allocation Patterns**:
+- Full allocation: `Decimal('1.0')` (100%)
+- Standard allocation: `Decimal('0.8')` (80%)
+- Conservative allocation: `Decimal('0.5')` (50%)
+- Close position: `Decimal('0.0')` (0%)
+
 ### 2.2 Timezone Handling
 
 **Rule:** Store all timestamps in UTC, convert for display only.
@@ -456,6 +476,57 @@ class RSI_MeanReversion(Strategy):
 runner = BacktestRunner()
 results = runner.run(strategy=SMA_Crossover())  # Easy to swap
 ```
+
+#### Portfolio Allocation Pattern
+
+**Use portfolio_percent for Position Sizing**:
+
+```python
+from decimal import Decimal
+
+class MyStrategy(Strategy):
+    def __init__(self):
+        super().__init__()
+        self.position_size = Decimal('0.8')  # 80% of portfolio
+
+    def on_bar(self, bar):
+        # Signal generation logic
+        if buy_condition:
+            # Specify allocation %, Portfolio calculates shares
+            self.buy(bar.symbol, self.position_size)
+
+        elif sell_condition:
+            # Close position with 0% allocation
+            self.sell(bar.symbol, Decimal('0.0'))
+```
+
+**DON'T Calculate Shares Yourself**:
+```python
+# ❌ WRONG (Old pattern - DO NOT USE):
+portfolio_value = self._cash + position_value
+desired_shares = int((portfolio_value * 0.8) / price)
+self.buy(symbol, desired_shares)  # OLD API
+
+# ✅ RIGHT (New pattern - USE THIS):
+self.buy(symbol, Decimal('0.8'))  # Portfolio handles share calculation
+```
+
+**Position Closing**:
+```python
+# Close long position
+if exit_long_condition:
+    self.sell(symbol, Decimal('0.0'))
+
+# Close short position
+if exit_short_condition:
+    self.buy(symbol, Decimal('0.0'))
+```
+
+**Validation**:
+- `portfolio_percent` must be between 0.0 and 1.0
+- 0.0 = close position
+- 1.0 = allocate entire portfolio
+- Typical range: 0.5 to 0.8 (50-80%)
 
 #### Repository Pattern
 ```python

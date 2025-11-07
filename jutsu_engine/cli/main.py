@@ -17,6 +17,8 @@ Usage:
     jutsu init
 """
 import click
+import importlib
+import inspect
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -167,8 +169,41 @@ def sync(
         raise click.Abort()
 
 
+def parse_symbols_callback(ctx, param, value):
+    """
+    Parse symbols from space-separated, comma-separated, or multiple values.
+    
+    Supports all common syntaxes:
+    - Space-separated: --symbols "QQQ TQQQ SQQQ"
+    - Comma-separated: --symbols QQQ,TQQQ,SQQQ
+    - Multiple flags: --symbols QQQ --symbols TQQQ --symbols SQQQ
+    - Mixed: --symbols "QQQ TQQQ" --symbols SQQQ
+    
+    Returns:
+        tuple of symbols or None
+    """
+    if not value:
+        return None
+    
+    # Flatten and split by commas and spaces
+    all_symbols = []
+    for item in value:
+        # First split by comma, then by space
+        for part in item.split(','):
+            symbols = [s.strip().upper() for s in part.split() if s.strip()]
+            all_symbols.extend(symbols)
+    
+    return tuple(all_symbols) if all_symbols else None
+
+
 @cli.command()
-@click.option('--symbol', required=True, help='Stock ticker symbol')
+@click.option('--symbol', default=None, help='Stock ticker symbol (single symbol mode)')
+@click.option(
+    '--symbols',
+    multiple=True,
+    callback=parse_symbols_callback,
+    help='Stock ticker symbols for multi-symbol strategies (space/comma-separated or repeated: --symbols "QQQ TQQQ SQQQ" OR --symbols QQQ,TQQQ,SQQQ)'
+)
 @click.option(
     '--timeframe',
     default='1D',
@@ -224,8 +259,14 @@ def sync(
     default=None,
     help='Output file for results (JSON)',
 )
+@click.option(
+    '--export-trades',
+    default=None,
+    help='Custom path for trade log CSV (default: auto-generated as trades/{strategy}_{timestamp}.csv)',
+)
 def backtest(
-    symbol: str,
+    symbol: Optional[str],
+    symbols: tuple,
     timeframe: str,
     start: str,
     end: str,
@@ -236,23 +277,55 @@ def backtest(
     position_size: int,
     commission: float,
     output: Optional[str],
+    export_trades: Optional[str],
 ):
     """
     Run a backtest with specified parameters.
 
     Tests a trading strategy against historical data and reports performance metrics.
 
-    Example:
+    Single-symbol example:
         jutsu backtest --symbol AAPL --start 2024-01-01 --end 2024-12-31
         jutsu backtest --symbol MSFT --start 2024-01-01 --end 2024-12-31 \\
             --capital 50000 --short-period 10 --long-period 30
+
+    Multi-symbol examples:
+        # Comma-separated (recommended):
+        jutsu backtest --strategy ADX_Trend --symbols QQQ,TQQQ,SQQQ \
+            --start 2023-01-01 --end 2024-12-31 --capital 10000
+        
+        # Space-separated (use quotes):
+        jutsu backtest --strategy ADX_Trend --symbols "QQQ TQQQ SQQQ" \
+            --start 2023-01-01 --end 2024-12-31 --capital 10000
+        
+        # Repeated flag (also supported):
+        jutsu backtest --strategy ADX_Trend --symbols QQQ --symbols TQQQ --symbols SQQQ \
+            --start 2023-01-01 --end 2024-12-31 --capital 10000
     """
+    # Determine which symbols to use
+    if symbols:
+        # Multi-symbol mode (--symbols takes precedence)
+        symbol_list = list(symbols)
+        is_multi_symbol = True
+    elif symbol:
+        # Single-symbol mode (backward compatible)
+        symbol_list = [symbol]
+        is_multi_symbol = False
+    else:
+        # Error: must provide at least one symbol
+        click.echo(click.style("✗ Error: Must provide either --symbol or --symbols", fg='red'))
+        raise click.Abort()
+
     # Parse dates
     start_date = datetime.strptime(start, '%Y-%m-%d').replace(tzinfo=timezone.utc)
     end_date = datetime.strptime(end, '%Y-%m-%d').replace(tzinfo=timezone.utc)
 
+    # Display header
     click.echo("=" * 60)
-    click.echo(f"BACKTEST: {symbol} {timeframe}")
+    if is_multi_symbol:
+        click.echo(f"BACKTEST: {', '.join(symbol_list)} {timeframe}")
+    else:
+        click.echo(f"BACKTEST: {symbol_list[0]} {timeframe}")
     click.echo(f"Period: {start_date.date()} to {end_date.date()}")
     click.echo(f"Initial Capital: ${capital:,.2f}")
     click.echo("=" * 60)
@@ -260,7 +333,7 @@ def backtest(
     try:
         # Create backtest configuration
         config = {
-            'symbol': symbol,
+            'symbols': symbol_list,  # Now always a list
             'timeframe': timeframe,
             'start_date': start_date,
             'end_date': end_date,
@@ -268,15 +341,53 @@ def backtest(
             'commission_per_share': Decimal(str(commission)),
         }
 
-        # Create strategy
-        if strategy == 'sma_crossover':
-            strategy_instance = SMA_Crossover(
-                short_period=short_period,
-                long_period=long_period,
-                position_size=position_size,
-            )
-        else:
-            click.echo(click.style(f"✗ Unknown strategy: {strategy}", fg='red'))
+        # Create strategy - dynamically load from strategies module
+        try:
+            # Try to import strategy module
+            module_name = f"jutsu_engine.strategies.{strategy}"
+            strategy_module = importlib.import_module(module_name)
+            
+            # Get strategy class (assume class name matches file name)
+            strategy_class = getattr(strategy_module, strategy)
+            
+            # Inspect constructor to build parameter dict dynamically
+            sig = inspect.signature(strategy_class.__init__)
+            params = sig.parameters
+            
+            # Build kwargs based on what the strategy constructor accepts
+            strategy_kwargs = {}
+            
+            # Add parameters only if they exist in the constructor
+            if 'short_period' in params:
+                strategy_kwargs['short_period'] = short_period
+            if 'long_period' in params:
+                strategy_kwargs['long_period'] = long_period
+            if 'position_size' in params:
+                strategy_kwargs['position_size'] = position_size
+            # NOTE: Let strategy use its own default position_size_percent
+            # CLI --position-size is for old share-based strategies
+            # if 'position_size_percent' in params:
+            #     strategy_kwargs['position_size_percent'] = Decimal('1.0')
+            
+            # Instantiate strategy with only accepted parameters
+            strategy_instance = strategy_class(**strategy_kwargs)
+            
+            logger.info(f"Loaded strategy: {strategy} with params: {strategy_kwargs}")
+            
+        except ImportError as e:
+            click.echo(click.style(f"✗ Strategy module not found: {strategy}", fg='red'))
+            click.echo(click.style(f"  Looked for: jutsu_engine/strategies/{strategy}.py", fg='yellow'))
+            logger.error(f"Strategy import failed: {e}")
+            raise click.Abort()
+        except AttributeError as e:
+            click.echo(click.style(f"✗ Strategy class not found in module: {strategy}", fg='red'))
+            click.echo(click.style(f"  Module exists but class '{strategy}' not defined", fg='yellow'))
+            logger.error(f"Strategy class not found: {e}")
+            raise click.Abort()
+        except Exception as e:
+            click.echo(click.style(f"✗ Error loading strategy: {strategy}", fg='red'))
+            click.echo(click.style(f"  {type(e).__name__}: {e}", fg='yellow'))
+            logger.error(f"Strategy initialization failed: {e}", exc_info=True)
             raise click.Abort()
 
         # Run backtest
@@ -287,7 +398,10 @@ def backtest(
             label='Running backtest',
             show_eta=False,
         ) as bar:
-            results = runner.run(strategy_instance)
+            results = runner.run(
+                strategy_instance,
+                trades_output_path=export_trades
+            )
             bar.update(1)
 
         # Display results
@@ -302,6 +416,12 @@ def backtest(
         click.echo(f"Win Rate:           {results['win_rate']:.2%}")
         click.echo(f"Total Trades:       {results['total_trades']}")
         click.echo("=" * 60)
+
+        # Always display trades CSV path (default behavior)
+        if 'trades_csv_path' in results and results['trades_csv_path']:
+            click.echo(f"\n✓ Trade log exported to: {results['trades_csv_path']}")
+        elif 'trades_csv_path' in results and results['trades_csv_path'] is None:
+            click.echo(f"\n⚠ No trades to export")
 
         # Save to file if requested
         if output:

@@ -147,8 +147,13 @@ class DataSync:
 
                 if first_bar_result:
                     first_bar = first_bar_result[0]
+                    # Ensure first_bar is timezone-aware (UTC)
                     if first_bar.tzinfo is None:
                         first_bar = first_bar.replace(tzinfo=timezone.utc)
+                    
+                    # Ensure last_bar is also timezone-aware before comparison
+                    if last_bar.tzinfo is None:
+                        last_bar = last_bar.replace(tzinfo=timezone.utc)
 
                     # Determine fetch strategy based on start_date vs existing data range
                     if start_date >= last_bar:
@@ -222,6 +227,12 @@ class DataSync:
 
         # Update metadata - preserve most recent last_bar_timestamp
         fetched_last_bar = bars[-1]['timestamp']
+        
+        # Ensure fetched_last_bar is timezone-aware (UTC)
+        # Schwab API may return offset-naive datetime
+        if fetched_last_bar.tzinfo is None:
+            fetched_last_bar = fetched_last_bar.replace(tzinfo=timezone.utc)
+        
         metadata = self._get_metadata(symbol, timeframe)
 
         if metadata:

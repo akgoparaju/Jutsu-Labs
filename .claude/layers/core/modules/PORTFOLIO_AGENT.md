@@ -90,10 +90,16 @@ from jutsu_engine.data.handlers.database import DatabaseDataHandler  # NO!
 ### Primary
 - **State Management**: Track cash balance and open positions
 - **Trade Execution**: Execute buy/sell orders, return fill events
+- **Position Sizing**: Calculate share quantities from portfolio allocations (NEW - 2025-11-04)
 - **PnL Calculation**: Calculate mark-to-market profit and loss
 - **Commission Handling**: Apply commission costs to trades
 - **Transaction Logging**: Maintain complete audit trail of all trades
 - **Position Tracking**: Track quantity, average cost, current value
+
+**ARCHITECTURAL NOTE (2025-11-04)**: Strategy-Portfolio Separation
+- **Portfolio Responsibility**: Convert portfolio_percent → actual share quantity
+- **Strategy Responsibility**: Specify allocation percentage only
+- **Rationale**: Portfolio has capital/margin context, Strategy has trading logic
 
 ### Boundaries
 
@@ -194,14 +200,94 @@ def calculate_pnl(self) -> Decimal:
     """
 ```
 
+**`execute_signal()`** - Execute signal with position sizing (NEW - 2025-11-04)
+```python
+def execute_signal(
+    self,
+    signal: SignalEvent,
+    current_bar: MarketDataEvent
+) -> Optional[FillEvent]:
+    """
+    Execute signal by calculating position size and executing order.
+
+    **ARCHITECTURAL NOTE**: Position Sizing Strategy
+    - LONG: Allocates signal.portfolio_percent of total portfolio value
+    - SHORT: Requires 150% margin (SHORT_MARGIN_REQUIREMENT = 1.5)
+    - 0.0% allocation: Close entire position
+
+    Args:
+        signal: SignalEvent with portfolio_percent
+        current_bar: Current market data for pricing
+
+    Returns:
+        FillEvent if executed, None if rejected
+
+    Example:
+        # 25% portfolio allocation to long position
+        signal = SignalEvent(symbol='AAPL', signal_type='BUY', portfolio_percent=0.25)
+        fill = portfolio.execute_signal(signal, bar)
+    """
+```
+
+**`_calculate_long_shares()`** - Position sizing for longs (NEW - 2025-11-04)
+```python
+def _calculate_long_shares(
+    self,
+    portfolio_percent: Decimal,
+    price: Decimal
+) -> int:
+    """
+    Calculate shares for long position based on portfolio allocation.
+
+    Formula: shares = floor((total_value * portfolio_percent) / price)
+
+    Args:
+        portfolio_percent: 0.0 to 1.0 (e.g., 0.25 = 25%)
+        price: Current share price
+
+    Returns:
+        Number of shares (integer, rounded down)
+    """
+```
+
+**`_calculate_short_shares()`** - Position sizing for shorts (NEW - 2025-11-04)
+```python
+def _calculate_short_shares(
+    self,
+    portfolio_percent: Decimal,
+    price: Decimal
+) -> int:
+    """
+    Calculate shares for short position with margin requirements.
+
+    **SHORT MARGIN**: Requires 150% of position value in cash
+    Formula: shares = floor((total_value * portfolio_percent) / (price * 1.5))
+
+    Args:
+        portfolio_percent: 0.0 to 1.0
+        price: Current share price
+
+    Returns:
+        Number of shares (integer, rounded down)
+
+    Note:
+        SHORT_MARGIN_REQUIREMENT = Decimal('1.5') (150% margin)
+    """
+```
+
 ### Performance Requirements
 ```python
 PERFORMANCE_TARGETS = {
     "order_execution": "< 0.1ms per order",
+    "signal_execution": "< 0.2ms per signal (includes position sizing)",  # NEW
+    "position_sizing": "< 0.05ms per calculation",  # NEW
     "pnl_calculation": "< 1ms",
     "portfolio_value": "< 0.5ms",
     "memory_per_position": "< 500 bytes"
 }
+
+# Position sizing constants
+SHORT_MARGIN_REQUIREMENT = Decimal('1.5')  # 150% margin for short positions
 ```
 
 ## Interfaces
