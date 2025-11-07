@@ -9,6 +9,7 @@ Strategy Logic:
 - Trades TQQQ (3x bull), SQQQ (3x bear), QQQ (1x), or CASH based on regime
 - 6 distinct regimes determined by EMA crossovers and ADX thresholds
 - Rebalances only on regime changes (no intra-regime adjustments)
+command: jutsu backtest --strategy ADX_Trend --symbols QQQ,TQQQ,SQQQ --start 2010-01-01 --end 2025-11-01 --capital 10000
 """
 from decimal import Decimal
 from typing import Optional

@@ -2,13 +2,42 @@
 Logging configuration for the Jutsu Labs backtesting engine.
 
 Provides module-based loggers with timestamps and proper formatting.
-All logs are written to logs/ directory with module prefixes.
+All logs are written to a single monolithic log file: jutsu_labs_log_<datetime>.log
 """
 import logging
 import logging.handlers
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
+
+# Global shared log file path (created once per session)
+_SHARED_LOG_FILE: Optional[Path] = None
+
+
+def _get_shared_log_file() -> Path:
+    """
+    Get or create the shared log file path.
+
+    Creates a single log file for all modules with format:
+    jutsu_labs_log_YYYY-MM-DD_HHMMSS.log
+
+    Returns:
+        Path to shared log file
+    """
+    global _SHARED_LOG_FILE
+
+    if _SHARED_LOG_FILE is None:
+        # Create logs directory if it doesn't exist
+        log_dir = Path("logs")
+        log_dir.mkdir(exist_ok=True)
+
+        # Timestamp for log file (only created once per session)
+        timestamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
+
+        # Single monolithic log file
+        _SHARED_LOG_FILE = log_dir / f"jutsu_labs_log_{timestamp}.log"
+
+    return _SHARED_LOG_FILE
 
 
 def setup_logger(
@@ -17,7 +46,7 @@ def setup_logger(
     """
     Setup a logger with file and optional console handlers.
 
-    Creates a module-specific logger that writes to logs/ directory with timestamps.
+    All loggers write to a single shared log file: jutsu_labs_log_<datetime>.log
     Follows format: "YYYY-MM-DD HH:MM:SS | MODULE.NAME | LEVEL | Message"
 
     Args:
@@ -31,7 +60,8 @@ def setup_logger(
     Example:
         logger = setup_logger('DATA.SCHWAB', level=logging.DEBUG)
         logger.info("Fetching AAPL data from 2024-01-01")
-        # Output: 2025-10-31 14:30:22 | DATA.SCHWAB | INFO | Fetching AAPL data...
+        # Output in jutsu_labs_log_2025-11-07_143022.log:
+        # 2025-11-07 14:30:22 | DATA.SCHWAB | INFO | Fetching AAPL data...
     """
     # Get or create logger
     logger = logging.getLogger(name)
@@ -41,18 +71,13 @@ def setup_logger(
     if logger.handlers:
         return logger
 
-    # Create logs directory if it doesn't exist
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
+    # Get shared log file path
+    log_file = _get_shared_log_file()
 
-    # Timestamp for log file
-    timestamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
-
-    # File handler with timestamp in filename
-    log_file = log_dir / f"{name}_{timestamp}.log"
+    # File handler writing to shared log file
     file_handler = logging.handlers.RotatingFileHandler(
-        log_file, maxBytes=10 * 1024 * 1024,  # 10MB
-        backupCount=5,  # Keep 5 backup files
+        log_file, maxBytes=50 * 1024 * 1024,  # 50MB (larger since it's shared)
+        backupCount=10,  # Keep 10 backup files
     )
     file_handler.setLevel(level)
 

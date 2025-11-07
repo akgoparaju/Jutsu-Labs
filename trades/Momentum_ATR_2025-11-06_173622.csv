@@ -1,0 +1,13 @@
+Trade_ID,Date,Bar_Number,Strategy_State,Ticker,Decision,Decision_Reason,Indicator_Histogram,Indicator_Histogram_Delta,Indicator_MACD_Line,Indicator_Signal_Line,Indicator_VIX,Threshold_ATR_Stop_Multiplier,Threshold_Risk_Strong_Trend,Threshold_Risk_Waning_Trend,Threshold_VIX_Kill_Switch,Order_Type,Shares,Fill_Price,Position_Value,Slippage,Commission,Portfolio_Value_Before,Portfolio_Value_After,Cash_Before,Cash_After,Allocation_Before,Allocation_After,Cumulative_Return_Pct
+1,2024-01-24 22:00:00,66,"Regime 3: Waning Bull (Histogram > 0, Delta ≤ 0)",TQQQ,BUY,"Histogram=2.2246, Delta=-0.0293, VIX=13.45",2.224620673265522,-0.029340257524794,5.736547709084391,3.5119270358188692,13.45,2.0,0.03,0.015,30.0,MARKET,26,56.37632,1465.78432,0.0,0.26,100000.0,99998.27568,100000.0,98533.95568,CASH: 100.0%,"CASH: 98.5%, TQQQ: 1.5%",-0.00172432
+2,2024-01-30 22:00:00,84,Stop-Loss Triggered,TQQQ,SELL,Price breached stop at 52.58,0.5937007169315649,-0.8776741210780763,5.55339017262952,4.959689455697955,14.35,2.0,0.03,0.015,30.0,MARKET,26,52.58736,1367.27136,0.0,0.26,99902.59568,99900.96704,98533.95568,99900.96704,"CASH: 98.6%, TQQQ: 1.4%",CASH: 100.0%,-0.09903296
+
+Summary Statistics:
+Initial Capital,$100,000.00
+Final Value,$99,900.97
+Total Return,-0.10%
+Annualized Return,-1.24%
+Sharpe Ratio,-17.70
+Max Drawdown,-0.12%
+Total Trades,1
+Win Rate,0.00%

@@ -191,11 +191,24 @@ jutsu backtest --symbol AAPL --start 2024-01-01 --end 2024-12-31 \
   --capital 100000 --short-period 20 --long-period 50 \
   --export-trades --trades-output results/trades.csv
 
-# 6. Optimize strategy parameters
+# 6. Run multi-symbol regime strategy (Momentum-ATR)
+jutsu backtest --strategy Momentum_ATR \
+  --symbols QQQ,VIX,TQQQ,SQQQ \
+  --start 2024-01-01 --end 2024-12-31 \
+  --capital 10000
+
+# 6a. Override strategy parameters via CLI
+jutsu backtest --strategy Momentum_ATR \
+  --symbols QQQ,VIX,TQQQ,SQQQ \
+  --start 2024-01-01 --end 2024-12-31 \
+  --vix-kill-switch 25.0 \
+  --risk-strong-trend 0.05
+
+# 7. Optimize strategy parameters
 jutsu optimize grid --symbol AAPL --start 2024-01-01 --end 2024-12-31 \
   --param short_period 10,20,30 --param long_period 40,50,60
 
-# 7. Validate data quality
+# 8. Validate data quality
 jutsu validate --symbol AAPL --timeframe 1D
 ```
 
