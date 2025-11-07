@@ -9,6 +9,253 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### MACD_Trend_v4 (Goldilocks V8.0) Strategy Implementation (2025-11-06)
+
+**Implemented simplified 3-regime system using QQQ signals and EMA risk-on/off filter.**
+
+**Strategy Characteristics**:
+- **Philosophy**: Long-only, multi-regime system using 100-EMA as primary risk-on/off filter and MACD crossover for leverage decision
+- **Signal Assets**: QQQ (Daily MACD + 100-EMA)
+- **Trading Vehicles**: TQQQ (3x bull), QQQ (1x defensive), CASH
+- **Regimes**: 3-regime hierarchical system (CASH, TQQQ, QQQ)
+- **Risk Management**: Dual-mode position sizing (ATR-based for TQQQ, flat % for QQQ)
+- **Stop-Loss**: 3.0 ATR from entry for TQQQ only (QQQ has NO stop, regime-managed exit)
+
+**3-Regime Hierarchical System**:
+
+**Priority 1: RISK-OFF (CASH)**:
+- `Price < 100-day EMA` (main trend is down)
+- **Action**: CASH 100%
+- **Philosophy**: Market bearish, sit on sidelines
+
+**Priority 2: RISK-ON STRONG (TQQQ)**:
+- `Price > 100-day EMA` AND `MACD_Line > Signal_Line` (strong bullish momentum)
+- **Action**: TQQQ (2.5% risk, ATR-based sizing)
+- **Stop-Loss**: `Fill_Price - (ATR × 3.0)`
+- **Philosophy**: Strong trend, use leverage aggressively
+
+**Priority 3: RISK-ON PAUSE (QQQ)**:
+- `Price > 100-day EMA` AND `MACD_Line <= Signal_Line` (weak/pausing momentum)
+- **Action**: QQQ (60% flat allocation)
+- **NO Stop-Loss**: Exit only on regime change
+- **Philosophy**: Trend intact but momentum weak, stay invested with lower risk
+
+**Implementation Details**:
+
+**File**: `jutsu_engine/strategies/MACD_Trend_v4.py` (~500 lines)
+- Inherits from Strategy base class
+- Simplified from MACD_Trend_v2 (removed VIX filter, SQQQ, complexity)
+- Single trend filter (EMA) instead of dual MACD + EMA
+- Cleaner 3-regime logic vs 5-regime All-Weather system
+
+**Key Methods**:
+```python
+def __init__(
+    macd_fast_period=12,
+    macd_slow_period=26,
+    macd_signal_period=9,
+    ema_period=100,
+    atr_period=14,
+    atr_stop_multiplier=3.0,
+    tqqq_risk=0.025,  # 2.5% for TQQQ
+    qqq_allocation=0.60  # 60% for QQQ
+)
+
+def _determine_regime(price, ema_value, macd_line, signal_line) -> str:
+    """
+    Returns: 'CASH', 'TQQQ', or 'QQQ'
+
+    Priority Order:
+    1. Price < EMA → CASH
+    2. Price > EMA AND MACD > Signal → TQQQ
+    3. Price > EMA AND MACD <= Signal → QQQ
+    """
+
+def _enter_tqqq(bar):
+    """ATR-based position sizing with stop-loss tracking"""
+
+def _enter_qqq(bar):
+    """Flat 60% allocation with NO stop-loss"""
+
+def _check_tqqq_stop_loss(bar):
+    """Check TQQQ stop only (QQQ has NO stop check)"""
+```
+
+**Key Differences from All-Weather V6.0**:
+- **Removed**: VIX filter, SQQQ (inverse), CHOP state → Simpler 3-regime system
+- **Simplified**: Single EMA filter instead of dual MACD + EMA momentum checks
+- **Dual Sizing**: TQQQ (ATR-based, 2.5% risk) vs QQQ (flat 60%, NO stop)
+- **Philosophy**: "Just right" positioning - not too hot (all-in TQQQ), not too cold (all cash), but right-sized for conditions
+
+**Trade-offs**:
+- **Pros**: Simpler logic, reduces whipsaw, stays invested during pauses (QQQ), eliminates VIX dependency
+- **Cons**: No inverse exposure (can't profit from bear markets), misses strong bear trends
+- **Use Case**: Long-term investors wanting dynamic leverage management without short exposure
+
+**Testing**:
+
+**File**: `tests/unit/strategies/test_macd_trend_v4.py` (56 tests)
+- **Test Coverage**: 94% (143 statements, 8 uncovered logging/error handling lines)
+- **Test Categories**:
+  - Initialization: 6 tests
+  - Symbol validation: 4 tests
+  - Regime determination: 9 tests (includes edge cases)
+  - Position sizing: 6 tests (validates ATR vs flat modes)
+  - Regime transitions: 12 tests (validates all transition paths)
+  - Stop-loss: 6 tests (TQQQ only, QQQ correctly skipped)
+  - Multi-symbol processing: 5 tests
+  - Edge cases: 4 tests (price=EMA, MACD=Signal, very small ATR, negative MACD)
+  - Integration: 4 tests (full lifecycle validation)
+
+**Edge Cases Validated**:
+- Price exactly equals EMA (treated as < EMA, goes to CASH)
+- MACD exactly equals Signal (treated as <= Signal, goes to QQQ)
+- Very small ATR (handles gracefully with minimal stop distance)
+- Negative MACD values (correctly determines regime)
+- Zero position transitions (safe when no holdings)
+- Stop-loss only checks TQQQ (QQQ correctly ignored)
+
+**Performance**:
+- All 56 tests passing
+- 94% code coverage (exceeds 90% target)
+- 8 uncovered lines are non-critical (warnings, edge case logs)
+
+---
+
+#### MACD_Trend_v3 (Zero-Line V7.0) Strategy Implementation (2025-11-06)
+
+**Implemented conservative MACD zero-line filter variation of V5.0 (2-state long-only system).**
+
+**Strategy Characteristics**:
+- **Philosophy**: Conservative trend-following using zero-line MACD filter (slower/more selective than signal crossover)
+- **Signal Assets**: QQQ (Daily MACD + 100-EMA), VIX Index (volatility filter)
+- **Trading Vehicles**: TQQQ (3x bull), CASH
+- **States**: 2-state system (IN or OUT)
+- **Risk Management**: ATR-based position sizing (2.5% fixed portfolio risk)
+- **Stop-Loss**: Wide 3.0 ATR from entry (allows trend to breathe)
+
+**Key Difference from V5.0**:
+- **V5.0 Momentum Filter**: `MACD_Line > Signal_Line` (fast, responsive to short-term shifts)
+- **V7.0 Momentum Filter**: `MACD_Line > 0` (slower, waits for zero-line crossover)
+- **Impact**: V7.0 enters later and exits earlier, reducing whipsaws but potentially missing early trend moves
+
+**2-State System**:
+
+**State IN** (All 3 conditions met):
+- `Price > 100-day EMA` (main trend is up)
+- `MACD_Line > 0` (momentum above zero-line) ← **CHANGED FROM V5.0**
+- `VIX <= 30` (market is calm)
+- **Action**: TQQQ (2.5% risk, ATR-based sizing)
+- **Stop-Loss**: `Fill_Price - (ATR × 3.0)`
+
+**State OUT** (Any 1 condition fails):
+- **Action**: CASH 100%
+
+**Implementation Details**:
+
+**File**: `jutsu_engine/strategies/MACD_Trend_v3.py` (~430 lines)
+- Inherits from Strategy base class
+- Copied from MACD_Trend V5.0 (line 287 modified)
+- Single line change in `_determine_state()`: `macd_line > Decimal('0.0')` instead of `macd_line > signal_line`
+- All other logic identical (EMA filter, VIX kill-switch, ATR sizing, stop-loss tracking)
+
+**Key Methods**:
+```python
+def __init__(
+    macd_fast_period=12,
+    macd_slow_period=26,
+    macd_signal_period=9,
+    ema_slow_period=100,
+    vix_kill_switch=30.0,
+    atr_period=14,
+    atr_stop_multiplier=3.0,
+    risk_per_trade=0.025  # 2.5% fixed risk
+)
+
+def _determine_state(price, ema, macd_line, signal_line, vix) -> str:
+    """
+    IN: ALL 3 conditions met
+    - Price > EMA
+    - MACD_Line > 0  ← CHANGED (zero-line filter)
+    - VIX <= 30
+
+    OUT: ANY 1 condition fails
+    """
+    trend_is_up = price > ema
+    momentum_is_bullish = macd_line > Decimal('0.0')  # Zero-line check
+    market_is_calm = vix <= self.vix_kill_switch
+
+    if trend_is_up and momentum_is_bullish and market_is_calm:
+        return 'IN'
+    else:
+        return 'OUT'
+```
+
+**Trade-offs**:
+- **Pros**: More conservative, fewer false signals, better for choppy markets
+- **Cons**: Enters later (misses early trend), exits earlier (cuts winners shorter)
+- **Use Case**: Investors who prefer fewer trades and higher conviction entries
+
+**Testing**:
+
+**File**: `tests/unit/strategies/test_macd_trend_v3.py` (35 tests)
+- **Test Coverage**: 96% (130 statements, 5 uncovered logging lines)
+- **Test Categories**:
+  - Initialization: 5 tests
+  - Symbol validation: 4 tests
+  - State determination: 9 tests (includes 3 zero-line edge cases)
+  - Entry execution: 4 tests
+  - Exit execution: 3 tests
+  - on_bar() flow: 5 tests
+  - Stop-loss: 3 tests
+  - Integration: 2 tests
+
+**Zero-Line Edge Case Tests**:
+- `test_determine_state_macd_exactly_at_zero`: MACD = 0.0 → OUT (boundary)
+- `test_determine_state_macd_just_above_zero`: MACD = 0.01 → IN (entry trigger)
+- `test_determine_state_macd_just_below_zero`: MACD = -0.01 → OUT (exit trigger)
+
+**Quality Metrics**:
+- All 35 tests passing
+- 96% code coverage (exceeds 95% target)
+- Type hints on all methods
+- Google-style docstrings throughout
+- Comprehensive logging (DEBUG/INFO levels)
+- Zero-line edge cases tested
+
+**Usage Example**:
+```bash
+# Backtest with MACD_Trend_v3
+jutsu run-backtest \
+  --strategy MACD_Trend_v3 \
+  --symbols QQQ,$VIX,TQQQ \
+  --start 2020-01-01 \
+  --end 2024-12-31 \
+  --initial-capital 100000
+
+# Compare V5.0 vs V7.0 (zero-line)
+jutsu run-backtest \
+  --strategy MACD_Trend \      # V5.0 (signal crossover)
+  --symbols QQQ,$VIX,TQQQ \
+  --start 2020-01-01 \
+  --end 2024-12-31 \
+  --initial-capital 100000
+
+jutsu run-backtest \
+  --strategy MACD_Trend_v3 \   # V7.0 (zero-line)
+  --symbols QQQ,$VIX,TQQQ \
+  --start 2020-01-01 \
+  --end 2024-12-31 \
+  --initial-capital 100000
+```
+
+**Version History**:
+- **V5.0** (MACD_Trend): Signal crossover filter (fast/responsive)
+- **V6.0** (MACD_Trend_v2): All-weather 5-regime system (TQQQ/QQQ/SQQQ/CASH)
+- **V7.0** (MACD_Trend_v3): Zero-line filter (conservative/selective) ← **THIS VERSION**
+
+---
+
 #### MACD_Trend_v2 (All-Weather V6.0) Strategy Implementation (2025-11-06)
 
 **Implemented adaptive 5-regime strategy with dual position sizing (ATR-based for leveraged ETFs + flat allocation for defensive positions).**
