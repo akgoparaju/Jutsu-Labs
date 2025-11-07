@@ -6,10 +6,14 @@ the required methods. This ensures consistent interface for the EventLoop.
 """
 from abc import ABC, abstractmethod
 from decimal import Decimal
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
 import pandas as pd
+import logging
 
 from jutsu_engine.core.events import MarketDataEvent, SignalEvent
+
+if TYPE_CHECKING:
+    from jutsu_engine.performance.trade_logger import TradeLogger
 
 
 class Strategy(ABC):
@@ -37,10 +41,11 @@ class Strategy(ABC):
                 short_sma = closes.tail(self.short_period).mean()
                 long_sma = closes.tail(self.long_period).mean()
 
+                # New API: Use portfolio percentage instead of fixed quantity
                 if short_sma > long_sma and not self.has_position():
-                    self.buy(bar.symbol, 100)
+                    self.buy(bar.symbol, Decimal('0.8'))  # 80% of portfolio
                 elif short_sma < long_sma and self.has_position():
-                    self.sell(bar.symbol, 100)
+                    self.sell(bar.symbol, Decimal('0.8'))  # Short 80%
     """
 
     def __init__(self):
@@ -50,6 +55,57 @@ class Strategy(ABC):
         self._signals: List[SignalEvent] = []  # Generated signals
         self._positions: Dict[str, int] = {}  # Current positions (from portfolio)
         self._cash: Decimal = Decimal('0.00')  # Available cash (from portfolio)
+        self._trade_logger: Optional['TradeLogger'] = None  # Trade context logger
+
+    def _set_trade_logger(self, logger: 'TradeLogger') -> None:
+        """
+        Inject TradeLogger for strategy context logging.
+
+        Called by EventLoop during strategy initialization.
+        Strategies should call logger.log_strategy_context() before signals.
+
+        Args:
+            logger: TradeLogger instance for this backtest
+
+        Example in strategy subclass:
+            def on_bar(self, bar):
+                # Calculate indicators
+                ema_fast = calculate_ema(self.get_closes(10), 10)
+                ema_slow = calculate_ema(self.get_closes(20), 20)
+                adx = calculate_adx(self.get_highs(14), self.get_lows(14),
+                                   self.get_closes(14), 14)
+
+                # Determine regime state
+                if adx > Decimal('25'):
+                    if ema_fast > ema_slow:
+                        regime = "Regime 1: Strong Bullish"
+                    else:
+                        regime = "Regime 2: Strong Bearish"
+                else:
+                    regime = "Regime 0: Weak Trend"
+
+                # Log context BEFORE generating signal
+                if self._trade_logger:
+                    self._trade_logger.log_strategy_context(
+                        timestamp=bar.timestamp,
+                        symbol=bar.symbol,
+                        strategy_state=regime,
+                        decision_reason=f"EMA_fast({ema_fast:.2f}) > EMA_slow({ema_slow:.2f}) AND ADX({adx:.2f}) > 25",
+                        indicator_values={
+                            'EMA_fast': ema_fast,
+                            'EMA_slow': ema_slow,
+                            'ADX': adx
+                        },
+                        threshold_values={
+                            'ADX_threshold': Decimal('25')
+                        }
+                    )
+
+                # Then generate signal
+                if ema_fast > ema_slow and adx > Decimal('25'):
+                    self.buy(bar.symbol, Decimal('0.8'))
+        """
+        self._trade_logger = logger
 
     @abstractmethod
     def init(self):
@@ -88,56 +144,115 @@ class Strategy(ABC):
                 sma = closes.mean()
 
                 if bar.close > sma:
-                    self.buy(bar.symbol, 100)
+                    self.buy(bar.symbol, Decimal('0.8'))  # Allocate 80%
         """
         pass
 
     # Helper methods provided to strategies
 
-    def buy(self, symbol: str, quantity: int, price: Optional[Decimal] = None):
+    def buy(self, symbol: str, portfolio_percent: Decimal, price: Optional[Decimal] = None):
         """
-        Generate BUY signal.
+        Generate BUY signal with portfolio allocation percentage.
+
+        Strategy specifies what percentage of portfolio to allocate, and Portfolio
+        module converts this to actual shares based on available cash, margin
+        requirements, and other constraints.
 
         Args:
             symbol: Stock ticker symbol
-            quantity: Number of shares to buy
+            portfolio_percent: Percentage of portfolio to allocate (0.0 to 1.0)
+                              e.g., Decimal('0.8') for 80% allocation
             price: Optional limit price (None for market order)
+
+        Raises:
+            ValueError: If portfolio_percent is not in range [0.0, 1.0]
+
+        Example:
+            # Allocate 80% of portfolio to AAPL
+            self.buy('AAPL', Decimal('0.8'))
+
+            # Allocate 50% with limit price
+            self.buy('AAPL', Decimal('0.5'), price=Decimal('150.00'))
+
+        Note:
+            Portfolio module will convert percentage to actual shares based on:
+            - Available cash
+            - Current portfolio value
+            - Margin requirements (100% for longs)
+            - Commission and slippage
         """
+        # Validate portfolio_percent range
+        if not (Decimal('0.0') <= portfolio_percent <= Decimal('1.0')):
+            raise ValueError(
+                f"Portfolio percent must be between 0.0 and 1.0, got {portfolio_percent}"
+            )
+
         signal = SignalEvent(
             symbol=symbol,
             signal_type='BUY',
             timestamp=self._bars[-1].timestamp if self._bars else None,
-            quantity=quantity,
+            quantity=1,  # Placeholder - Portfolio will calculate actual quantity from portfolio_percent
+            portfolio_percent=portfolio_percent,
             strategy_name=self.name,
             price=price,
         )
         self._signals.append(signal)
 
-    def sell(self, symbol: str, quantity: int, price: Optional[Decimal] = None):
+    def sell(self, symbol: str, portfolio_percent: Decimal, price: Optional[Decimal] = None):
         """
-        Generate SELL signal.
+        Generate SELL signal with portfolio allocation percentage.
+
+        Strategy specifies what percentage of portfolio to allocate, and Portfolio
+        module converts this to actual shares based on available cash, margin
+        requirements (150% for shorts), and other constraints.
 
         Args:
             symbol: Stock ticker symbol
-            quantity: Number of shares to sell
+            portfolio_percent: Percentage of portfolio to allocate (0.0 to 1.0)
+                              e.g., Decimal('0.8') for 80% allocation
             price: Optional limit price (None for market order)
+
+        Raises:
+            ValueError: If portfolio_percent is not in range [0.0, 1.0]
+
+        Example:
+            # Short 80% of portfolio in AAPL
+            self.sell('AAPL', Decimal('0.8'))
+
+            # Short 50% with limit price
+            self.sell('AAPL', Decimal('0.5'), price=Decimal('150.00'))
+
+        Note:
+            Portfolio module will convert percentage to actual shares based on:
+            - Available cash
+            - Current portfolio value
+            - Margin requirements (150% for shorts)
+            - Commission and slippage
         """
+        # Validate portfolio_percent range
+        if not (Decimal('0.0') <= portfolio_percent <= Decimal('1.0')):
+            raise ValueError(
+                f"Portfolio percent must be between 0.0 and 1.0, got {portfolio_percent}"
+            )
+
         signal = SignalEvent(
             symbol=symbol,
             signal_type='SELL',
             timestamp=self._bars[-1].timestamp if self._bars else None,
-            quantity=quantity,
+            quantity=1,  # Placeholder - Portfolio will calculate actual quantity from portfolio_percent
+            portfolio_percent=portfolio_percent,
             strategy_name=self.name,
             price=price,
         )
         self._signals.append(signal)
 
-    def get_closes(self, lookback: int = 100) -> pd.Series:
+    def get_closes(self, lookback: int = 100, symbol: Optional[str] = None) -> pd.Series:
         """
         Get historical close prices.
 
         Args:
             lookback: Number of bars to retrieve
+            symbol: Optional symbol to filter by (for multi-symbol strategies)
 
         Returns:
             pandas Series of close prices
@@ -145,11 +260,19 @@ class Strategy(ABC):
         Example:
             closes = self.get_closes(20)
             sma = closes.mean()
+
+            # Multi-symbol strategy: filter for specific symbol
+            qqq_closes = self.get_closes(20, symbol='QQQ')
         """
         if not self._bars:
             return pd.Series([], dtype='float64')
 
-        closes = [bar.close for bar in self._bars[-lookback:]]
+        # Filter by symbol if specified (for multi-symbol strategies)
+        bars = self._bars
+        if symbol:
+            bars = [bar for bar in bars if bar.symbol == symbol]
+
+        closes = [bar.close for bar in bars[-lookback:]]
         return pd.Series(closes)
 
     def get_bars(self, lookback: int = 100) -> List[MarketDataEvent]:
@@ -167,6 +290,64 @@ class Strategy(ABC):
             highs = [bar.high for bar in bars]
         """
         return self._bars[-lookback:]
+
+    def get_highs(self, lookback: int = 100, symbol: Optional[str] = None) -> pd.Series:
+        """
+        Get historical high prices.
+
+        Args:
+            lookback: Number of bars to retrieve
+            symbol: Optional symbol to filter by (for multi-symbol strategies)
+
+        Returns:
+            pandas Series of high prices
+
+        Example:
+            highs = self.get_highs(20)
+            highest = highs.max()
+
+            # Multi-symbol strategy: filter for specific symbol
+            qqq_highs = self.get_highs(20, symbol='QQQ')
+        """
+        if not self._bars:
+            return pd.Series([], dtype='float64')
+
+        # Filter by symbol if specified (for multi-symbol strategies)
+        bars = self._bars
+        if symbol:
+            bars = [bar for bar in bars if bar.symbol == symbol]
+
+        highs = [bar.high for bar in bars[-lookback:]]
+        return pd.Series(highs)
+
+    def get_lows(self, lookback: int = 100, symbol: Optional[str] = None) -> pd.Series:
+        """
+        Get historical low prices.
+
+        Args:
+            lookback: Number of bars to retrieve
+            symbol: Optional symbol to filter by (for multi-symbol strategies)
+
+        Returns:
+            pandas Series of low prices
+
+        Example:
+            lows = self.get_lows(20)
+            lowest = lows.min()
+
+            # Multi-symbol strategy: filter for specific symbol
+            qqq_lows = self.get_lows(20, symbol='QQQ')
+        """
+        if not self._bars:
+            return pd.Series([], dtype='float64')
+
+        # Filter by symbol if specified (for multi-symbol strategies)
+        bars = self._bars
+        if symbol:
+            bars = [bar for bar in bars if bar.symbol == symbol]
+
+        lows = [bar.low for bar in bars[-lookback:]]
+        return pd.Series(lows)
 
     def has_position(self, symbol: Optional[str] = None) -> bool:
         """
@@ -200,6 +381,19 @@ class Strategy(ABC):
             current_shares = self.get_position('AAPL')
         """
         return self._positions.get(symbol, 0)
+
+    def log(self, message: str):
+        """
+        Log a strategy message.
+
+        Args:
+            message: Message to log
+
+        Example:
+            self.log(f"BUY signal: {symbol} at ${price}")
+        """
+        logger = logging.getLogger(f'STRATEGY.{self.name}')
+        logger.info(message)
 
     # Internal methods (called by EventLoop/Portfolio)
 

@@ -7,23 +7,26 @@ application:
   environment: "development"  # development, staging, production
 
 database:
-  # SQLite (Development)
-  type: "sqlite"
-  path: "data/market_data.db"
+  # Database type: 'sqlite' for development, 'postgresql' for production
+  type: "sqlite"  # Change to "postgresql" for production
 
-  # PostgreSQL (Production) - uncomment and configure when needed
-  # type: "postgresql"
-  # host: "localhost"
-  # port: 5432
-  # database: "jutsu_engine"
-  # username: "jutsu_user"
-  # password: "${POSTGRES_PASSWORD}"  # Use environment variable
+  # SQLite Configuration (development)
+  sqlite:
+    database: "data/market_data.db"
+    echo: false
 
-  # Connection pool settings
-  pool_size: 5
-  max_overflow: 10
-  pool_timeout: 30
-  pool_recycle: 3600
+  # PostgreSQL Configuration (production)
+  postgresql:
+    host: "${POSTGRES_HOST}"  # From environment variable
+    port: "${POSTGRES_PORT}"
+    user: "${POSTGRES_USER}"
+    password: "${POSTGRES_PASSWORD}"
+    database: "${POSTGRES_DATABASE}"
+    pool_size: 10
+    max_overflow: 20
+    pool_timeout: 30
+    pool_recycle: 3600
+    echo: false
 
 data_sources:
   schwab:

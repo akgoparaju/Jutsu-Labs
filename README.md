@@ -30,24 +30,33 @@ Jutsu Labs is a backtesting engine designed for **modularity**, **data integrity
 
 ## ✨ Key Features
 
-### Current (MVP - Phase 1) ✅ COMPLETE
+### Current (MVP - Phases 1 & 2) ✅ COMPLETE
+
+**Phase 1 Features**:
 - ✅ **Modular Architecture**: Hexagonal/Ports & Adapters pattern with clean separation
-- ✅ **Database-Backed Data**: SQLite with incremental updates (PostgreSQL-ready)
+- ✅ **Database-Backed Data**: SQLite with incremental updates
 - ✅ **Schwab API Integration**: OAuth 2.0 authentication with rate limiting
 - ✅ **Event-Driven Processing**: Bar-by-bar backtesting with EventLoop coordination
 - ✅ **Strategy Framework**: Base class system for drop-in strategies
 - ✅ **Indicator Library**: 8 technical indicators (SMA, EMA, RSI, MACD, Bollinger, ATR, Stochastic, OBV)
-- ✅ **Performance Metrics**: Sharpe, Sortino, Calmar ratios, max drawdown, win rate, profit factor
+- ✅ **Performance Metrics**: 11 core metrics (Sharpe, max drawdown, win rate, etc.)
 - ✅ **Comprehensive Logging**: Module-based audit trail with timestamps
 - ✅ **CLI Interface**: Command-line tool for data sync and backtest execution
 - ✅ **Data Validation**: Quality checks for OHLC relationships and data integrity
 
+**Phase 2 Features** (NEW):
+- ✅ **PostgreSQL Production Database**: Multi-database support with connection pooling and migration tools
+- ✅ **CSV Loader Module**: Flexible CSV import with auto-format detection and validation
+- ✅ **Yahoo Finance Integration**: Free data source with no API keys required
+- ✅ **Advanced Performance Metrics**: 20+ metrics including Sortino, Omega, Calmar, VaR, CVaR, rolling Sharpe, Ulcer Index
+- ✅ **Parameter Optimization Framework**: Grid search, genetic algorithms, random search, walk-forward analysis
+- ✅ **REST API with FastAPI**: 20+ endpoints, JWT authentication, rate limiting, OpenAPI documentation
+- ✅ **Trade Log CSV Export**: Comprehensive audit trail with strategy context, indicators, portfolio state, and allocations
+
 ### Planned (Future Phases)
-- 🔄 **REST API Service**: FastAPI wrapper for external access
-- 📈 **Web Dashboard**: Streamlit UI for visualization
-- 🎲 **Monte Carlo Simulation**: Strategy robustness testing
-- ⚡ **Parameter Optimization**: Grid search and genetic algorithms
-- 🐳 **Docker Deployment**: Multi-container orchestration
+- 📈 **Web Dashboard**: Streamlit UI for visualization and interactive analysis
+- 🎲 **Monte Carlo Simulation**: Strategy robustness testing with confidence intervals
+- 🐳 **Docker Deployment**: Multi-container orchestration with Kubernetes support
 - 🔴 **Live Trading**: Paper trading and real execution (with proper safeguards)
 
 ## 🏗️ Architecture
@@ -126,7 +135,7 @@ LOG_LEVEL=INFO
 
 2. **Initialize database**:
 ```bash
-vibe init
+jutsu init
 ```
 
 3. **Verify installation**:
@@ -161,20 +170,33 @@ mypy jutsu_engine/
 
 ```bash
 # 1. Initialize database
-vibe init
+jutsu init
 
-# 2. Sync market data from Schwab
-vibe sync --symbol AAPL --timeframe 1D --start 2024-01-01
+# 2. Sync market data from Schwab (or Yahoo Finance - free!)
+jutsu sync schwab --symbol AAPL --timeframe 1D --start 2024-01-01
+jutsu sync yahoo --symbol AAPL --timeframe 1D --start 2024-01-01
 
-# 3. Check data status
-vibe status --symbol AAPL --timeframe 1D
+# 3. Import CSV data
+jutsu load csv --file data/AAPL_historical.csv
 
-# 4. Run a backtest
-vibe backtest --symbol AAPL --start 2024-01-01 --end 2024-12-31 \
+# 4. Check data status
+jutsu status --symbol AAPL --timeframe 1D
+
+# 5. Run a backtest
+jutsu backtest --symbol AAPL --start 2024-01-01 --end 2024-12-31 \
   --capital 100000 --short-period 20 --long-period 50
 
-# 5. Validate data quality
-vibe validate --symbol AAPL --timeframe 1D
+# 5a. Run backtest with trade log export (NEW!)
+jutsu backtest --symbol AAPL --start 2024-01-01 --end 2024-12-31 \
+  --capital 100000 --short-period 20 --long-period 50 \
+  --export-trades --trades-output results/trades.csv
+
+# 6. Optimize strategy parameters
+jutsu optimize grid --symbol AAPL --start 2024-01-01 --end 2024-12-31 \
+  --param short_period 10,20,30 --param long_period 40,50,60
+
+# 7. Validate data quality
+jutsu validate --symbol AAPL --timeframe 1D
 ```
 
 ### Python API Usage
@@ -229,6 +251,7 @@ print(f"Win Rate: {results['win_rate']:.2%}")
 ### Create Custom Strategy
 
 ```python
+from decimal import Decimal
 from jutsu_engine.core.strategy_base import Strategy
 from jutsu_engine.indicators.technical import sma, rsi
 
@@ -237,7 +260,7 @@ class MyStrategy(Strategy):
         super().__init__(name="MyCustomStrategy")
         self.short_period = short_period
         self.long_period = long_period
-        self.position_size = 100
+        self.position_size = Decimal('0.8')  # 80% portfolio allocation
 
     def init(self):
         """Initialize strategy (called before backtest starts)"""
@@ -259,13 +282,73 @@ class MyStrategy(Strategy):
         long_sma = sma(closes, period=self.long_period).iloc[-1]
         rsi_value = rsi(closes, period=14).iloc[-1]
 
-        # Generate signals
+        # Generate signals with portfolio allocation %
         if short_sma > long_sma and rsi_value < 70 and not self.has_position(symbol):
-            self.buy(symbol, self.position_size)
+            self.buy(symbol, self.position_size)  # Buy with 80% allocation
         elif short_sma < long_sma and self.has_position(symbol):
-            position_size = self._positions.get(symbol, 0)
-            self.sell(symbol, position_size)
+            self.sell(symbol, Decimal('0.0'))  # Close position
 ```
+
+### Trade Log Export (NEW - 2025-11-06)
+
+Export comprehensive trade logs to CSV for detailed post-analysis. Captures strategy context, execution details, portfolio state, and performance metrics for every trade.
+
+**CLI Usage**:
+```bash
+# Export trades automatically after backtest
+jutsu backtest --strategy ADX_Trend --export-trades
+
+# Specify custom output path
+jutsu backtest --strategy ADX_Trend --export-trades --trades-output results/trades.csv
+```
+
+**Programmatic Usage**:
+```python
+from decimal import Decimal
+from jutsu_engine.application.backtest_runner import BacktestRunner
+from jutsu_engine.strategies.sma_crossover import SMA_Crossover
+
+# Run backtest with trade export
+runner = BacktestRunner(config={'initial_capital': Decimal('100000')})
+strategy = SMA_Crossover(short_period=20, long_period=50)
+
+results = runner.run(
+    strategy=strategy,
+    export_trades=True,  # Enable trade log export
+    trades_output_path='my_trades.csv'
+)
+
+# CSV path included in results
+print(f"Trade log exported to: {results['trades_csv_path']}")
+```
+
+**CSV Output Format** (23 columns):
+
+| Column Group | Columns | Description |
+|--------------|---------|-------------|
+| **Core Trade Data** | Trade_ID, Date, Bar_Number, Strategy_State, Ticker, Decision, Decision_Reason | Sequential tracking and strategy context |
+| **Indicators** (Dynamic) | Indicator_EMA_fast, Indicator_ADX, ... | Strategy-specific indicator values at decision time |
+| **Thresholds** (Dynamic) | Threshold_ADX_threshold, ... | Strategy parameters and trigger conditions |
+| **Order Details** | Order_Type, Shares, Fill_Price, Position_Value, Slippage, Commission | Execution specifics |
+| **Portfolio State** | Portfolio_Value_Before, Portfolio_Value_After, Cash_Before, Cash_After | State changes from trade |
+| **Allocation** | Allocation_Before, Allocation_After | Position percentages (e.g., "TQQQ: 47.6%, CASH: 52.4%") |
+| **Performance** | Cumulative_Return_Pct | Running performance metric |
+
+**Example CSV Output**:
+```csv
+Trade ID,Date,Bar Number,Strategy State,Ticker,Decision,Decision Reason,Indicator_EMA_fast,Indicator_ADX,Threshold_ADX_threshold,Order Type,Shares,Fill Price,Position Value,Slippage,Commission,Portfolio Value Before,Portfolio Value After,Cash Before,Cash After,Allocation Before,Allocation After,Cumulative Return %
+1,2024-01-15 09:30:00+00:00,1,Bullish_Strong,TQQQ,BUY,EMA crossover AND ADX > 25,450.25,28.5,25.0,MARKET,100,45.5,4550.0,0.0,1.0,100000.0,95449.0,100000.0,95449.0,CASH: 100.0%,"CASH: 52.4%, TQQQ: 47.6%",-4.551
+2,2024-01-15 14:30:00+00:00,6,Bearish_Building,TQQQ,SELL,EMA crossdown AND ADX declining,448.1,22.3,20.0,MARKET,100,46.75,4675.0,0.0,1.0,95449.0,100123.0,95449.0,100123.0,"CASH: 51.1%, TQQQ: 48.9%",CASH: 100.0%,0.123
+```
+
+**Use Cases**:
+- 📊 **Post-Analysis**: Import into Excel/Python for detailed trade analysis
+- 🔍 **Pattern Discovery**: Identify winning/losing trade patterns
+- 📈 **Strategy Refinement**: Analyze indicator values at entry/exit points
+- 💰 **Tax Reporting**: Complete audit trail with dates, prices, and P&L
+- 🎯 **Risk Management**: Review allocation percentages and position sizing
+
+**Dynamic Columns**: CSV automatically adapts to strategy - ADX_Trend gets EMA/ADX columns, RSI strategy gets RSI columns, etc.
 
 ## 📚 Documentation
 
@@ -349,12 +432,14 @@ mypy jutsu_engine/
 - [x] Example SMA crossover strategy
 - [x] Comprehensive logging system
 
-### Phase 2: Service Layer (Q1 2024)
-- [ ] REST API with FastAPI
-- [ ] Parameter optimization framework
-- [ ] PostgreSQL migration
-- [ ] Advanced metrics (Sortino, Calmar, rolling stats)
-- [ ] Multiple data source support (CSV, Yahoo Finance)
+### Phase 2: Service Layer ✅ COMPLETE
+- [x] REST API with FastAPI (20+ endpoints, JWT auth, rate limiting)
+- [x] Parameter optimization framework (grid search, genetic algorithms, walk-forward)
+- [x] PostgreSQL migration (multi-database support with connection pooling)
+- [x] Advanced metrics (20+ metrics: Sortino, Omega, Calmar, VaR, CVaR, rolling stats)
+- [x] Multiple data source support (CSV loader, Yahoo Finance integration)
+- [x] CSV Loader module with auto-format detection
+- [x] DatabaseFactory for flexible database backend switching
 
 ### Phase 3: UI & Distribution (Q2 2024)
 - [ ] Web dashboard with Streamlit

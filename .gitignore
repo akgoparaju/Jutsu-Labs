@@ -40,6 +40,7 @@ data/
 *.sqlite3
 .env
 config/secrets.yaml
+.claude/
 
 # IDE
 .vscode/

@@ -151,18 +151,26 @@ class EventLoop:
 
 ### Key Methods
 
-**`run_backtest()`** - Main backtest loop
+**`run()`** - Main backtest loop
 ```python
-def run_backtest(self, data_handler, strategy, portfolio) -> None:
+def run(self) -> None:
     """
     Main backtest loop.
 
-    Processing sequence:
-    1. Get next bar from data_handler
-    2. Create MarketDataEvent
-    3. Call strategy.on_bar(event)
-    4. If signal returned, call portfolio.execute_order(signal)
-    5. Repeat until all bars processed
+    Processing sequence (6 steps per bar):
+    1. Update portfolio market values
+    2. Update strategy state (bar history and portfolio state)
+       - strategy._update_bar(bar)
+       - strategy._update_portfolio_state(positions, cash)
+    3. Feed bar to strategy (strategy.on_bar(bar))
+    4. Collect signals from strategy
+    5. Execute orders via portfolio
+    6. Record portfolio value
+
+    CRITICAL: Step 2 MUST occur before Step 3
+    - Without _update_bar(): strategy._bars stays empty
+    - Without _update_portfolio_state(): strategy can't track positions
+    - Missing these calls causes 0 signals generated (ALL strategies affected)
     """
 ```
 
@@ -326,6 +334,14 @@ validation:
 ## Decision Log
 
 See [DECISIONS.md](./DECISIONS.md) for module-specific decisions.
+
+**Recent Decisions**:
+- **2025-11-03**: CRITICAL FIX - Added strategy state updates in run() method
+  - EventLoop MUST call strategy._update_bar(bar) before strategy.on_bar(bar)
+  - EventLoop MUST call strategy._update_portfolio_state(positions, cash) before strategy.on_bar(bar)
+  - Without these calls, ALL strategies generate 0 signals (strategy._bars stays empty)
+  - Pattern is mandatory for all EventLoop implementations
+  - See Serena memory: eventloop_strategy_state_fix_2025-11-03
 
 **Recent Decisions**:
 - **2025-01-01**: EventLoop is stateless coordinator (minimal state: current_bar_index)

@@ -95,8 +95,14 @@ from jutsu_engine.portfolio.simulator import PortfolioSimulator  # NO!
 - **Helper Methods**: Provide common utilities (get_closes, has_position, etc.)
 - **State Management**: Manage strategy state (bars_seen, current_bar)
 - **Signal Generation**: Define signal generation interface (on_bar)
+- **Portfolio Allocation**: Specify portfolio_percent for position sizing (NOT quantity)
 - **Initialization**: Define initialization interface (init)
 - **Contract Enforcement**: Use ABC to enforce implementation requirements
+
+**ARCHITECTURAL NOTE (2025-11-04)**: Strategy-Portfolio Separation
+- **Strategy Responsibility**: Determine WHEN to trade and HOW MUCH (portfolio_percent)
+- **Portfolio Responsibility**: Determine HOW MANY SHARES (quantity calculation)
+- **Rationale**: Separates trading logic from capital management
 
 ### Boundaries
 
@@ -241,8 +247,68 @@ def on_bar(self, bar: MarketDataEvent) -> Optional[SignalEvent]:
 
 **`get_closes()`** - Helper for price series
 ```python
-def get_closes(self, period: int) -> pd.Series:
+def get_closes(self, lookback: int) -> pd.Series:
     """
+    Get close prices for last N bars.
+
+    Helper method for indicator calculations.
+
+    Args:
+        lookback: Number of bars to retrieve
+
+    Returns:
+        pandas Series of close prices (most recent last)
+
+    Raises:
+        ValueError: If insufficient bars available
+    """
+```
+
+**`get_highs()`** - Helper for high prices (Added 2025-11-05)
+```python
+def get_highs(self, lookback: int) -> pd.Series:
+    """
+    Get high prices for last N bars.
+
+    Helper method for indicator calculations requiring high prices.
+    Used by ADX, ATR, and other range-based indicators.
+
+    Args:
+        lookback: Number of bars to retrieve
+
+    Returns:
+        pandas Series of high prices (most recent last)
+
+    Raises:
+        ValueError: If insufficient bars available
+
+    Usage:
+        Used by ADX-Trend strategy for ADX calculation.
+    """
+```
+
+**`get_lows()`** - Helper for low prices (Added 2025-11-05)
+```python
+def get_lows(self, lookback: int) -> pd.Series:
+    """
+    Get low prices for last N bars.
+
+    Helper method for indicator calculations requiring low prices.
+    Used by ADX, ATR, and other range-based indicators.
+
+    Args:
+        lookback: Number of bars to retrieve
+
+    Returns:
+        pandas Series of low prices (most recent last)
+
+    Raises:
+        ValueError: If insufficient bars available
+
+    Usage:
+        Used by ADX-Trend strategy for ADX calculation.
+    """
+```
     Get close prices for last N bars.
 
     Helper method for indicator calculations.
@@ -272,37 +338,90 @@ def has_position(self, symbol: str = None) -> bool:
     """
 ```
 
-**`buy_signal()`** - Generate buy signal
+**`buy()`** - Generate buy signal (NEW API - 2025-11-04)
 ```python
-def buy_signal(self, symbol: str, quantity: int) -> SignalEvent:
+def buy(
+    self,
+    symbol: str,
+    portfolio_percent: Decimal,
+    price: Optional[Decimal] = None
+) -> SignalEvent:
     """
-    Generate buy signal.
+    Generate buy signal with portfolio allocation.
 
-    Helper method for creating BUY SignalEvent.
+    **ARCHITECTURAL NOTE**: Strategy-Portfolio Separation of Concerns
+    - Strategy specifies *what percentage* of portfolio to allocate
+    - Portfolio calculates *how many shares* based on available capital
+    - This separates trading intent from execution details
 
     Args:
         symbol: Stock ticker
-        quantity: Number of shares
+        portfolio_percent: Portfolio allocation (0.0 to 1.0, e.g., 0.25 = 25%)
+        price: Optional limit price (None = market order)
 
     Returns:
-        SignalEvent for buy
+        SignalEvent with portfolio_percent
+
+    Raises:
+        ValueError: If portfolio_percent not in range [0.0, 1.0]
+
+    Example:
+        # Allocate 25% of portfolio to AAPL
+        signal = self.buy('AAPL', Decimal('0.25'))
+
+        # Allocate 50% with limit price
+        signal = self.buy('AAPL', Decimal('0.50'), price=Decimal('150.00'))
     """
 ```
 
-**`sell_signal()`** - Generate sell signal
+**`sell()`** - Generate sell signal (NEW API - 2025-11-04)
 ```python
-def sell_signal(self, symbol: str, quantity: int) -> SignalEvent:
+def sell(
+    self,
+    symbol: str,
+    portfolio_percent: Decimal,
+    price: Optional[Decimal] = None
+) -> SignalEvent:
     """
-    Generate sell signal.
+    Generate sell signal with portfolio allocation.
 
-    Helper method for creating SELL SignalEvent.
+    **ARCHITECTURAL NOTE**: Position Closing Pattern
+    - To close entire position: portfolio_percent = 0.0
+    - To reduce position: portfolio_percent = remaining allocation
+    - Portfolio interprets 0.0% as "exit completely"
 
     Args:
         symbol: Stock ticker
-        quantity: Number of shares
+        portfolio_percent: Portfolio allocation to maintain (0.0 = close position)
+        price: Optional limit price (None = market order)
 
     Returns:
-        SignalEvent for sell
+        SignalEvent with portfolio_percent
+
+    Example:
+        # Close entire position
+        signal = self.sell('AAPL', Decimal('0.0'))
+
+        # Reduce position to 10% of portfolio
+        signal = self.sell('AAPL', Decimal('0.10'))
+    """
+```
+
+**`log()`** - Log strategy message
+```python
+def log(self, message: str):
+    """
+    Log a strategy message.
+
+    Helper method for logging from within strategies.
+    Logs to STRATEGY.{strategy_name} logger.
+
+    Args:
+        message: Message to log
+
+    Example:
+        self.log(f"LONG ENTRY: 50MA({short_ma:.2f}) > 200MA({long_ma:.2f})")
+        self.log(f"SHORT EXIT: 50MA crossed above 200MA (crossover)")
     """
 ```
 
@@ -337,10 +456,20 @@ class MarketDataEvent:
 
 @dataclass(frozen=True)
 class SignalEvent:
+    """
+    Trading signal with portfolio allocation.
+
+    Strategy specifies portfolio_percent (0.0 to 1.0).
+    Portfolio calculates actual share quantity.
+    """
     symbol: str
     signal_type: str  # 'BUY' or 'SELL'
-    quantity: int
     timestamp: datetime
+    portfolio_percent: Decimal  # 0.0 to 1.0 (Strategy's responsibility)
+    quantity: int = 1  # Deprecated, Portfolio calculates actual
+    strategy_name: str = ""
+    price: Optional[Decimal] = None
+    strength: Optional[Decimal] = None
 ```
 
 ### Provides
@@ -362,6 +491,7 @@ class Strategy(ABC):
     def has_position(self, symbol: str = None) -> bool: ...
     def buy_signal(self, symbol: str, quantity: int) -> SignalEvent: ...
     def sell_signal(self, symbol: str, quantity: int) -> SignalEvent: ...
+    def log(self, message: str) -> None: ...
 ```
 
 ## Implementation Standards
@@ -404,6 +534,70 @@ integration_tests:
 ```
 
 ## Common Tasks
+
+### Task 0: Implement Regime-Based Multi-Symbol Strategy (Example: ADX-Trend)
+```yaml
+request: "Implement regime-based strategy with multi-symbol trading"
+
+example: "ADX-Trend Strategy"
+pattern: "Signal Asset Pattern"
+description: |
+  Calculate indicators on one symbol (signal asset), but trade different vehicles
+  based on regime classification. Rebalance only on regime changes.
+
+approach:
+  1. Define regime classification logic (e.g., 6 regimes based on trend direction + strength)
+  2. Implement signal asset filtering (only process bars from signal symbol)
+  3. Calculate indicators only on signal asset
+  4. Determine current regime from indicators
+  5. Detect regime changes (compare to previous regime)
+  6. On regime change: liquidate all positions + create new allocation
+  7. Use portfolio_percent for allocation (e.g., 60%, 30%, 50%, 100% cash)
+
+key_concepts:
+  - "Signal Asset Pattern": Calculate on QQQ, trade TQQQ/SQQQ/QQQ
+  - "Regime Classification": Map indicator values to discrete regimes (1-6)
+  - "Rebalance on Change": Only trade when regime transitions
+  - "Multi-Symbol Data": EventLoop provides bars from all symbols chronologically
+
+implementation_details:
+  strategy_code: |
+    def on_bar(self, bar):
+        # Only process signal asset bars
+        if bar.symbol != 'QQQ':
+            return
+            
+        # Calculate indicators on signal asset
+        highs = self.get_highs(lookback=70)
+        lows = self.get_lows(lookback=70)
+        closes = self.get_closes(lookback=70)
+        
+        ema_fast = ema(closes, 20).iloc[-1]
+        ema_slow = ema(closes, 50).iloc[-1]
+        adx_val = adx(highs, lows, closes, 14).iloc[-1]
+        
+        # Determine regime
+        current_regime = self._determine_regime(ema_fast, ema_slow, adx_val)
+        
+        # Rebalance on regime change only
+        if self.previous_regime != current_regime:
+            self._liquidate_all_positions()
+            self._execute_regime_allocation(current_regime)
+            
+        self.previous_regime = current_regime
+
+validation:
+  - "Test all 6 regimes with known data"
+  - "Test regime transitions (rebalancing logic)"
+  - "Test signal asset filtering (only QQQ processed)"
+  - "Test multi-symbol allocation (TQQQ, SQQQ, QQQ, CASH)"
+  - "Verify rebalance only on change (not every bar)"
+  - "Test coverage >95%"
+
+reference:
+  - "See jutsu_engine/strategies/ADX_Trend.py for complete implementation"
+  - "See tests/unit/strategies/test_adx_trend.py for comprehensive tests"
+```
 
 ### Task 1: Add Position Sizing Helper
 ```yaml

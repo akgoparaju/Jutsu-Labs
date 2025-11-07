@@ -27,6 +27,9 @@ from jutsu_engine.utils.logging_config import get_portfolio_logger
 
 logger = get_portfolio_logger()
 
+# Short selling margin requirement (150% of short value per regulatory standards)
+SHORT_MARGIN_REQUIREMENT = Decimal('1.5')
+
 
 class PortfolioSimulator:
     """
@@ -49,6 +52,7 @@ class PortfolioSimulator:
         initial_capital: Decimal,
         commission_per_share: Decimal = Decimal('0.01'),
         slippage_percent: Decimal = Decimal('0.001'),
+        trade_logger: Optional['TradeLogger'] = None,
     ):
         """
         Initialize portfolio simulator.
@@ -57,6 +61,7 @@ class PortfolioSimulator:
             initial_capital: Starting cash amount
             commission_per_share: Commission cost per share (default: $0.01)
             slippage_percent: Slippage as percentage of price (default: 0.1%)
+            trade_logger: Optional TradeLogger for CSV export (default: None)
 
         Example:
             portfolio = PortfolioSimulator(
@@ -80,12 +85,413 @@ class PortfolioSimulator:
 
         # Latest prices for each symbol
         self._latest_prices: Dict[str, Decimal] = {}
+        
+        # Trade logger (optional)
+        self._trade_logger = trade_logger
 
         logger.info(
             f"Portfolio initialized with ${initial_capital:,.2f}, "
             f"commission: ${commission_per_share}/share, "
             f"slippage: {slippage_percent*100}%"
         )
+
+    def _validate_order(
+        self,
+        order: OrderEvent,
+        fill_price: Decimal,
+        commission: Decimal,
+        total_cost: Decimal
+    ) -> tuple[bool, str]:
+        """
+        Validate order against realistic trading constraints.
+
+        Checks:
+        1. Cash constraint for buys
+        2. Collateral requirement for short sales
+        3. Share ownership for sells
+        4. Prevents simultaneous long/short positions
+        5. Enforces position transition rules
+
+        Args:
+            order: OrderEvent to validate
+            fill_price: Calculated fill price
+            commission: Order commission
+            total_cost: Total cost for buy orders
+
+        Returns:
+            (is_valid, rejection_reason) tuple
+        """
+        symbol = order.symbol
+        quantity = order.quantity
+        direction = order.direction
+
+        current_position = self.positions.get(symbol, 0)
+
+        # Determine current and target position directions
+        if current_position == 0:
+            current_dir = 'FLAT'
+        elif current_position > 0:
+            current_dir = 'LONG'
+        else:
+            current_dir = 'SHORT'
+
+        # Calculate target position after this order
+        if direction == 'BUY':
+            target_position = current_position + quantity
+        else:  # SELL
+            target_position = current_position - quantity
+
+        # Determine target direction
+        if target_position == 0:
+            target_dir = 'FLAT'
+        elif target_position > 0:
+            target_dir = 'LONG'
+        else:
+            target_dir = 'SHORT'
+
+        # === VALIDATION RULES ===
+
+        # Rule 1: BUY orders - cash constraint
+        if direction == 'BUY':
+            if total_cost > self.cash:
+                return False, (
+                    f"Insufficient cash for BUY: "
+                    f"Need ${total_cost:,.2f}, have ${self.cash:,.2f}"
+                )
+
+        # Rule 2: Prevent illegal LONG → SHORT transition
+        if current_dir == 'LONG' and target_dir == 'SHORT':
+            return False, (
+                f"Cannot transition from LONG to SHORT directly: "
+                f"Current position {current_position}, order would result in {target_position}. "
+                f"Must close long position first (sell {current_position} shares), "
+                f"then open short position separately."
+            )
+
+        # Rule 3: Prevent illegal SHORT → LONG transition
+        if current_dir == 'SHORT' and target_dir == 'LONG':
+            return False, (
+                f"Cannot transition from SHORT to LONG directly: "
+                f"Current position {current_position}, order would result in {target_position}. "
+                f"Must cover short position first (buy {abs(current_position)} shares), "
+                f"then open long position separately."
+            )
+
+        # Rule 4: SELL orders when LONG - ownership check
+        if direction == 'SELL' and current_dir == 'LONG':
+            if quantity > current_position:
+                return False, (
+                    f"Cannot sell more shares than owned: "
+                    f"Have {current_position} shares, trying to sell {quantity}"
+                )
+
+        # Rule 5: SELL orders when FLAT - short selling collateral check
+        if direction == 'SELL' and current_dir == 'FLAT':
+            # This is a short sale, need collateral
+            short_value = fill_price * quantity
+            margin_required = short_value * SHORT_MARGIN_REQUIREMENT
+            collateral_needed = margin_required + commission
+
+            if collateral_needed > self.cash:
+                return False, (
+                    f"Insufficient collateral for short sale: "
+                    f"Need ${collateral_needed:,.2f} "
+                    f"(${margin_required:,.2f} margin + ${commission:.2f} commission), "
+                    f"have ${self.cash:,.2f}"
+                )
+
+        # Rule 6: SELL orders when SHORT - additional short collateral check
+        if direction == 'SELL' and current_dir == 'SHORT':
+            # Increasing short position, need more collateral
+            short_value = fill_price * quantity
+            margin_required = short_value * SHORT_MARGIN_REQUIREMENT
+            collateral_needed = margin_required + commission
+
+            if collateral_needed > self.cash:
+                return False, (
+                    f"Insufficient collateral for additional short: "
+                    f"Need ${collateral_needed:,.2f} "
+                    f"(${margin_required:,.2f} margin + ${commission:.2f} commission), "
+                    f"have ${self.cash:,.2f}"
+                )
+
+        # All checks passed
+        return True, ""
+
+    def execute_signal(
+        self,
+        signal: 'SignalEvent',
+        current_bar: MarketDataEvent
+    ) -> Optional[FillEvent]:
+        """
+        Convert signal with portfolio % to actual shares and execute.
+
+        This method implements the position sizing logic that converts a
+        portfolio percentage allocation to an actual number of shares,
+        accounting for long/short position requirements and margin.
+
+        Args:
+            signal: SignalEvent with portfolio_percent (0.0 to 1.0)
+            current_bar: Current market data for pricing
+
+        Returns:
+            FillEvent if executed successfully, None if rejected
+
+        Process:
+            1. Calculate portfolio value (cash + holdings)
+            2. Calculate allocation amount (portfolio_value * portfolio_percent)
+            3. Convert to shares (long vs short logic with margin)
+            4. Create OrderEvent with calculated quantity
+            5. Execute order using existing execute_order()
+
+        Example:
+            # Strategy generates signal for 80% portfolio allocation
+            signal = SignalEvent(
+                symbol='AAPL',
+                signal_type='BUY',
+                timestamp=current_bar.timestamp,
+                quantity=0,  # Ignored, calculated from portfolio_percent
+                portfolio_percent=Decimal('0.80')  # 80% allocation
+            )
+            fill = portfolio.execute_signal(signal, current_bar)
+        """
+        from jutsu_engine.core.events import SignalEvent, OrderEvent
+
+        # Capture state BEFORE trade (for trade logger)
+        # NOTE: EventLoop already updated all prices via update_market_value() before calling this method.
+        # We capture "before" state here using those already-updated prices.
+        portfolio_value_before = self.get_portfolio_value()
+        cash_before = self.cash
+        allocation_before = self._calculate_allocation_percentages() if self._trade_logger else {}
+
+        # Calculate portfolio value (using prices already set by EventLoop.update_market_value())
+        # DO NOT update _latest_prices here - EventLoop is responsible for price updates
+        portfolio_value = self.get_portfolio_value()
+
+        # Calculate allocation amount
+        allocation_amount = portfolio_value * signal.portfolio_percent
+
+        # DEBUG logging
+        logger.info(
+            f"Position sizing: portfolio_value=${portfolio_value:,.2f}, "
+            f"allocation%={signal.portfolio_percent*100:.1f}%, "
+            f"allocation_amount=${allocation_amount:,.2f}"
+        )
+
+        # Use price already set by EventLoop.update_market_value()
+        # NOTE: EventLoop updated _latest_prices for ALL symbols before calling this method
+        # Fallback to current_bar.close for direct usage (tests, manual execution)
+        price = self._latest_prices.get(signal.symbol, current_bar.close)
+
+        # Log if using fallback (indicates potential symbol mismatch)
+        if signal.symbol not in self._latest_prices:
+            logger.debug(
+                f"Using fallback price from current_bar for {signal.symbol} "
+                f"(current_bar.symbol={current_bar.symbol}). "
+                f"This is expected for direct portfolio usage but NOT in EventLoop context."
+            )
+
+        # Special case: 0% allocation means "close position"
+        current_position = self.positions.get(signal.symbol, 0)
+        if signal.portfolio_percent == Decimal('0.0'):
+            if current_position == 0:
+                logger.debug(f"0% allocation for {signal.symbol} with no position, skipping")
+                return None
+
+            # Close existing position
+            quantity = abs(current_position)
+            # Determine direction: close long = SELL, close short = BUY
+            close_direction = 'SELL' if current_position > 0 else 'BUY'
+
+            logger.info(
+                f"Closing position: {close_direction} {quantity} {signal.symbol} "
+                f"(current position: {current_position})"
+            )
+
+            # Create order to close position
+            order = OrderEvent(
+                symbol=signal.symbol,
+                order_type='MARKET',
+                direction=close_direction,
+                quantity=quantity,
+                timestamp=signal.timestamp,
+                price=None
+            )
+            
+            fill = self.execute_order(order, current_bar)
+            
+            # Log trade execution (close position)
+            if fill and self._trade_logger:
+                portfolio_value_after = self.get_portfolio_value()
+                cash_after = self.cash
+                allocation_after = self._calculate_allocation_percentages()
+                
+                self._trade_logger.log_trade_execution(
+                    fill=fill,
+                    portfolio_value_before=portfolio_value_before,
+                    portfolio_value_after=portfolio_value_after,
+                    cash_before=cash_before,
+                    cash_after=cash_after,
+                    allocation_before=allocation_before,
+                    allocation_after=allocation_after
+                )
+            
+            return fill
+
+        # Calculate shares based on signal type (normal allocation)
+        if signal.signal_type == 'BUY':
+            # Long position calculation
+            quantity = self._calculate_long_shares(allocation_amount, price)
+        elif signal.signal_type == 'SELL':
+            # Short position calculation
+            quantity = self._calculate_short_shares(allocation_amount, price)
+        else:  # HOLD
+            logger.debug(f"HOLD signal for {signal.symbol}, skipping execution")
+            return None
+
+        if quantity <= 0:
+            logger.warning(
+                f"Insufficient allocation for {signal.signal_type} {signal.symbol}: "
+                f"${allocation_amount:,.2f} @ ${price:.2f} = {quantity} shares"
+            )
+            return None
+
+        # Create OrderEvent with calculated quantity
+        order = OrderEvent(
+            symbol=signal.symbol,
+            order_type='MARKET',
+            direction=signal.signal_type,  # 'BUY' or 'SELL'
+            quantity=quantity,
+            timestamp=signal.timestamp,
+            price=None  # Market order
+        )
+
+        # Execute order using existing logic
+        logger.debug(
+            f"Executing signal: {signal.signal_type} {quantity} {signal.symbol} "
+            f"({signal.portfolio_percent*100:.1f}% allocation = ${allocation_amount:,.2f})"
+        )
+
+        fill = self.execute_order(order, current_bar)
+        
+        # Log trade execution (if logger provided and fill succeeded)
+        if fill and self._trade_logger:
+            portfolio_value_after = self.get_portfolio_value()
+            cash_after = self.cash
+            allocation_after = self._calculate_allocation_percentages()
+            
+            self._trade_logger.log_trade_execution(
+                fill=fill,
+                portfolio_value_before=portfolio_value_before,
+                portfolio_value_after=portfolio_value_after,
+                cash_before=cash_before,
+                cash_after=cash_after,
+                allocation_before=allocation_before,
+                allocation_after=allocation_after
+            )
+        
+        return fill
+
+    def _calculate_long_shares(
+        self,
+        allocation_amount: Decimal,
+        price: Decimal
+    ) -> int:
+        """
+        Calculate maximum shares for long position.
+
+        For long positions, the calculation accounts for the share price
+        plus commission per share. This ensures we don't exceed available
+        cash when buying shares.
+
+        Args:
+            allocation_amount: Dollar amount to allocate
+            price: Current share price
+
+        Returns:
+            Maximum affordable shares for long purchase
+
+        Formula:
+            shares = allocation_amount / (price + commission_per_share)
+
+        Example:
+            allocation = Decimal('80000')  # $80,000
+            price = Decimal('150.00')      # $150 per share
+            commission = Decimal('0.01')   # $0.01 per share
+            # Result: 80000 / 150.01 = 533 shares
+        """
+        cost_per_share = price + self.commission_per_share
+
+        if cost_per_share <= 0:
+            logger.error(f"Invalid cost per share: {cost_per_share}")
+            return 0
+
+        shares = allocation_amount / cost_per_share
+
+        # Convert to integer (floor)
+        shares_int = int(shares)
+
+        logger.debug(
+            f"Long position sizing: ${allocation_amount:,.2f} / "
+            f"${cost_per_share:.2f} = {shares_int} shares"
+        )
+
+        return shares_int
+
+    def _calculate_short_shares(
+        self,
+        allocation_amount: Decimal,
+        price: Decimal
+    ) -> int:
+        """
+        Calculate maximum shares for short position.
+
+        For short positions, Regulation T requires 150% margin. This means
+        we need to reserve 1.5x the short value as collateral, plus commission.
+        This method fixes the original bug where strategies calculated shorts
+        without accounting for margin requirements.
+
+        Args:
+            allocation_amount: Dollar amount to allocate
+            price: Current share price
+
+        Returns:
+            Maximum affordable shares for short sale
+
+        Formula:
+            shares = allocation_amount / (price * 1.5 + commission_per_share)
+
+        Note:
+            SHORT_MARGIN_REQUIREMENT = 1.5 (150% margin per Regulation T)
+            This ensures sufficient collateral is reserved for the short position.
+
+        Example:
+            allocation = Decimal('80000')  # $80,000
+            price = Decimal('150.00')      # $150 per share
+            margin_req = 1.5               # 150% Regulation T margin
+            commission = Decimal('0.01')   # $0.01 per share
+            # Cost per share: 150 * 1.5 + 0.01 = $225.01
+            # Result: 80000 / 225.01 = 355 shares
+        """
+        # Calculate collateral needed per share (price * margin + commission)
+        collateral_per_share = (price * SHORT_MARGIN_REQUIREMENT) + self.commission_per_share
+
+        if collateral_per_share <= 0:
+            logger.error(f"Invalid collateral per share: {collateral_per_share}")
+            return 0
+
+        shares = allocation_amount / collateral_per_share
+
+        # Convert to integer (floor)
+        shares_int = int(shares)
+
+        logger.debug(
+            f"Short position sizing: ${allocation_amount:,.2f} / "
+            f"${collateral_per_share:.2f} = {shares_int} shares "
+            f"(margin requirement: {SHORT_MARGIN_REQUIREMENT}x)"
+        )
+
+        return shares_int
 
     def execute_order(
         self,
@@ -122,8 +528,18 @@ class PortfolioSimulator:
 
         # Determine fill price
         if order_type == 'MARKET':
-            # Market order fills at close price with slippage
-            fill_price = current_bar.close
+            # Use price already set by EventLoop.update_market_value()
+            # NOTE: _latest_prices contains correct close price for this symbol
+            # Fallback to current_bar.close for direct usage (tests, manual execution)
+            fill_price = self._latest_prices.get(symbol, current_bar.close)
+
+            # Log if using fallback (indicates potential symbol mismatch)
+            if symbol not in self._latest_prices:
+                logger.debug(
+                    f"Using fallback price from current_bar for {symbol} "
+                    f"(current_bar.symbol={current_bar.symbol}). "
+                    f"This is expected for direct portfolio usage but NOT in EventLoop context."
+                )
 
             # Apply slippage (disadvantageous to trader)
             if direction == 'BUY':
@@ -132,6 +548,17 @@ class PortfolioSimulator:
                 fill_price = fill_price * (Decimal('1') - self.slippage_percent)
 
         elif order_type == 'LIMIT':
+            # LIMITATION: Limit orders require high/low prices from the correct symbol's bar
+            # EventLoop currently passes the "current" bar, not the order's symbol bar
+            # For now, validate that we have the correct bar
+            if current_bar.symbol != symbol:
+                logger.error(
+                    f"Cannot execute limit order for {symbol}: "
+                    f"received bar for {current_bar.symbol} instead. "
+                    f"This is a known limitation requiring EventLoop changes."
+                )
+                return None
+
             # Limit order only fills if price is favorable
             limit_price = order.price
 
@@ -153,21 +580,43 @@ class PortfolioSimulator:
         commission = self.commission_per_share * quantity
         total_cost = (fill_price * quantity) + commission
 
-        # Check if we have enough cash for buy orders
-        if direction == 'BUY' and total_cost > self.cash:
-            logger.warning(
-                f"Insufficient cash: Need ${total_cost:,.2f}, have ${self.cash:,.2f}"
-            )
+        # Validate order against realistic trading constraints
+        is_valid, rejection_reason = self._validate_order(
+            order, fill_price, commission, total_cost
+        )
+
+        if not is_valid:
+            logger.warning(f"Order rejected: {rejection_reason}")
             return None
 
-        # Update cash
+        # Update cash and positions BEFORE creating fill event
+        # We need current_position to determine cash handling for SELL/BUY orders
+        current_position = self.positions.get(symbol, 0)
+
         if direction == 'BUY':
-            self.cash -= total_cost
+            if current_position >= 0:
+                # Opening or adding to long position - PAY for shares
+                self.cash -= total_cost
+            else:
+                # Covering short position - PAY to buy back + RELEASE margin
+                # Cost to buy back shares
+                self.cash -= total_cost
+                # Release margin that was locked up (150% of original short value)
+                # Note: We release margin based on CURRENT price, not original short price
+                margin_to_release = fill_price * quantity * SHORT_MARGIN_REQUIREMENT
+                self.cash += margin_to_release
         else:  # SELL
-            self.cash += (fill_price * quantity) - commission
+            # SELL order handling depends on current position
+            if current_position > 0:
+                # Closing or reducing long position - RECEIVE proceeds from sale
+                self.cash += (fill_price * quantity) - commission
+            else:
+                # Opening or adding to short position - LOCK UP margin
+                # We need 150% of short value as collateral per Regulation T
+                margin_required = fill_price * quantity * SHORT_MARGIN_REQUIREMENT
+                self.cash -= (margin_required + commission)
 
         # Update positions
-        current_position = self.positions.get(symbol, 0)
         if direction == 'BUY':
             self.positions[symbol] = current_position + quantity
         else:  # SELL
@@ -226,6 +675,9 @@ class PortfolioSimulator:
         """
         Get total portfolio value (cash + holdings).
 
+        Calculates holdings value dynamically using current positions and latest prices.
+        This ensures accurate portfolio value even if update_market_value() is not called.
+
         Returns:
             Total portfolio value as Decimal
 
@@ -233,8 +685,49 @@ class PortfolioSimulator:
             portfolio_value = portfolio.get_portfolio_value()
             print(f"Portfolio: ${portfolio_value:,.2f}")
         """
-        holdings_value = sum(self.current_holdings.values())
+        # Calculate holdings value dynamically from positions and latest prices
+        holdings_value = Decimal('0')
+        for symbol, quantity in self.positions.items():
+            if symbol in self._latest_prices:
+                market_value = self._latest_prices[symbol] * Decimal(quantity)
+                holdings_value += market_value
+
         return self.cash + holdings_value
+
+    def _calculate_allocation_percentages(self) -> Dict[str, Decimal]:
+        """
+        Calculate current portfolio allocation as percentages.
+        
+        Used by TradeLogger to record portfolio allocation before/after trades.
+        Calculates percentage of total portfolio value for each position and cash.
+        
+        Returns:
+            Dict of symbol → allocation percentage (0-100)
+            Includes 'CASH' if cash > 1% of portfolio
+        
+        Example:
+            allocations = portfolio._calculate_allocation_percentages()
+            # {'TQQQ': Decimal('60.5'), 'CASH': Decimal('39.5')}
+        """
+        portfolio_value = self.get_portfolio_value()
+        if portfolio_value == Decimal('0'):
+            return {}
+        
+        allocations = {}
+        
+        # Add positions
+        for symbol, quantity in self.positions.items():
+            if symbol in self._latest_prices:
+                position_value = self._latest_prices[symbol] * Decimal(quantity)
+                percent = (position_value / portfolio_value) * Decimal('100')
+                allocations[symbol] = percent
+        
+        # Add cash (if significant)
+        cash_percent = (self.cash / portfolio_value) * Decimal('100')
+        if cash_percent > Decimal('1'):  # Only show if >1%
+            allocations['CASH'] = cash_percent
+        
+        return allocations
 
     def get_position(self, symbol: str) -> int:
         """

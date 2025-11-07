@@ -590,3 +590,226 @@ logger.error("Database connection failed")
 I am the DatabaseHandler Module Agent - responsible for efficient database access to market data. I implement the Core's DataHandler interface and provide optimized queries with caching and connection pooling. I support both SQLite (development) and PostgreSQL (production) while maintaining strict performance targets (<50ms for 1000 bars). I report to the Infrastructure Orchestrator and serve the Application layer's data access needs.
 
 **My Core Value**: Ensuring fast, reliable data access that enables high-performance backtesting without becoming a bottleneck.
+
+---
+
+## Phase 2 Enhancements: PostgreSQL Migration
+
+### New Responsibilities
+
+**Database Factory Pattern**:
+- Abstract database creation to support multiple backends
+- Runtime selection between SQLite and PostgreSQL
+- Environment-based configuration
+
+**PostgreSQL Optimization**:
+- Connection pooling (psycopg2-binary)
+- PostgreSQL-specific optimizations (COPY, EXPLAIN ANALYZE)
+- Index strategies for production workloads
+
+**Schema Migrations**:
+- Alembic integration for version control
+- Migration scripts for schema changes
+- Backward compatibility maintenance
+
+### Implementation Patterns
+
+**Database Factory**:
+```python
+from sqlalchemy import create_engine
+from sqlalchemy.pool import QueuePool
+from typing import Literal
+
+class DatabaseFactory:
+    """
+    Factory for creating database engines based on configuration.
+
+    Supports:
+    - SQLite: Development and testing
+    - PostgreSQL: Production deployment
+    """
+
+    @staticmethod
+    def create_engine(
+        db_type: Literal['sqlite', 'postgresql'],
+        config: Dict[str, Any]
+    ):
+        if db_type == 'sqlite':
+            return create_engine(
+                f"sqlite:///{config['database']}",
+                echo=config.get('echo', False)
+            )
+        elif db_type == 'postgresql':
+            return create_engine(
+                f"postgresql://{config['user']}:{config['password']}@"
+                f"{config['host']}:{config['port']}/{config['database']}",
+                poolclass=QueuePool,
+                pool_size=10,
+                max_overflow=20,
+                echo=config.get('echo', False)
+            )
+        else:
+            raise ValueError(f"Unsupported database type: {db_type}")
+```
+
+**PostgreSQL Connection Pooling**:
+```python
+# Connection pool configuration
+engine = create_engine(
+    postgresql_url,
+    poolclass=QueuePool,
+    pool_size=10,          # Number of permanent connections
+    max_overflow=20,       # Additional connections on demand
+    pool_timeout=30,       # Wait time for connection
+    pool_recycle=3600      # Recycle connections after 1 hour
+)
+```
+
+**Alembic Migration Setup**:
+```bash
+# Directory structure
+alembic/
+├── versions/
+│   ├── 001_initial_schema.py
+│   ├── 002_add_optimization_tables.py
+│   └── 003_add_metrics_tables.py
+├── env.py
+└── script.py.mako
+```
+
+**Migration Example**:
+```python
+"""Add optimization results table
+
+Revision ID: 002
+Revises: 001
+"""
+from alembic import op
+import sqlalchemy as sa
+
+def upgrade():
+    op.create_table(
+        'optimization_results',
+        sa.Column('id', sa.Integer, primary_key=True),
+        sa.Column('strategy_name', sa.String(100), nullable=False),
+        sa.Column('parameters', sa.JSON, nullable=False),
+        sa.Column('objective_value', sa.Numeric(10, 4), nullable=False),
+        sa.Column('created_at', sa.DateTime, server_default=sa.func.now())
+    )
+    op.create_index('ix_opt_strategy', 'optimization_results', ['strategy_name'])
+
+def downgrade():
+    op.drop_index('ix_opt_strategy')
+    op.drop_table('optimization_results')
+```
+
+### PostgreSQL Performance Optimizations
+
+**Bulk Insert with COPY**:
+```python
+from io import StringIO
+import psycopg2
+
+def bulk_insert_bars(bars: List[MarketDataEvent], conn):
+    """
+    Use PostgreSQL COPY for fast bulk inserts.
+
+    10-100x faster than individual INSERTs.
+    """
+    buffer = StringIO()
+    for bar in bars:
+        buffer.write(f"{bar.symbol}\t{bar.timestamp}\t{bar.open}\t"
+                    f"{bar.high}\t{bar.low}\t{bar.close}\t{bar.volume}\n")
+
+    buffer.seek(0)
+    cursor = conn.cursor()
+    cursor.copy_from(
+        buffer,
+        'market_data',
+        columns=['symbol', 'timestamp', 'open', 'high', 'low', 'close', 'volume']
+    )
+    conn.commit()
+```
+
+**Index Optimization**:
+```sql
+-- Composite index for common queries
+CREATE INDEX ix_market_data_symbol_timestamp
+ON market_data (symbol, timestamp);
+
+-- Partial index for recent data
+CREATE INDEX ix_market_data_recent
+ON market_data (timestamp)
+WHERE timestamp > NOW() - INTERVAL '1 year';
+
+-- Index for optimization results
+CREATE INDEX ix_optimization_objective
+ON optimization_results (strategy_name, objective_value DESC);
+```
+
+### Configuration
+
+**Environment Variables** (.env):
+```bash
+DATABASE_TYPE=postgresql  # or sqlite
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_USER=jutsu
+POSTGRES_PASSWORD=your_password
+POSTGRES_DATABASE=jutsu_labs
+```
+
+**Application Config** (config/config.yaml):
+```yaml
+database:
+  type: postgresql  # or sqlite
+  sqlite:
+    path: data/market_data.db
+    echo: false
+  postgresql:
+    host: ${POSTGRES_HOST}
+    port: ${POSTGRES_PORT}
+    user: ${POSTGRES_USER}
+    password: ${POSTGRES_PASSWORD}
+    database: ${POSTGRES_DATABASE}
+    pool_size: 10
+    max_overflow: 20
+    echo: false
+```
+
+### New Dependencies
+
+```
+# requirements.txt additions
+psycopg2-binary>=2.9.0  # PostgreSQL adapter
+alembic>=1.12.0         # Database migrations
+```
+
+### Testing Requirements
+
+**Phase 2 Testing Additions**:
+- [ ] Database factory tests (both backends)
+- [ ] PostgreSQL connection pooling tests
+- [ ] Migration up/down tests
+- [ ] Backward compatibility tests (SQLite still works)
+- [ ] Performance benchmarks (SQLite vs PostgreSQL)
+
+### Performance Targets (PostgreSQL)
+
+| Metric | Target | Notes |
+|--------|--------|-------|
+| Bulk Insert (10K bars) | <500ms | Using COPY |
+| Query (1000 bars) | <20ms | With proper indexes |
+| Connection Acquisition | <10ms | From pool |
+| Concurrent Queries | >100 qps | Connection pooling |
+
+### Migration Checklist
+
+Before PostgreSQL deployment:
+- [ ] Alembic configured and tested
+- [ ] All migrations created and tested
+- [ ] Backward compatibility verified (SQLite still works)
+- [ ] Connection pooling optimized
+- [ ] Indexes created and verified
+- [ ] Performance benchmarks met
+- [ ] Documentation updated

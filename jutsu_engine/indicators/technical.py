@@ -338,3 +338,89 @@ def obv(close: Union[pd.Series, List], volume: Union[pd.Series, List]) -> pd.Ser
     obv_values = (direction * volume_series).cumsum()
 
     return pd.Series(obv_values, index=close_series.index)
+
+
+def adx(high: Union[pd.Series, List], low: Union[pd.Series, List],
+        close: Union[pd.Series, List], period: int = 14) -> pd.Series:
+    """
+    Calculate Average Directional Index (ADX).
+
+    ADX measures trend strength on a 0-100 scale. It does NOT indicate trend
+    direction, only strength.
+    - ADX > 25: Strong trend
+    - ADX 20-25: Building trend
+    - ADX < 20: Weak/no trend
+
+    Args:
+        high: High prices
+        low: Low prices
+        close: Close prices
+        period: Number of periods for ADX calculation (default: 14)
+
+    Returns:
+        pandas Series with ADX values (0-100 scale)
+
+    Example:
+        highs = [bar.high for bar in bars]
+        lows = [bar.low for bar in bars]
+        closes = [bar.close for bar in bars]
+        adx_14 = adx(highs, lows, closes, period=14)
+
+        if adx_14.iloc[-1] > 25:
+            # Strong trend (either up or down)
+            # Use other indicators to determine direction
+            pass
+
+    Note:
+        ADX calculation steps:
+        1. Calculate True Range (TR)
+        2. Calculate +DM and -DM (directional movement)
+        3. Smooth TR, +DM, -DM using EMA
+        4. Calculate +DI and -DI (directional indicators)
+        5. Calculate DX (directional index)
+        6. ADX = EMA of DX
+    """
+    high_series = _to_series(high)
+    low_series = _to_series(low)
+    close_series = _to_series(close)
+
+    # Step 1: Calculate True Range (TR)
+    tr1 = high_series - low_series
+    tr2 = abs(high_series - close_series.shift())
+    tr3 = abs(low_series - close_series.shift())
+    true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    # Step 2: Calculate Directional Movement
+    high_diff = high_series.diff()
+    low_diff = -low_series.diff()
+
+    # +DM: positive if high_diff > low_diff AND high_diff > 0, else 0
+    plus_dm = np.where((high_diff > low_diff) & (high_diff > 0), high_diff, 0.0)
+    plus_dm = pd.Series(plus_dm, index=high_series.index)
+
+    # -DM: positive if low_diff > high_diff AND low_diff > 0, else 0
+    minus_dm = np.where((low_diff > high_diff) & (low_diff > 0), low_diff, 0.0)
+    minus_dm = pd.Series(minus_dm, index=high_series.index)
+
+    # Step 3: Smooth TR, +DM, -DM using EMA
+    smooth_tr = true_range.ewm(span=period, adjust=False).mean()
+    smooth_plus_dm = plus_dm.ewm(span=period, adjust=False).mean()
+    smooth_minus_dm = minus_dm.ewm(span=period, adjust=False).mean()
+
+    # Step 4: Calculate Directional Indicators
+    # +DI = 100 * (smoothed +DM / smoothed TR)
+    # -DI = 100 * (smoothed -DM / smoothed TR)
+    plus_di = 100 * (smooth_plus_dm / smooth_tr)
+    minus_di = 100 * (smooth_minus_dm / smooth_tr)
+
+    # Step 5: Calculate Directional Index (DX)
+    # DX = 100 * |+DI - -DI| / (+DI + -DI)
+    # Handle division by zero
+    di_sum = plus_di + minus_di
+    di_diff = abs(plus_di - minus_di)
+    dx = 100 * (di_diff / di_sum.replace(0, np.nan))
+
+    # Step 6: ADX = EMA of DX
+    adx_values = dx.ewm(span=period, adjust=False).mean()
+
+    return adx_values

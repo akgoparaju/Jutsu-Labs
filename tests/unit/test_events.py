@@ -107,6 +107,7 @@ class TestSignalEvent:
             signal_type='BUY',
             timestamp=datetime(2024, 1, 15, 9, 30, 0, tzinfo=timezone.utc),
             quantity=100,
+            portfolio_percent=Decimal('0.8'),
             strategy_name='SMA_Crossover',
             price=Decimal('150.00'),
         )
@@ -114,6 +115,7 @@ class TestSignalEvent:
         assert signal.symbol == 'AAPL'
         assert signal.signal_type == 'BUY'
         assert signal.quantity == 100
+        assert signal.portfolio_percent == Decimal('0.8')
         assert signal.strategy_name == 'SMA_Crossover'
         assert signal.price == Decimal('150.00')
 
@@ -124,10 +126,12 @@ class TestSignalEvent:
             signal_type='SELL',
             timestamp=datetime(2024, 1, 15, 9, 30, 0, tzinfo=timezone.utc),
             quantity=100,
+            portfolio_percent=Decimal('1.0'),
             strategy_name='RSI_Overbought',
         )
 
         assert signal.signal_type == 'SELL'
+        assert signal.portfolio_percent == Decimal('1.0')
         assert signal.price is None  # Price optional for signals
 
     def test_default_strategy_name(self):
@@ -137,9 +141,82 @@ class TestSignalEvent:
             signal_type='BUY',
             timestamp=datetime(2024, 1, 15, 9, 30, 0, tzinfo=timezone.utc),
             quantity=100,
+            portfolio_percent=Decimal('0.5'),
         )
 
         assert signal.strategy_name == 'unknown'
+        assert signal.portfolio_percent == Decimal('0.5')
+
+    def test_portfolio_percent_validation_below_zero(self):
+        """Test that portfolio_percent below 0.0 raises ValueError."""
+        with pytest.raises(ValueError, match="Portfolio percent must be between 0.0 and 1.0"):
+            SignalEvent(
+                symbol='AAPL',
+                signal_type='BUY',
+                timestamp=datetime(2024, 1, 15, 9, 30, 0, tzinfo=timezone.utc),
+                quantity=100,
+                portfolio_percent=Decimal('-0.1'),  # Invalid: negative
+            )
+
+    def test_portfolio_percent_validation_above_one(self):
+        """Test that portfolio_percent above 1.0 raises ValueError."""
+        with pytest.raises(ValueError, match="Portfolio percent must be between 0.0 and 1.0"):
+            SignalEvent(
+                symbol='AAPL',
+                signal_type='BUY',
+                timestamp=datetime(2024, 1, 15, 9, 30, 0, tzinfo=timezone.utc),
+                quantity=100,
+                portfolio_percent=Decimal('1.5'),  # Invalid: > 1.0
+            )
+
+    def test_portfolio_percent_boundary_values(self):
+        """Test that boundary values 0.0 and 1.0 are valid."""
+        # Test 0.0 (minimum valid)
+        signal_zero = SignalEvent(
+            symbol='AAPL',
+            signal_type='BUY',
+            timestamp=datetime(2024, 1, 15, 9, 30, 0, tzinfo=timezone.utc),
+            quantity=100,
+            portfolio_percent=Decimal('0.0'),
+        )
+        assert signal_zero.portfolio_percent == Decimal('0.0')
+
+        # Test 1.0 (maximum valid)
+        signal_one = SignalEvent(
+            symbol='AAPL',
+            signal_type='BUY',
+            timestamp=datetime(2024, 1, 15, 9, 30, 0, tzinfo=timezone.utc),
+            quantity=100,
+            portfolio_percent=Decimal('1.0'),
+        )
+        assert signal_one.portfolio_percent == Decimal('1.0')
+
+    def test_portfolio_percent_typical_values(self):
+        """Test typical portfolio allocation percentages."""
+        # Test various common allocation percentages
+        for percent_str in ['0.25', '0.50', '0.75', '0.80', '0.95']:
+            signal = SignalEvent(
+                symbol='AAPL',
+                signal_type='BUY',
+                timestamp=datetime(2024, 1, 15, 9, 30, 0, tzinfo=timezone.utc),
+                quantity=100,
+                portfolio_percent=Decimal(percent_str),
+            )
+            assert signal.portfolio_percent == Decimal(percent_str)
+
+    def test_signal_immutability(self):
+        """Test that SignalEvent is frozen and cannot be modified."""
+        signal = SignalEvent(
+            symbol='AAPL',
+            signal_type='BUY',
+            timestamp=datetime(2024, 1, 15, 9, 30, 0, tzinfo=timezone.utc),
+            quantity=100,
+            portfolio_percent=Decimal('0.8'),
+        )
+
+        # Attempt to modify should raise FrozenInstanceError
+        with pytest.raises(Exception):  # dataclasses.FrozenInstanceError
+            signal.portfolio_percent = Decimal('0.5')
 
 
 class TestOrderEvent:
@@ -273,6 +350,7 @@ def sample_buy_signal():
         signal_type='BUY',
         timestamp=datetime(2024, 1, 15, 9, 30, 0, tzinfo=timezone.utc),
         quantity=100,
+        portfolio_percent=Decimal('0.8'),
         strategy_name='SMA_Crossover',
         price=Decimal('150.00'),
     )

@@ -182,32 +182,59 @@ class SignalEvent:
     Immutable event representing a BUY or SELL signal.
     Used by Strategy → EventLoop → Portfolio.
 
+    **ARCHITECTURAL NOTE (2025-11-04)**: Strategy-Portfolio Separation of Concerns
+    - Strategies specify portfolio_percent (0.0 to 1.0) for position sizing
+    - Portfolio calculates actual share quantity based on available capital
+    - This separates trading intent (Strategy) from execution details (Portfolio)
+    - 0.0% allocation = signal to close position
+
     Attributes:
         symbol: Stock ticker symbol
         signal_type: 'BUY' or 'SELL'
-        quantity: Number of shares (positive integer)
         timestamp: Signal generation timestamp (UTC)
+        portfolio_percent: Portfolio allocation (0.0 to 1.0, e.g., 0.25 = 25%)
+        quantity: DEPRECATED - Placeholder for backward compatibility (Portfolio calculates actual)
+        strategy_name: Optional strategy identifier
+        price: Optional limit price (None = market order)
+        strength: Optional signal strength/confidence (0.0 to 1.0)
 
     Constraints:
         - signal_type must be 'BUY' or 'SELL'
-        - quantity must be positive
+        - portfolio_percent must be 0.0 to 1.0
         - Timestamp must be timezone-aware (UTC)
+        - quantity field is deprecated (Portfolio determines actual shares)
+
+    Position Closing Pattern:
+        - To close a position: portfolio_percent = 0.0 with SELL signal
+        - Portfolio interprets 0.0% as "exit entire position"
     """
     symbol: str
     signal_type: str  # 'BUY' or 'SELL'
-    quantity: int
     timestamp: datetime
+    portfolio_percent: Decimal  # 0.0 to 1.0 (25% = Decimal('0.25'))
+    quantity: int = 1  # Deprecated placeholder, Portfolio calculates actual
+    strategy_name: str = ""
+    price: Optional[Decimal] = None
+    strength: Optional[Decimal] = None
 
     def __post_init__(self):
         """Validate trading signal."""
         if self.signal_type not in ['BUY', 'SELL']:
             raise ValueError(f"Invalid signal_type: {self.signal_type}, must be 'BUY' or 'SELL'")
 
-        if self.quantity <= 0:
-            raise ValueError(f"Quantity must be positive, got {self.quantity}")
+        # Validate portfolio_percent range
+        if self.portfolio_percent < Decimal('0.0') or self.portfolio_percent > Decimal('1.0'):
+            raise ValueError(
+                f"portfolio_percent must be between 0.0 and 1.0, got {self.portfolio_percent}"
+            )
 
         if self.timestamp.tzinfo is None:
             raise ValueError("Timestamp must be timezone-aware (use UTC)")
+
+        # Optional: Validate strength if provided
+        if self.strength is not None:
+            if self.strength < Decimal('0.0') or self.strength > Decimal('1.0'):
+                raise ValueError(f"strength must be between 0.0 and 1.0, got {self.strength}")
 ```
 
 **`OrderEvent`** - Order to execute
@@ -345,6 +372,24 @@ bar = MarketDataEvent(
     low=Decimal('149.50'),
     close=Decimal('150.75'),
     volume=1000000
+)
+
+# Trading signal with portfolio allocation
+signal = SignalEvent(
+    symbol='AAPL',
+    signal_type='BUY',
+    timestamp=datetime.now(timezone.utc),
+    portfolio_percent=Decimal('0.25'),  # Allocate 25% of portfolio
+    strategy_name='SMA_Crossover'
+)
+
+# Close position signal (0% allocation)
+close_signal = SignalEvent(
+    symbol='AAPL',
+    signal_type='SELL',
+    timestamp=datetime.now(timezone.utc),
+    portfolio_percent=Decimal('0.0'),  # Close entire position
+    strategy_name='SMA_Crossover'
 )
 ```
 

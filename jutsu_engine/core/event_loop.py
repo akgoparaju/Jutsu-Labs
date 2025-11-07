@@ -60,6 +60,7 @@ class EventLoop:
         data_handler: DataHandler,
         strategy: Strategy,
         portfolio: PortfolioSimulator,
+        trade_logger: Optional['TradeLogger'] = None,
     ):
         """
         Initialize event loop.
@@ -68,6 +69,7 @@ class EventLoop:
             data_handler: DataHandler providing market data
             strategy: Strategy instance to execute
             portfolio: PortfolioSimulator for execution
+            trade_logger: Optional TradeLogger for CSV export (default: None)
 
         Example:
             loop = EventLoop(
@@ -79,6 +81,11 @@ class EventLoop:
         self.data_handler = data_handler
         self.strategy = strategy
         self.portfolio = portfolio
+        self.trade_logger = trade_logger
+
+        # Inject TradeLogger into strategy for context logging
+        if self.trade_logger:
+            self.strategy._set_trade_logger(self.trade_logger)
 
         # Event tracking
         self.all_bars: List[MarketDataEvent] = []
@@ -99,10 +106,11 @@ class EventLoop:
 
         Processes all bars from data_handler sequentially:
         1. Update portfolio market values
-        2. Feed bar to strategy
-        3. Collect and process signals
-        4. Execute orders
-        5. Record portfolio value
+        2. Update strategy state (bar history and portfolio state)
+        3. Feed bar to strategy
+        4. Collect and process signals
+        5. Execute orders
+        6. Record portfolio value
 
         Example:
             loop = EventLoop(data_handler, strategy, portfolio)
@@ -119,6 +127,10 @@ class EventLoop:
         for bar in self.data_handler.get_next_bar():
             bar_count += 1
 
+            # Increment trade logger bar counter
+            if self.trade_logger:
+                self.trade_logger.increment_bar()
+
             # Update current bars
             self.current_bars[bar.symbol] = bar
             self.all_bars.append(bar)
@@ -126,26 +138,29 @@ class EventLoop:
             # Step 1: Update portfolio market values
             self.portfolio.update_market_value(self.current_bars)
 
-            # Step 2: Feed bar to strategy
+            # Step 2: Update strategy state (bar history and portfolio state)
+            self.strategy._update_bar(bar)
+            self.strategy._update_portfolio_state(
+                self.portfolio.positions,
+                self.portfolio.cash
+            )
+
+            # Step 3: Feed bar to strategy
             self.strategy.on_bar(bar)
 
-            # Step 3: Collect signals from strategy
+            # Step 4: Collect signals from strategy
             signals = self.strategy.get_signals()
             self.all_signals.extend(signals)
 
-            # Step 4: Process each signal
+            # Step 5: Process each signal
             for signal in signals:
-                # Convert signal to order
-                order = self._convert_signal_to_order(signal)
-                if order:
-                    self.all_orders.append(order)
+                # NEW API: Execute signal directly (Portfolio handles position sizing)
+                # Portfolio.execute_signal() calculates actual shares from portfolio_percent
+                fill = self.portfolio.execute_signal(signal, bar)
+                if fill:
+                    self.all_fills.append(fill)
 
-                    # Execute order
-                    fill = self.portfolio.execute_order(order, bar)
-                    if fill:
-                        self.all_fills.append(fill)
-
-            # Step 5: Record portfolio value
+            # Step 6: Record portfolio value
             self.portfolio.record_portfolio_value(bar.timestamp)
 
             # Periodic logging

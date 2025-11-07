@@ -154,10 +154,17 @@ DataHandler → EventLoop → Strategy → Portfolio → PerformanceAnalyzer
 
 1. DataHandler provides MarketDataEvent
 2. EventLoop publishes to Strategy
-3. Strategy returns SignalEvent (optional)
-4. Portfolio executes and returns FillEvent
+3. Strategy returns SignalEvent with portfolio_percent (optional)
+4. Portfolio calculates shares and executes → returns FillEvent
 5. PerformanceAnalyzer reads completed state
 ```
+
+**ARCHITECTURAL NOTE (2025-11-04)**: Strategy-Portfolio Coordination
+- **SignalEvent Flow**: Strategy → EventLoop → Portfolio
+- **Key Field**: `portfolio_percent` (0.0 to 1.0) for position sizing
+- **Responsibility Separation**:
+  - Strategy: WHEN to trade + HOW MUCH (portfolio_percent)
+  - Portfolio: HOW MANY SHARES (quantity calculation)
 
 **Any deviation from this flow must be reviewed by System Orchestrator.**
 
