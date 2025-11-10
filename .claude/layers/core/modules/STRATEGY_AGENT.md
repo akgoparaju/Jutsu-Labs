@@ -73,6 +73,33 @@ I am the **Strategy Module Agent**, responsible for defining the Strategy interf
 - `jutsu_engine/strategies/` - Concrete strategy implementations
 - `tests/fixtures/strategy_fixtures.py` - Test fixtures for strategies
 
+### Strategy Implementations
+
+**Production Strategies** (All inherit from Strategy base class):
+
+1. **MACD_Trend_v2** (`MACD_Trend_v2.py`)
+   - All-Weather V6.0 strategy (5 regimes)
+   - Inheritance: Direct from Strategy base
+   - Test coverage: 87% (56 tests)
+
+2. **MACD_Trend_v4** (`MACD_Trend_v4.py`)
+   - Goldilocks strategy (dual position sizing)
+   - Inheritance: Direct from Strategy base
+   - Test coverage: 95% (comprehensive)
+
+3. **MACD_Trend_v5** (`MACD_Trend_v5.py`)
+   - Dynamic Regime strategy (v4 + VIX filter)
+   - Inheritance: Extends MACD_Trend_v4
+   - VIX regime detection and parameter switching
+   - Test coverage: 98% (36 tests)
+
+4. **MACD_Trend_v6** (`MACD_Trend_v6.py`) ⭐ NEW
+   - VIX-Filtered strategy (v4 + VIX master switch)
+   - Inheritance: Extends MACD_Trend_v4 (NOT v5)
+   - VIX as execution gate (binary: run v4 or hold CASH)
+   - Core philosophy: "Only run v4 when CALM, else CASH"
+   - Test coverage: 95% (31 tests, 100% passing)
+
 **Dependencies (Imports Allowed)**:
 ```python
 # ✅ ALLOWED (Core layer or stdlib only)

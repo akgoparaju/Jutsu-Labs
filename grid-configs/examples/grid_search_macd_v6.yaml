@@ -1,0 +1,120 @@
+# Grid Search Configuration for MACD_Trend_v6 (VIX-Filtered Strategy)
+# ========================================================
+# This configuration defines a parameter sweep for the VIX-filtered Goldilocks strategy.
+# The strategy uses VIX as a "master switch" to gate the base v4 logic.
+#
+# Parameter Categories:
+# 1. VIX Filter: vix_ema_period (master switch threshold)
+# 2. Trend Filter: ema_period (inherited from v4)
+# 3. Risk Management: atr_stop_multiplier, risk_bull (inherited from v4)
+# 4. Position Sizing: allocation_defense (inherited from v4)
+#
+# Total combinations: 4 * 4 * 3 * 3 * 3 = 432 backtests
+
+# Strategy to optimize
+strategy: "MACD_Trend_v6"
+
+# Symbol Sets
+# -----------
+# V6 requires 3 symbols: signal (QQQ), bull (TQQQ), $VIX (master switch)
+# Index symbols use $ prefix
+symbol_sets:
+  - name: "QQQ_TQQQ_VIX"
+    signal_symbol: "QQQ"
+    bull_symbol: "TQQQ"
+    defense_symbol: "QQQ"
+    vix_symbol: "$VIX"
+
+# Base Configuration
+# ------------------
+# Fixed settings applied to ALL backtests
+base_config:
+  # Date range - Include COVID crash for volatility testing
+  start_date: "2020-01-01"
+  end_date: "2024-12-31"
+
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 10000
+  commission: 0.0
+  slippage: 0.0
+
+# Parameters to Optimize
+# ----------------------
+# Grid search will test ALL combinations of these parameters
+
+parameters:
+  # VIX Master Switch (NEW for v6)
+  # Controls when v4 logic runs (CALM) vs holds CASH (CHOPPY)
+  vix_ema_period: [20, 50, 75, 100]
+
+  # Trend Filter (from v4)
+  # EMA period for trend detection (always active when CALM)
+  ema_period: [75, 100, 150, 200]
+
+  # ATR Stop-Loss (from v4)
+  # Controls stop-loss distance for TQQQ positions (when CALM)
+  atr_stop_multiplier: [2.0, 2.5, 3.0, 3.5]
+
+  # TQQQ Risk Allocation (from v4)
+  # Portfolio risk percentage for TQQQ positions (when CALM)
+  risk_bull: [0.015, 0.020, 0.025]
+
+  # QQQ Allocation (from v4)
+  # Flat allocation for QQQ positions (when CALM)
+  allocation_defense: [0.6]
+
+  # MACD indicator (from v4) - keeping defaults
+  macd_fast_period: [12]
+  macd_slow_period: [26]
+  macd_signal_period: [9]
+
+  # ATR calculation (from v4) - keeping default
+  atr_period: [14]
+
+# Optional Constraints
+# --------------------
+# Safety limits to prevent accidental large-scale runs
+
+# Maximum total combinations to run
+# If actual combinations exceed this, grid search will abort
+# Current combinations: 432
+max_combinations: 500
+
+# Checkpoint interval
+# Save progress every N backtests for resume capability
+checkpoint_interval: 10
+
+# Expected Output
+# ---------------
+# output/grid_search_MACD_Trend_v6_YYYYMMDD_HHMMSS/
+# ├── summary_comparison.csv   # Metrics for all 432 runs (sortable)
+# ├── run_config.csv          # Parameter mapping (which run = which params)
+# ├── parameters.yaml         # Copy of this config file
+# ├── README.txt             # Summary statistics and top performers
+# ├── run_001/               # First parameter combination
+# │   ├── portfolio_daily.csv
+# │   ├── trades.csv
+# │   └── summary.csv
+# ├── run_002/               # Second parameter combination
+# │   ├── portfolio_daily.csv
+# │   ├── trades.csv
+# │   └── summary.csv
+# └── ... (430 more runs)
+
+# Usage
+# -----
+# jutsu grid-search --config grid-configs/examples/grid_search_macd_v6.yaml
+#
+# After completion:
+# 1. Open summary_comparison.csv
+# 2. Sort by Sharpe Ratio (highest to lowest)
+# 3. Review top 5-10 parameter combinations
+# 4. Look for consistent patterns:
+#    - Do certain VIX EMA periods consistently outperform?
+#    - What's the optimal balance between VIX filter and trend filter?
+#    - Are wider stops better during volatile periods?
+# 5. Check for overfitting (parameters that work for one period but not others)
+# 6. Run focused grid search on promising parameter ranges

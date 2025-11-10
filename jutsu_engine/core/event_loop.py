@@ -20,6 +20,7 @@ Example:
 """
 from typing import List, Dict, Optional
 from decimal import Decimal
+from datetime import date
 
 from jutsu_engine.data.handlers.base import DataHandler
 from jutsu_engine.core.strategy_base import Strategy
@@ -96,6 +97,9 @@ class EventLoop:
         # Current market data (symbol -> latest bar)
         self.current_bars: Dict[str, MarketDataEvent] = {}
 
+        # Daily snapshot tracking (prevent duplicate snapshots per date)
+        self._last_snapshot_date: Optional['date'] = None
+
         logger.info(
             f"EventLoop initialized with strategy: {strategy.name}"
         )
@@ -162,9 +166,12 @@ class EventLoop:
 
             # Step 6: Record portfolio value
             self.portfolio.record_portfolio_value(bar.timestamp)
-            
-            # Step 7: Record daily portfolio snapshot for CSV export
-            self.portfolio.record_daily_snapshot(bar.timestamp)
+
+            # Step 7: Record daily portfolio snapshot for CSV export (once per unique date)
+            current_date = bar.timestamp.date()
+            if current_date != self._last_snapshot_date:
+                self.portfolio.record_daily_snapshot(bar.timestamp)
+                self._last_snapshot_date = current_date
 
             # Periodic logging
             if bar_count % 100 == 0:

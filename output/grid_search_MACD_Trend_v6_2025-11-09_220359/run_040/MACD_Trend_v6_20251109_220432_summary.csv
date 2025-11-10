@@ -1,0 +1,12 @@
+Category,Metric,Baseline,Strategy,Difference
+Performance,Initial_Capital,N/A,"$10,000.00",N/A
+Performance,Final_Value,"$23,650.54","$19,361.20","+$-4,289.33"
+Performance,Total_Return,136.51%,93.61%,+-42.89%
+Performance,Annualized_Return,18.80%,14.14%,+-4.66%
+Risk,Sharpe_Ratio,N/A,4.03,N/A
+Risk,Max_Drawdown,N/A,-5.51%,N/A
+Trading,Win_Rate,N/A,24.62%,N/A
+Trading,Total_Trades,N/A,130,N/A
+Comparison,Alpha,1.00x,0.69x,-31.42%
+Comparison,Excess_Return,0.00%,-42.89%,-42.89%
+Comparison,Return_Ratio,1.00:1,0.69:1,N/A

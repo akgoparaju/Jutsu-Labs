@@ -302,6 +302,106 @@ class MyStrategy(Strategy):
             self.sell(symbol, Decimal('0.0'))  # Close position
 ```
 
+## Implemented Strategies
+
+The following production-ready strategies are included with Jutsu Labs. All strategies support configuration via `.env`, CLI flags, and YAML configuration files.
+
+### MACD_Trend_v4 (Goldilocks)
+- **Type**: Regime-based trend-following with dual position sizing
+- **Assets**: Signal asset (e.g., QQQ), bull leverage (e.g., TQQQ), defensive (e.g., QQQ)
+- **Signals**: EMA trend + MACD momentum + MACD histogram confirmation
+- **Position Sizing**: Dual-mode (ATR-based risk for leveraged, flat % for defensive)
+- **Risk Management**: 3-state exit system (EMA, MACD crossdown, histogram bearish)
+- **Documentation**: `jutsu_engine/strategies/MACD_Trend-v4.md`
+- **Grid-Search**: `grid-configs/examples/grid_search_macd_v4.yaml`
+
+### MACD_Trend_v5 (Dynamic Regime)
+- **Type**: Dual-regime strategy-of-strategies with VIX volatility filter
+- **Assets**: QQQ (signal), TQQQ (3x bull), $VIX (regime detection)
+- **Regime Detection**: VIX vs VIX_EMA_50 (CALM vs CHOPPY markets)
+- **Parameter Switching**:
+  - CALM: EMA=200, ATR_Stop=3.0 (optimized for smooth trends)
+  - CHOPPY: EMA=75, ATR_Stop=2.0 (optimized for volatile markets)
+- **Position Sizing**: Dual-mode (ATR-based for TQQQ, flat 60% for QQQ)
+- **Key Feature**: Automatically adapts parameters based on market volatility regime
+- **Documentation**: `jutsu_engine/strategies/MACD_Trend-v5.md`
+- **Grid-Search**: `grid-configs/examples/grid_search_macd_v5.yaml`
+
+### MACD_Trend_v6 (VIX-Filtered) ⭐ NEW
+- **Type**: VIX-gated Goldilocks strategy with master switch
+- **Assets**: QQQ (signal), TQQQ (3x bull), $VIX (master switch)
+- **Core Philosophy**: "Only run V8.0 (v4) when market is CALM, else hold CASH"
+- **Master Switch Logic**:
+  - Step 1: VIX > VIX_EMA → CASH (stop, don't run v4)
+  - Step 2: VIX ≤ VIX_EMA → Run full v4 logic (CASH/TQQQ/QQQ)
+- **Key Difference from v5**: v5 switches parameters, v6 gates execution (simpler, binary)
+- **Position Sizing**: Dual-mode inherited from v4 (ATR-based for TQQQ, flat 60% for QQQ)
+- **Parameters**: 2 VIX params (vix_symbol, vix_ema_period=50) + all v4 parameters
+- **Conservative Default**: Holds CASH when insufficient VIX data
+- **Documentation**: `jutsu_engine/strategies/MACD_Trend-v6.md`
+- **Grid-Search**: `grid-configs/examples/grid_search_macd_v6.yaml` (432 combinations)
+
+### Grid Search Parameter Optimization
+
+Automate parameter optimization by testing all combinations of strategy parameters.
+
+**Usage**:
+```bash
+# Run grid search
+jutsu grid-search --config configs/examples/grid_search_macd_v4.yaml
+
+# Custom output directory
+jutsu grid-search -c configs/examples/grid_search_simple.yaml -o results/
+```
+
+**Configuration File** (`grid_search_macd_v4.yaml`):
+```yaml
+strategy: MACD_Trend_v4
+
+symbol_sets:
+  - name: "QQQ-TQQQ"
+    signal_symbol: QQQ
+    bull_symbol: TQQQ
+    defense_symbol: QQQ
+
+base_config:
+  start_date: "2020-01-01"
+  end_date: "2024-12-31"
+
+parameters:
+  ema_period: [50, 100, 150]
+  atr_stop_multiplier: [2.0, 3.0]
+  risk_bull: [0.02, 0.025]
+```
+
+**Output Structure**:
+```
+output/grid_search_MACD_Trend_v4_2025-11-07_143022/
+├── summary_comparison.csv   # All metrics for comparison
+├── run_config.csv          # Parameter mapping
+├── parameters.yaml         # Copy of input config
+├── README.txt             # Summary statistics
+├── run_001/
+│   ├── portfolio_daily.csv
+│   └── trades.csv
+└── run_002/
+    ├── portfolio_daily.csv
+    └── trades.csv
+```
+
+**Output CSV Metrics**:
+- Final Value, Total Return %, Annualized Return %
+- Sharpe Ratio, Sortino Ratio
+- Max Drawdown %, Calmar Ratio
+- Win Rate %, Total Trades
+- Profit Factor, Avg Win/Loss
+
+**Tips**:
+- Start with fewer combinations (< 50) to test configuration
+- Use `max_combinations` to limit total runs
+- Results automatically checkpoint every 10 runs (resume capability)
+- Sort `summary_comparison.csv` by Sharpe Ratio to find optimal parameters
+
 ### Trade Log Export (NEW - 2025-11-06)
 
 Export comprehensive trade logs to CSV for detailed post-analysis. Captures strategy context, execution details, portfolio state, and performance metrics for every trade.

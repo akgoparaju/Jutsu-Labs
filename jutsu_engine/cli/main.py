@@ -33,6 +33,7 @@ from jutsu_engine.utils.config import get_config
 from jutsu_engine.utils.logging_config import setup_logger
 from jutsu_engine.application.backtest_runner import BacktestRunner
 from jutsu_engine.application.data_sync import DataSync
+from jutsu_engine.application.grid_search_runner import GridSearchRunner
 from jutsu_engine.data.fetchers.schwab import SchwabDataFetcher
 from jutsu_engine.data.models import Base
 from jutsu_engine.strategies.sma_crossover import SMA_Crossover
@@ -59,6 +60,25 @@ macd_v4_atr = int(os.getenv('STRATEGY_MACD_V4_ATR_PERIOD', '14'))
 macd_v4_atr_mult = float(os.getenv('STRATEGY_MACD_V4_ATR_STOP_MULTIPLIER', '3.0'))
 macd_v4_risk_bull = float(os.getenv('STRATEGY_MACD_V4_RISK_BULL', '0.025'))
 macd_v4_alloc_defense = float(os.getenv('STRATEGY_MACD_V4_ALLOCATION_DEFENSE', '0.60'))
+
+# Load MACD_Trend_v5 parameters from .env
+macd_v5_signal = os.getenv('STRATEGY_MACD_V5_SIGNAL_SYMBOL', 'QQQ')
+macd_v5_bull = os.getenv('STRATEGY_MACD_V5_BULL_SYMBOL', 'TQQQ')
+macd_v5_defense = os.getenv('STRATEGY_MACD_V5_DEFENSE_SYMBOL', 'QQQ')
+# Normalize VIX symbol (add $ prefix if not present, as data is stored with $ prefix)
+vix_from_env = os.getenv('STRATEGY_MACD_V5_VIX_SYMBOL', 'VIX')
+macd_v5_vix_symbol = f'${vix_from_env}' if not vix_from_env.startswith('$') else vix_from_env
+macd_v5_vix_ema = int(os.getenv('STRATEGY_MACD_V5_VIX_EMA_PERIOD', '50'))
+macd_v5_ema_calm = int(os.getenv('STRATEGY_MACD_V5_EMA_PERIOD_CALM', '200'))
+macd_v5_atr_calm = float(os.getenv('STRATEGY_MACD_V5_ATR_STOP_CALM', '3.0'))
+macd_v5_ema_choppy = int(os.getenv('STRATEGY_MACD_V5_EMA_PERIOD_CHOPPY', '75'))
+macd_v5_atr_choppy = float(os.getenv('STRATEGY_MACD_V5_ATR_STOP_CHOPPY', '2.0'))
+macd_v5_fast = int(os.getenv('STRATEGY_MACD_V5_FAST_PERIOD', '12'))
+macd_v5_slow = int(os.getenv('STRATEGY_MACD_V5_SLOW_PERIOD', '26'))
+macd_v5_signal_period = int(os.getenv('STRATEGY_MACD_V5_SIGNAL_PERIOD', '9'))
+macd_v5_atr = int(os.getenv('STRATEGY_MACD_V5_ATR_PERIOD', '14'))
+macd_v5_risk_bull = float(os.getenv('STRATEGY_MACD_V5_RISK_BULL', '0.025'))
+macd_v5_alloc_defense = float(os.getenv('STRATEGY_MACD_V5_ALLOCATION_DEFENSE', '0.60'))
 
 
 # Known index symbols that require $ prefix in database
@@ -233,19 +253,19 @@ def sync(
 def parse_symbols_callback(ctx, param, value):
     """
     Parse symbols from space-separated, comma-separated, or multiple values.
-    
+
     Supports all common syntaxes:
     - Space-separated: --symbols "QQQ TQQQ SQQQ"
     - Comma-separated: --symbols QQQ,TQQQ,SQQQ
     - Multiple flags: --symbols QQQ --symbols TQQQ --symbols SQQQ
     - Mixed: --symbols "QQQ TQQQ" --symbols SQQQ
-    
+
     Returns:
         tuple of symbols or None
     """
     if not value:
         return None
-    
+
     # Flatten and split by commas and spaces
     all_symbols = []
     for item in value:
@@ -253,8 +273,68 @@ def parse_symbols_callback(ctx, param, value):
         for part in item.split(','):
             symbols = [s.strip().upper() for s in part.split() if s.strip()]
             all_symbols.extend(symbols)
-    
+
     return tuple(all_symbols) if all_symbols else None
+
+
+def _display_baseline_section(baseline: dict):
+    """
+    Display baseline (buy-and-hold) metrics.
+
+    Args:
+        baseline: Dictionary with baseline metrics from PerformanceAnalyzer
+    """
+    symbol = baseline.get('baseline_symbol', 'QQQ')
+    final_value = baseline.get('baseline_final_value', 0)
+    total_return = baseline.get('baseline_total_return', 0)
+    annual_return = baseline.get('baseline_annualized_return', 0)
+
+    click.echo(f"BASELINE (Buy & Hold {symbol}):")
+    click.echo(f"  Final Value:        ${final_value:,.2f}")
+    click.echo(f"  Total Return:       {total_return:.2%}")
+    click.echo(f"  Annualized Return:  {annual_return:.2%}")
+
+
+def _display_comparison_section(results: dict, baseline: dict):
+    """
+    Display strategy vs baseline comparison.
+
+    Args:
+        results: Full backtest results dictionary
+        baseline: Baseline metrics dictionary
+    """
+    # Extract metrics (cast to float to prevent Decimal/float type mixing)
+    strategy_return = float(results.get('total_return', 0))
+    baseline_return = float(baseline.get('baseline_total_return', 0))
+    alpha = baseline.get('alpha')
+
+    click.echo("PERFORMANCE vs BASELINE:")
+
+    # Alpha display with color coding
+    if alpha is not None:
+        if alpha >= 1:
+            outperformance = (alpha - 1) * 100
+            alpha_text = f"{alpha:.2f}x ({outperformance:+.2f}% outperformance)"
+            click.secho(f"  Alpha:              {alpha_text}", fg='green', bold=True)
+        else:
+            underperformance = (1 - alpha) * 100
+            alpha_text = f"{alpha:.2f}x ({underperformance:.2f}% underperformance)"
+            click.secho(f"  Alpha:              {alpha_text}", fg='red')
+    else:
+        # Alpha is None (baseline return = 0)
+        alpha_note = baseline.get('alpha_note', 'Cannot calculate')
+        click.secho(f"  Alpha:              N/A ({alpha_note})", fg='yellow')
+
+    # Excess return with color coding
+    excess_return = strategy_return - baseline_return
+    excess_text = f"{excess_return:+.2%}"
+    excess_color = 'green' if excess_return > 0 else 'red'
+    click.secho(f"  Excess Return:      {excess_text}", fg=excess_color)
+
+    # Return ratio (only if baseline return != 0)
+    if baseline_return != 0:
+        ratio = strategy_return / baseline_return
+        click.echo(f"  Return Ratio:       {ratio:.2f}:1 (strategy:baseline)")
 
 
 @cli.command()
@@ -559,13 +639,38 @@ def backtest(
             final_risk_strong = risk_strong_trend if risk_strong_trend is not None else env_risk_strong
             final_risk_waning = risk_waning_trend if risk_waning_trend is not None else env_risk_waning
 
-            # Apply priority logic for MACD-Trend-v4 parameters: CLI > .env > strategy defaults
-            final_signal_symbol = signal_symbol if signal_symbol is not None else macd_v4_signal
-            final_bull_symbol = bull_symbol if bull_symbol is not None else macd_v4_bull
-            final_defense_symbol = defense_symbol if defense_symbol is not None else macd_v4_defense
-            final_ema_trend = ema_trend_period if ema_trend_period is not None else macd_v4_ema
-            final_risk_bull = risk_bull if risk_bull is not None else macd_v4_risk_bull
-            final_alloc_defense = allocation_defense if allocation_defense is not None else macd_v4_alloc_defense
+            # Determine which parameter set to use based on strategy name
+            if strategy == "MACD_Trend_v5":
+                # Use v5 parameters
+                final_signal_symbol = signal_symbol if signal_symbol is not None else macd_v5_signal
+                final_bull_symbol = bull_symbol if bull_symbol is not None else macd_v5_bull
+                final_defense_symbol = defense_symbol if defense_symbol is not None else macd_v5_defense
+                final_ema_trend = ema_trend_period if ema_trend_period is not None else macd_v5_ema_calm  # Default to CALM
+                final_risk_bull = risk_bull if risk_bull is not None else macd_v5_risk_bull
+                final_alloc_defense = allocation_defense if allocation_defense is not None else macd_v5_alloc_defense
+
+                # v5-specific parameters
+                final_vix_symbol = macd_v5_vix_symbol
+                final_vix_ema = macd_v5_vix_ema
+                final_ema_calm = macd_v5_ema_calm
+                final_atr_calm = macd_v5_atr_calm
+                final_ema_choppy = macd_v5_ema_choppy
+                final_atr_choppy = macd_v5_atr_choppy
+
+                # Override MACD/ATR with v5 values
+                final_macd_fast = macd_fast_period if macd_fast_period is not None else macd_v5_fast
+                final_macd_slow = macd_slow_period if macd_slow_period is not None else macd_v5_slow
+                final_macd_signal = macd_signal_period if macd_signal_period is not None else macd_v5_signal_period
+                final_atr_period = atr_period if atr_period is not None else macd_v5_atr
+
+            else:
+                # Use v4 parameters (default for MACD_Trend_v4 and generic strategies)
+                final_signal_symbol = signal_symbol if signal_symbol is not None else macd_v4_signal
+                final_bull_symbol = bull_symbol if bull_symbol is not None else macd_v4_bull
+                final_defense_symbol = defense_symbol if defense_symbol is not None else macd_v4_defense
+                final_ema_trend = ema_trend_period if ema_trend_period is not None else macd_v4_ema
+                final_risk_bull = risk_bull if risk_bull is not None else macd_v4_risk_bull
+                final_alloc_defense = allocation_defense if allocation_defense is not None else macd_v4_alloc_defense
 
             # Build kwargs based on what the strategy constructor accepts
             strategy_kwargs = {}
@@ -614,6 +719,21 @@ def backtest(
             if 'allocation_defense' in params:
                 strategy_kwargs['allocation_defense'] = Decimal(str(final_alloc_defense))
 
+            # MACD-Trend-v5 specific parameters
+            if strategy == "MACD_Trend_v5":
+                if 'vix_symbol' in params:
+                    strategy_kwargs['vix_symbol'] = final_vix_symbol
+                if 'vix_ema_period' in params:
+                    strategy_kwargs['vix_ema_period'] = final_vix_ema
+                if 'ema_period_calm' in params:
+                    strategy_kwargs['ema_period_calm'] = final_ema_calm
+                if 'atr_stop_calm' in params:
+                    strategy_kwargs['atr_stop_calm'] = Decimal(str(final_atr_calm))
+                if 'ema_period_choppy' in params:
+                    strategy_kwargs['ema_period_choppy'] = final_ema_choppy
+                if 'atr_stop_choppy' in params:
+                    strategy_kwargs['atr_stop_choppy'] = Decimal(str(final_atr_choppy))
+
             # Instantiate strategy with only accepted parameters
             strategy_instance = strategy_class(**strategy_kwargs)
             
@@ -651,22 +771,51 @@ def backtest(
 
         # Display results
         click.echo("\n" + "=" * 60)
-        click.echo("RESULTS")
-        click.echo("=" * 60)
-        click.echo(f"Final Value:        ${results['final_value']:,.2f}")
-        click.echo(f"Total Return:       {results['total_return']:.2%}")
-        click.echo(f"Annualized Return:  {results['annualized_return']:.2%}")
-        click.echo(f"Sharpe Ratio:       {results['sharpe_ratio']:.2f}")
-        click.echo(f"Max Drawdown:       {results['max_drawdown']:.2%}")
-        click.echo(f"Win Rate:           {results['win_rate']:.2%}")
-        click.echo(f"Total Trades:       {results['total_trades']}")
+        click.echo("BACKTEST RESULTS")
         click.echo("=" * 60)
 
-        # Always display trades CSV path (default behavior)
+        # Display baseline section if available
+        baseline = results.get('baseline')
+        if baseline:
+            _display_baseline_section(baseline)
+            click.echo("\n" + "-" * 60 + "\n")
+
+        # Display strategy results
+        click.echo(f"STRATEGY ({strategy}):")
+        click.echo(f"  Initial Capital:    ${results['config']['initial_capital']:,.2f}")
+        click.echo(f"  Final Value:        ${results['final_value']:,.2f}")
+        click.echo(f"  Total Return:       {results['total_return']:.2%}")
+        click.echo(f"  Annualized Return:  {results['annualized_return']:.2%}")
+        click.echo(f"  Sharpe Ratio:       {results['sharpe_ratio']:.2f}")
+        click.echo(f"  Max Drawdown:       {results['max_drawdown']:.2%}")
+        click.echo(f"  Win Rate:           {results['win_rate']:.2%}")
+        click.echo(f"  Total Trades:       {results['total_trades']}")
+
+        # Display comparison section if baseline available
+        if baseline and baseline.get('alpha') is not None:
+            click.echo("\n" + "-" * 60 + "\n")
+            _display_comparison_section(results, baseline)
+
+        click.echo("\n" + "=" * 60)
+
+        # Display CSV export paths
+        click.echo("\nCSV EXPORTS:")
+
+        # Trades CSV
         if 'trades_csv_path' in results and results['trades_csv_path']:
-            click.echo(f"\n✓ Trade log exported to: {results['trades_csv_path']}")
+            click.echo(f"  ✓ Trade log: {results['trades_csv_path']}")
         elif 'trades_csv_path' in results and results['trades_csv_path'] is None:
-            click.echo(f"\n⚠ No trades to export")
+            click.echo(f"  ⚠ Trade log: No trades to export")
+
+        # Portfolio CSV
+        if 'portfolio_csv_path' in results and results['portfolio_csv_path']:
+            click.echo(f"  ✓ Portfolio daily: {results['portfolio_csv_path']}")
+
+        # Summary CSV
+        if 'summary_csv_path' in results and results['summary_csv_path']:
+            click.echo(f"  ✓ Summary metrics: {results['summary_csv_path']}")
+
+        click.echo()  # Blank line after exports
 
         # Save to file if requested
         if output:
@@ -830,6 +979,110 @@ def validate(
     except Exception as e:
         click.echo(click.style(f"\n✗ Validation failed: {e}", fg='red'))
         raise click.Abort()
+
+
+@cli.command()
+@click.option(
+    '--config',
+    '-c',
+    required=True,
+    type=click.Path(exists=True),
+    help='Path to grid search YAML configuration',
+)
+@click.option(
+    '--output',
+    '-o',
+    default='output',
+    help='Base output directory (default: output/)',
+)
+def grid_search(config: str, output: str):
+    """
+    Run parameter grid search optimization.
+
+    Performs exhaustive backtest across all parameter combinations
+    and generates comparison CSV with key metrics.
+
+    Example:
+        jutsu grid-search --config grid-configs/macd_optimization.yaml
+        jutsu grid-search -c grid-configs/macd_optimization.yaml -o results/
+    """
+    click.echo("=" * 60)
+    click.echo("Grid Search Parameter Optimization")
+    click.echo("=" * 60)
+
+    # Load configuration
+    click.echo(f"\nLoading config: {config}")
+    try:
+        grid_config = GridSearchRunner.load_config(config)
+    except Exception as e:
+        click.echo(click.style(f"✗ Configuration error: {e}", fg='red'))
+        logger.error(f"Failed to load config: {e}", exc_info=True)
+        raise click.Abort()
+
+    # Display configuration summary
+    click.echo(f"\nStrategy: {grid_config.strategy_name}")
+    click.echo(f"Symbol Sets: {len(grid_config.symbol_sets)}")
+    click.echo(f"Parameters: {len(grid_config.parameters)}")
+
+    # Create runner
+    runner = GridSearchRunner(grid_config)
+
+    # Generate combinations (preview)
+    try:
+        combinations = runner.generate_combinations()
+    except Exception as e:
+        click.echo(click.style(f"✗ Error generating combinations: {e}", fg='red'))
+        logger.error(f"Combination generation failed: {e}", exc_info=True)
+        raise click.Abort()
+
+    click.echo(f"Total Combinations: {len(combinations)}")
+
+    # Confirm if > 100 combinations
+    if len(combinations) > 100:
+        click.echo(f"\n⚠  Warning: {len(combinations)} backtests will take significant time")
+        if not click.confirm("Continue?"):
+            click.echo("Aborted.")
+            return
+
+    # Execute grid search
+    click.echo(f"\nRunning grid search...")
+    click.echo("(Progress bar will appear below)\n")
+
+    try:
+        result = runner.execute_grid_search(
+            output_base=output,
+            config_path=config
+        )
+    except Exception as e:
+        click.echo(click.style(f"\n✗ Grid search failed: {e}", fg='red'))
+        logger.error(f"Grid search execution failed: {e}", exc_info=True)
+        raise click.Abort()
+
+    # Display summary
+    click.echo("\n" + "=" * 60)
+    click.echo(click.style("✓ Grid Search Complete!", fg='green'))
+    click.echo("=" * 60)
+    click.echo(f"Total Runs: {len(result.run_results)}")
+    click.echo(f"Output Directory: {result.output_dir}")
+    click.echo(f"\nFiles Generated:")
+    click.echo(f"  - summary_comparison.csv (metrics comparison)")
+    click.echo(f"  - run_config.csv (parameter mapping)")
+    click.echo(f"  - {len(result.run_results)} run directories")
+
+    # Best run (by Sharpe Ratio)
+    if len(result.summary_df) > 0 and 'sharpe_ratio' in result.summary_df.columns:
+        click.echo("\nBest Run (by Sharpe Ratio):")
+        best_idx = result.summary_df['sharpe_ratio'].idxmax()
+        best = result.summary_df.loc[best_idx]
+        click.echo(f"  Run ID: {best['run_id']}")
+        click.echo(f"  Symbol Set: {best['symbol_set']}")
+        click.echo(f"  Sharpe Ratio: {best['sharpe_ratio']:.2f}")
+        click.echo(f"  Annualized Return: {best['annualized_return_pct']:.2f}%")
+        click.echo(f"  Max Drawdown: {best['max_drawdown_pct']:.2f}%")
+    else:
+        click.echo(click.style("\n⚠ No valid results to display", fg='yellow'))
+
+    click.echo("=" * 60)
 
 
 if __name__ == '__main__':
