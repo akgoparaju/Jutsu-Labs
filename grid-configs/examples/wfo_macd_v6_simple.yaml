@@ -1,0 +1,157 @@
+# Walk-Forward Optimization Configuration for MACD_Trend_v6
+# ==========================================================
+# This configuration demonstrates WFO methodology to defeat curve-fitting.
+#
+# WFO Process:
+# 1. Divide 15-year period into sliding 3-year windows
+# 2. Each window: 2.5y in-sample (optimize) + 0.5y out-of-sample (test)
+# 3. Slide forward 0.5y and repeat
+# 4. Stitch all OOS results together for true performance
+#
+# This ensures parameters are re-optimized periodically (mimicking real trading)
+# and performance is measured ONLY on unseen future data.
+
+# Strategy to optimize (same as grid search)
+strategy: "MACD_Trend_v6"
+
+# Symbol Sets (same as grid search)
+# ---------------------------------
+symbol_sets:
+  - name: "QQQ_TQQQ_VIX"
+    signal_symbol: "QQQ"
+    bull_symbol: "TQQQ"
+    defense_symbol: "QQQ"
+    vix_symbol: "$VIX"
+
+# Base Configuration (same as grid search)
+# -----------------------------------------
+# Note: start_date and end_date here are IGNORED for WFO
+# WFO uses walk_forward.total_start_date and total_end_date instead
+base_config:
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 10000
+  commission: 0.0
+  slippage: 0.0
+
+# Parameters to Optimize (same as grid search)
+# ---------------------------------------------
+# Grid search will test ALL combinations during each IS period
+parameters:
+  # VIX Master Switch (v6 specific)
+  vix_ema_period: [20, 50]
+
+  # Trend Filter (from v4)
+  ema_period: [75, 100]
+
+  # ATR Stop-Loss (from v4)
+  atr_stop_multiplier: [2.0, 2.5]
+
+  # TQQQ Risk Allocation (from v4)
+  risk_bull: [0.020, 0.025]
+
+  # QQQ Allocation (from v4)
+  allocation_defense: [0.5, 0.6]
+
+  # MACD defaults (from v4)
+  macd_fast_period: [12]
+  macd_slow_period: [26]
+  macd_signal_period: [9]
+  atr_period: [14]
+
+# Walk-Forward Settings (NEW for WFO)
+# ------------------------------------
+# This section defines how WFO windows are calculated
+walk_forward:
+  # Total date range for WFO
+  # Must have sufficient market data for ALL symbols in database
+  total_start_date: "2019-03-01"
+  total_end_date: "2025-03-01"
+
+  # Window size: IS + OOS combined
+  # Example: 3.0 years = 2.5y IS + 0.5y OOS
+  window_size_years: 3.0
+
+  # In-sample period (optimization/training)
+  # Grid search runs on this period to find best parameters
+  in_sample_years: 2.5
+
+  # Out-of-sample period (testing/validation)
+  # Backtest runs with best params on this unseen data
+  out_of_sample_years: 0.5
+
+  # Slide amount (how far to move window forward)
+  # Typically equals OOS period for non-overlapping OOS segments
+  slide_years: 1
+
+  # Selection metric for choosing best parameters
+  # Options: sharpe_ratio, sortino_ratio, calmar_ratio, total_return, annualized_return
+  # selection_metric: "sharpe_ratio"
+  selection_metric: "sortino_ratio"
+
+# Expected Output
+# ---------------
+# output/wfo_MACD_Trend_v6_YYYYMMDD_HHMMSS/
+# ├── wfo_trades_master.csv      # All OOS trades (stitched chronologically)
+# ├── wfo_parameter_log.csv      # Best parameters selected per window
+# ├── wfo_equity_curve.csv       # Trade-by-trade equity progression
+# ├── wfo_summary.txt            # Performance metrics and parameter stability
+# ├── wfo_config.yaml            # Copy of this config
+# └── window_XXX/                # Individual window results
+#     ├── is_grid_search/        # Grid search results (IS period)
+#     │   ├── summary_comparison.csv
+#     │   └── run_config.csv
+#     └── oos_backtest/          # Backtest results (OOS period)
+#         ├── trades.csv
+#         ├── portfolio_daily.csv
+#         └── summary.csv
+
+# WFO Window Plan (with above settings)
+# --------------------------------------
+# Total combinations per window: 4 × 4 × 3 × 3 × 3 = 432
+# Total windows: 29 (sliding from 2010 to 2024)
+# Total backtests: 29 × 432 = 12,528
+# Estimated runtime: 4-8 hours (depending on hardware)
+#
+# Window 1:  IS 2010-01-01 to 2012-06-30 → OOS 2012-07-01 to 2012-12-31
+# Window 2:  IS 2010-07-01 to 2012-12-31 → OOS 2013-01-01 to 2013-06-30
+# Window 3:  IS 2011-01-01 to 2013-06-30 → OOS 2013-07-01 to 2013-12-31
+# ...
+# Window 29: IS 2021-07-01 to 2024-01-01 → OOS 2024-01-01 to 2024-06-30
+
+# Usage
+# -----
+# # Preview window plan (no execution)
+# jutsu wfo --config grid-configs/examples/wfo_macd_v6.yaml --dry-run
+#
+# # Run full WFO
+# jutsu wfo --config grid-configs/examples/wfo_macd_v6.yaml
+#
+# # Custom output directory
+# jutsu wfo --config grid-configs/examples/wfo_macd_v6.yaml --output-dir results/wfo_test
+
+# Analysis Workflow
+# -----------------
+# After WFO completes:
+#
+# 1. Review Equity Curve (wfo_equity_curve.csv)
+#    - Consistent growth = robust strategy
+#    - Large drops = overfitting or regime change
+#
+# 2. Check Parameter Stability (wfo_parameter_log.csv)
+#    - Low CV% = stable, robust parameters
+#    - High CV% = parameters jump randomly = not robust
+#
+# 3. Analyze OOS Performance (wfo_summary.txt)
+#    - Compare to buy-and-hold baseline (QQQ)
+#    - Check max drawdown and recovery
+#
+# 4. Parameter Trends
+#    - Do certain parameter values consistently appear?
+#    - Are there temporal patterns (e.g., higher risk in bull markets)?
+#
+# 5. Validation
+#    - If OOS performance is good AND parameters are stable → strategy is robust
+#    - If OOS performance is poor OR parameters unstable → strategy is overfit

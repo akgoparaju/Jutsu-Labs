@@ -1,0 +1,68 @@
+# Simple Grid Search Configuration - Quick Testing
+# =================================================
+# Minimal example with fewer combinations for rapid testing and learning
+#
+# Total Backtests: 1 symbol_set × (2 ema × 2 atr × 2 risk) = 8 backtests
+# Estimated Runtime: ~2-5 minutes
+
+strategy: MACD_Trend_v4
+
+# Single symbol set for simplicity
+symbol_sets:
+  - name: "SPY-SPXL"
+    signal_symbol: SPY       # S&P 500 ETF
+    bull_symbol: SPXL        # 3x leveraged S&P 500
+    defense_symbol: SPY      # Unleveraged fallback
+
+# Fixed backtest settings
+base_config:
+  # Shorter date range for faster execution
+  start_date: "2022-01-01"
+  end_date: "2024-12-31"
+
+  timeframe: "1D"
+  initial_capital: 100000
+  commission: 0.01
+  slippage: 0.0
+
+# Minimal parameter grid
+# Only testing 2 values per parameter = 8 total combinations
+parameters:
+  # Test short vs long trend filter
+  ema_period: [100, 200]
+
+  # Test tight vs wide stops
+  atr_stop_multiplier: [2.0, 3.0]
+
+  # Test conservative vs aggressive sizing
+  risk_bull: [0.02, 0.03]
+
+  # Keep all other parameters at defaults
+  macd_fast_period: [12]
+  macd_slow_period: [26]
+  macd_signal_period: [9]
+  atr_period: [14]
+  allocation_defense: [0.60]
+
+# No constraints needed for 8 combinations
+max_combinations: 100
+checkpoint_interval: 5
+
+# Expected Output
+# ---------------
+# output/grid_search_MACD_Trend_v4_YYYYMMDD_HHMMSS/
+# ├── summary_comparison.csv   # 8 rows of metrics
+# ├── run_config.csv          # 8 parameter combinations
+# ├── parameters.yaml
+# ├── README.txt
+# └── run_001/ through run_008/
+
+# Usage
+# -----
+# jutsu grid-search --config configs/examples/grid_search_simple.yaml
+#
+# Perfect for:
+# - Learning the grid search workflow
+# - Testing configuration syntax
+# - Quick parameter exploration
+# - Validating setup before larger runs

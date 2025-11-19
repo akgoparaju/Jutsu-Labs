@@ -1,0 +1,150 @@
+# Grid Search Configuration for MACD Trend V5 Strategy
+# ========================================================
+# Dynamic Regime Strategy with VIX filtering
+#
+# Purpose: Find optimal parameters for MACD_Trend_v5 strategy by testing
+#          all combinations of VIX regime parameters and V4 base parameters
+#
+# Total Backtests: 1 symbol_set × (3 vix_ema × 3 ema_calm × 3 atr_calm × 3 ema_choppy × 2 atr_choppy × 2 risk × 2 allocation) = 648 backtests
+# Estimated Runtime: ~60-90 minutes (depends on system and data availability)
+
+# Strategy to optimize
+strategy: MACD_Trend_v5
+
+# Symbol Sets
+# -----------
+# V5 requires 3 symbols: signal, bull, and VIX
+symbol_sets:
+  - name: "QQQ_TQQQ_VIX"
+    signal_symbol: QQQ       # Nasdaq-100 for signals
+    bull_symbol: TQQQ        # 3x leveraged Nasdaq ETF
+    defense_symbol: QQQ      # Fall back to unleveraged
+    vix_symbol: VIX          # VIX for regime detection
+
+# Base Configuration
+# ------------------
+# Fixed settings applied to ALL backtests
+base_config:
+  # Date range (5 years for robust testing)
+  start_date: "2010-04-01"
+  end_date: "2025-11-01"
+
+  # Market data
+  timeframe: "1D"           # Daily bars
+
+  # Portfolio settings
+  initial_capital: 10000   # $100,000 starting capital
+  commission: 0.0           # $0.00 per trade
+  slippage: 0.0005          # 0.05% slippage per trade
+
+# Parameters to Optimize
+# ----------------------
+# Grid search will test ALL combinations of these parameters
+
+parameters:
+  # VIX Regime Detection
+  # --------------------
+  # VIX_EMA period for regime classification
+  # Lower values = more sensitive to VIX changes
+  # Higher values = smoother regime classification
+  # Testing: 20, 50, 100 days
+  vix_ema_period: [20, 50, 100]
+
+  # CALM Regime Playbook (VIX_raw <= VIX_EMA)
+  # ------------------------------------------
+  # Trend Filter EMA - Slow for smooth markets
+  # Lower values = more trades, Higher values = fewer trades
+  # Testing: 150, 200, 250 days
+  ema_period_calm: [25, 75, 100]
+
+  # ATR Stop Multiplier - Wide for smooth markets
+  # Lower values = tighter stops, Higher values = looser stops
+  # Testing: 2.5×, 3.0×, 3.5× ATR
+  atr_stop_calm: [2.5, 2.0, 1.0 ]
+
+  # CHOPPY Regime Playbook (VIX_raw > VIX_EMA)
+  # -------------------------------------------
+  # Trend Filter EMA - Fast for choppy markets
+  # Lower values = more responsive, Higher values = less whipsaw
+  # Testing: 50, 75, 100 days
+  ema_period_choppy: [50, 75, 100]
+
+  # ATR Stop Multiplier - Tight for choppy markets
+  # Lower values = protect capital, Higher values = allow volatility
+  # Testing: 2.0×, 2.5× ATR
+  atr_stop_choppy: [2.0, 2.5, 1.0]
+
+  # Position Sizing (Shared Across Regimes)
+  # ----------------------------------------
+  # Risk Per Trade (Bull Regime)
+  # Percentage of capital risked per TQQQ trade
+  # Testing: 2.5%, 3.0% risk per trade
+  risk_bull: [0.015, 0.02, 0.025]
+
+  # Defense Allocation
+  # Percentage of capital in QQQ during pause regime
+  # Testing: 50%, 60% allocation
+  allocation_defense: [0.6]
+
+  # MACD Parameters (keeping defaults)
+  # -----------------------------------
+  # Standard MACD(12, 26, 9) configuration
+  macd_fast_period: [12]
+  macd_slow_period: [26]
+  macd_signal_period: [9]
+
+  # ATR Period (keeping default)
+  # ----------------------------
+  # Standard 14-period ATR for volatility measurement
+  atr_period: [14]
+
+# Optional Constraints
+# --------------------
+# Safety limits to prevent accidental large-scale runs
+
+# Maximum total combinations to run
+# If actual combinations exceed this, grid search will abort
+# Current combinations: 648
+max_combinations: 1000
+
+# Checkpoint interval
+# Save progress every N backtests for resume capability
+checkpoint_interval: 50
+
+# Expected Output
+# ---------------
+# output/grid_search_MACD_Trend_v5_YYYYMMDD_HHMMSS/
+# ├── summary_comparison.csv   # Metrics for all 648 runs (sortable)
+# ├── run_config.csv          # Parameter mapping (which run = which params)
+# ├── parameters.yaml         # Copy of this config file
+# ├── README.txt             # Summary statistics and top performers
+# ├── run_001/               # First combination
+# │   ├── portfolio_daily.csv
+# │   └── trades.csv
+# ├── run_002/               # Second combination
+# │   ├── portfolio_daily.csv
+# │   └── trades.csv
+# └── ... (646 more runs)
+
+# Usage
+# -----
+# jutsu grid-search --config grid-configs/examples/grid_search_macd_v5.yaml
+#
+# After completion:
+# 1. Open summary_comparison.csv
+# 2. Sort by Sharpe_Ratio (highest to lowest)
+# 3. Look for parameter patterns:
+#    - Which VIX_EMA period works best?
+#    - Do CALM vs CHOPPY playbooks show clear differences?
+#    - Is there an optimal EMA period for each regime?
+#    - Do tighter stops help in CHOPPY regime?
+# 4. Compare to V4 baseline (no VIX filtering)
+# 5. Run focused grid search on promising parameter ranges
+
+# Analysis Tips
+# -------------
+# 1. Filter by time period (e.g., 2020 COVID crash, 2022 bear market)
+# 2. Compare Sharpe Ratio, Max Drawdown, Win Rate across regimes
+# 3. Look for consistent performers across different market conditions
+# 4. Check if VIX filtering reduces drawdowns vs V4 baseline
+# 5. Analyze regime transition frequency (too many switches = whipsaw)

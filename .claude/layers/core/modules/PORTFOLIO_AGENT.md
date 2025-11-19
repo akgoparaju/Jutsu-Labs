@@ -200,7 +200,7 @@ def calculate_pnl(self) -> Decimal:
     """
 ```
 
-**`execute_signal()`** - Execute signal with position sizing (NEW - 2025-11-04)
+**`execute_signal()`** - Execute signal with position sizing and rebalancing (UPDATED - 2025-11-18)
 ```python
 def execute_signal(
     self,
@@ -210,22 +210,32 @@ def execute_signal(
     """
     Execute signal by calculating position size and executing order.
 
-    **ARCHITECTURAL NOTE**: Position Sizing Strategy
+    **ARCHITECTURAL NOTE**: Position Sizing and Rebalancing Strategy
     - LONG: Allocates signal.portfolio_percent of total portfolio value
     - SHORT: Requires 150% margin (SHORT_MARGIN_REQUIREMENT = 1.5)
     - 0.0% allocation: Close entire position
 
+    **REBALANCING LOGIC** (Added 2025-11-18):
+    - For EXISTING positions: Calculate delta between current and target allocation
+    - If delta > 0: BUY additional shares (increase position)
+    - If delta < 0: SELL shares (reduce position)
+    - If delta ≈ 0 (within 1 share): Skip rebalancing
+    - **Semantics**: portfolio_percent is ABSOLUTE target allocation, not ADDITIVE
+
     Args:
-        signal: SignalEvent with portfolio_percent
+        signal: SignalEvent with portfolio_percent (ABSOLUTE target allocation)
         current_bar: Current market data for pricing
 
     Returns:
         FillEvent if executed, None if rejected
 
     Example:
-        # 25% portfolio allocation to long position
+        # 25% portfolio allocation to long position (ABSOLUTE target)
         signal = SignalEvent(symbol='AAPL', signal_type='BUY', portfolio_percent=0.25)
         fill = portfolio.execute_signal(signal, bar)
+
+        # If position already exists at 30%, this will SELL to reduce to 25%
+        # If position exists at 20%, this will BUY to increase to 25%
     """
 ```
 
@@ -446,6 +456,14 @@ validation:
 See [DECISIONS.md](./DECISIONS.md) for module-specific decisions.
 
 **Recent Decisions**:
+- **2025-11-18**: Delta-based rebalancing for multi-position strategies
+  - **Context**: Hierarchical_Adaptive_v2 exposed limitation in execute_signal()
+  - **Problem**: portfolio_percent treated as ADDITIVE (buy MORE shares) instead of ABSOLUTE (set position to target %)
+  - **Root Cause**: Design mismatch between Strategy expectations and Portfolio implementation
+  - **Solution**: Added rebalancing logic that calculates delta between current and target allocation
+  - **Impact**: Enables strategies holding multiple simultaneous positions to rebalance properly
+  - **Backward Compatibility**: New positions from 0 still work as before
+  - **Testing**: Validated with grid-search (39 fills, 1779% return, no "Insufficient cash" errors)
 - **2025-01-01**: Portfolio is stateful (manages cash and positions)
 - **2025-01-01**: All financial calculations use Decimal for precision
 - **2025-01-01**: Complete audit trail via trades list (all FillEvents stored)
@@ -495,6 +513,42 @@ question: "What should EventLoop do if execute_order() returns None?"
 current_behavior: "EventLoop logs rejection and continues"
 proposed_behavior: "Same, but should EventLoop notify Strategy?"
 ```
+
+## Known Issues & Solutions
+
+### Issue 1: Rebalancing Multi-Position Strategies (RESOLVED - 2025-11-18)
+
+**Symptom**: "Insufficient cash" errors when rebalancing existing positions
+
+**Root Cause**: execute_signal() treated portfolio_percent as ADDITIVE allocation instead of ABSOLUTE target
+
+**Example Problem**:
+```python
+# Portfolio has $97,500 total, TQQQ position worth $69,000 (70.8%)
+strategy.buy("TQQQ", portfolio_percent=0.285)  # "Set to 28.5%"
+
+# OLD BEHAVIOR (BROKEN):
+# Calculated: $97,500 × 0.285 = $27,788 worth of shares to BUY
+# Only had $2.45 cash → ORDER REJECTED
+# Should have SOLD shares to reduce from 70.8% to 28.5%
+
+# NEW BEHAVIOR (FIXED):
+# Current allocation: 70.8%
+# Target allocation: 28.5%
+# Delta: -42.3% → SELL shares to reduce position
+```
+
+**Solution**: Delta-based rebalancing logic (lines 295-410 in simulator.py)
+- Calculate current position allocation percentage
+- Compute delta between target and current
+- BUY if delta positive, SELL if delta negative
+- Skip if delta within 1-share threshold
+
+**Validation**: Grid-search with Hierarchical_Adaptive_v2 shows proper rebalancing (39 fills, 1779% return)
+
+**Related Memory**: `portfolio_rebalancing_fix_2025-11-18` (Serena)
+
+---
 
 ## Error Scenarios
 

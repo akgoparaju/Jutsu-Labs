@@ -314,6 +314,98 @@ class BacktestRunner:
 
         metrics = analyzer.calculate_metrics()
 
+        # Calculate baseline (QQQ buy-and-hold comparison)
+        baseline_result = None
+        try:
+            # Default baseline symbol is QQQ (NASDAQ-100 ETF)
+            baseline_symbol = 'QQQ'
+
+            # First check if QQQ is already loaded in event loop (multi-symbol strategy)
+            if baseline_symbol in symbols:
+                # Extract QQQ bars from event loop
+                qqq_bars = [bar for bar in event_loop.all_bars if bar.symbol == baseline_symbol]
+            else:
+                # QQQ not in strategy symbols - query directly from database
+                from jutsu_engine.data.models import MarketData
+
+                qqq_db_bars = (
+                    self.session.query(MarketData)
+                    .filter(
+                        and_(
+                            MarketData.symbol == baseline_symbol,
+                            MarketData.timeframe == self.config['timeframe'],
+                            MarketData.timestamp >= self.config['start_date'],
+                            MarketData.timestamp <= self.config['end_date'],
+                            MarketData.is_valid == True,  # noqa: E712
+                        )
+                    )
+                    .order_by(MarketData.timestamp.asc())
+                    .all()
+                )
+
+                if qqq_db_bars:
+                    # Convert to simple objects with just the data we need
+                    qqq_bars = [
+                        type('Bar', (), {
+                            'symbol': bar.symbol,
+                            'timestamp': bar.timestamp,
+                            'close': bar.close
+                        })()
+                        for bar in qqq_db_bars
+                    ]
+                else:
+                    qqq_bars = []
+
+            # Calculate baseline if we have sufficient data
+            if len(qqq_bars) >= 2:
+                # Get start and end prices
+                start_bar = qqq_bars[0]
+                end_bar = qqq_bars[-1]
+
+                # Calculate baseline metrics
+                baseline_result = analyzer.calculate_baseline(
+                    symbol=baseline_symbol,
+                    start_price=start_bar.close,
+                    end_price=end_bar.close,
+                    start_date=start_bar.timestamp,
+                    end_date=end_bar.timestamp
+                )
+
+                if baseline_result:
+                    # Calculate alpha (strategy outperformance vs baseline)
+                    strategy_return = metrics.get('total_return', 0)
+                    baseline_return = baseline_result['baseline_total_return']
+
+                    if baseline_return != 0:
+                        # Alpha as ratio (e.g., 1.20 means 20% better than baseline)
+                        alpha = strategy_return / baseline_return
+                        baseline_result['alpha'] = alpha
+                        logger.info(
+                            f"Baseline calculated: {baseline_symbol} return = {baseline_return:.2%}"
+                        )
+                        logger.info(f"Strategy alpha vs baseline: {alpha:.2f}x")
+                    else:
+                        # Cannot calculate ratio when baseline return is zero
+                        baseline_result['alpha'] = None
+                        baseline_result['alpha_note'] = 'Cannot calculate ratio (baseline return = 0)'
+                        logger.info(
+                            f"Baseline calculated: {baseline_symbol} return = {baseline_return:.2%}"
+                        )
+                        logger.info("Alpha: N/A (baseline return = 0)")
+            elif len(qqq_bars) == 0:
+                logger.info(
+                    f"{baseline_symbol} data not found in database for the backtest period"
+                )
+            else:
+                logger.warning(
+                    f"Insufficient {baseline_symbol} data for baseline "
+                    f"({len(qqq_bars)} bars, need >= 2)"
+                )
+
+        except Exception as e:
+            logger.error(f"Baseline calculation failed: {e}", exc_info=True)
+            baseline_result = None
+
         # ALWAYS export trades and portfolio CSVs to output directory
         try:
             # Export trades CSV
@@ -330,6 +422,44 @@ class BacktestRunner:
             logger.error(f"Failed to export trades: {e}")
             metrics['trades_csv_path'] = None
         
+        # Prepare baseline info for CSV export
+        baseline_csv_info = None
+        if baseline_result:
+            try:
+                qqq_symbol = baseline_result['baseline_symbol']
+
+                # Get QQQ price history using data_handler
+                qqq_bars = data_handler.get_bars(
+                    symbol=qqq_symbol,
+                    start_date=self.config['start_date'],
+                    end_date=self.config['end_date']
+                )
+
+                if qqq_bars:
+                    # Build price history dict: {date: price}
+                    price_history = {
+                        bar.timestamp.date(): bar.close
+                        for bar in qqq_bars
+                    }
+
+                    # Get start price
+                    first_bar = qqq_bars[0]
+
+                    baseline_csv_info = {
+                        'symbol': qqq_symbol,
+                        'start_price': first_bar.close,
+                        'price_history': price_history
+                    }
+                    logger.debug(
+                        f"Baseline CSV info prepared: {len(price_history)} price points for {qqq_symbol}"
+                    )
+                else:
+                    logger.warning(f"No bars found for {qqq_symbol}, baseline columns will be empty")
+
+            except Exception as e:
+                logger.warning(f"Could not prepare baseline info for CSV: {e}")
+                baseline_csv_info = None
+
         # Export portfolio daily snapshots CSV
         try:
             from jutsu_engine.performance.portfolio_exporter import PortfolioCSVExporter
@@ -341,12 +471,16 @@ class BacktestRunner:
                 strategy_name=strategy.name,
                 signal_symbol=signal_symbol,
                 signal_prices=signal_prices,
+                baseline_info=baseline_csv_info,
             )
             metrics['portfolio_csv_path'] = portfolio_csv_path
             logger.info(f"Portfolio CSV exported to: {portfolio_csv_path}")
 
             if signal_symbol and signal_prices:
                 logger.info(f"Buy-and-hold benchmark included for {signal_symbol}")
+
+            if baseline_csv_info:
+                logger.info(f"Baseline comparison columns added for {baseline_csv_info['symbol']}")
         except ValueError as e:
             logger.warning(f"No daily snapshots to export: {e}")
             metrics['portfolio_csv_path'] = None
@@ -354,9 +488,32 @@ class BacktestRunner:
             logger.error(f"Failed to export portfolio CSV: {e}")
             metrics['portfolio_csv_path'] = None
 
+        # Export summary metrics CSV
+        try:
+            from jutsu_engine.performance.summary_exporter import SummaryCSVExporter
+
+            summary_exporter = SummaryCSVExporter()
+            # Prepare metrics dict for summary export
+            temp_metrics = {**metrics}
+            temp_metrics['config'] = self.config
+            summary_csv_path = summary_exporter.export_summary_csv(
+                results=temp_metrics,
+                baseline=baseline_result,
+                output_dir=output_dir,
+                strategy_name=strategy.name
+            )
+            metrics['summary_csv_path'] = summary_csv_path
+            logger.info(f"Summary metrics CSV exported to: {summary_csv_path}")
+        except Exception as e:
+            logger.error(f"Failed to export summary CSV: {e}")
+            metrics['summary_csv_path'] = None
+
         # Add event loop results
         loop_results = event_loop.get_results()
         results = {**metrics, **loop_results}
+
+        # Add baseline comparison (if available)
+        results['baseline'] = baseline_result
 
         # Add configuration
         results['config'] = self.config

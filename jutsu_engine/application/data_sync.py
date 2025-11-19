@@ -156,14 +156,14 @@ class DataSync:
                         last_bar = last_bar.replace(tzinfo=timezone.utc)
 
                     # Determine fetch strategy based on start_date vs existing data range
-                    if start_date >= last_bar:
+                    if start_date.date() >= last_bar.date():
                         # Incremental update: fetch from last_bar + 1 day
                         actual_start_date = last_bar + timedelta(days=1)
                         actual_end_date = end_date
                         logger.info(
                             f"Incremental update: fetching from {actual_start_date.date()}"
                         )
-                    elif start_date < first_bar:
+                    elif start_date.date() < first_bar.date():
                         # Backfill: user wants data BEFORE earliest existing data
                         # Fetch ONLY the missing earlier data (not all data)
                         actual_start_date = start_date

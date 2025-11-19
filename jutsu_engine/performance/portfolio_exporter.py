@@ -17,7 +17,7 @@ Example:
     print(f"Portfolio CSV: {csv_path}")
 """
 from decimal import Decimal
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from pathlib import Path
 import csv
 from datetime import datetime
@@ -64,6 +64,7 @@ class PortfolioCSVExporter:
         strategy_name: str,
         signal_symbol: Optional[str] = None,
         signal_prices: Optional[Dict[str, Decimal]] = None,
+        baseline_info: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Export daily portfolio snapshots to CSV.
@@ -81,6 +82,11 @@ class PortfolioCSVExporter:
             strategy_name: Strategy name for filename generation
             signal_symbol: Optional symbol for buy-and-hold comparison (e.g., 'QQQ')
             signal_prices: Optional dict mapping date strings to prices {YYYY-MM-DD: Decimal}
+            baseline_info: Optional dict with baseline data for daily comparison
+                Required keys: 'start_price', 'price_history', 'symbol'
+                - start_price: QQQ price at backtest start
+                - price_history: Dict[date, price] for daily QQQ prices
+                - symbol: Baseline symbol (e.g., 'QQQ')
 
         Returns:
             Full path to generated CSV file
@@ -92,11 +98,20 @@ class PortfolioCSVExporter:
             If signal_symbol and signal_prices are provided, adds buy-and-hold comparison
             column showing hypothetical value if 100% allocated to signal_symbol at start.
 
+            If baseline_info is provided, adds baseline comparison columns:
+            - Baseline_QQQ_Value: Dollar value of baseline portfolio
+            - Baseline_Return_Pct: Cumulative baseline return percentage
+
         Example:
             csv_path = exporter.export_daily_portfolio_csv(
                 daily_snapshots=portfolio.get_daily_snapshots(),
                 output_path="output",
-                strategy_name="MACD_Trend"
+                strategy_name="MACD_Trend",
+                baseline_info={
+                    'symbol': 'QQQ',
+                    'start_price': Decimal('100.00'),
+                    'price_history': {date1: price1, date2: price2, ...}
+                }
             )
             # Creates: output/MACD_Trend_20250107_143022.csv
         """
@@ -115,7 +130,8 @@ class PortfolioCSVExporter:
             output_file,
             all_tickers,
             signal_symbol,
-            signal_prices
+            signal_prices,
+            baseline_info
         )
 
         logger.info(
@@ -170,6 +186,7 @@ class PortfolioCSVExporter:
         all_tickers: List[str],
         signal_symbol: Optional[str] = None,
         signal_prices: Optional[Dict[str, Decimal]] = None,
+        baseline_info: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Write CSV with all columns and data.
@@ -180,6 +197,7 @@ class PortfolioCSVExporter:
             all_tickers: Sorted list of all ticker symbols
             signal_symbol: Optional symbol for buy-and-hold comparison
             signal_prices: Optional dict mapping date strings to prices
+            baseline_info: Optional dict with baseline data for daily comparison
         """
         # Build column headers
         fixed_columns = [
@@ -188,8 +206,18 @@ class PortfolioCSVExporter:
             'Portfolio_Day_Change_Pct',
             'Portfolio_Overall_Return',
             'Portfolio_PL_Percent',
-            'Cash'
         ]
+
+        # Add baseline columns if baseline info provided
+        if baseline_info:
+            baseline_symbol = baseline_info.get('symbol', 'QQQ')
+            fixed_columns.extend([
+                f'Baseline_{baseline_symbol}_Value',
+                f'Baseline_{baseline_symbol}_Return_Pct'
+            ])
+
+        # Add cash column after baseline columns
+        fixed_columns.append('Cash')
 
         # Add buy-and-hold column if signal prices provided
         if signal_prices:
@@ -219,6 +247,25 @@ class PortfolioCSVExporter:
         else:
             buyhold_initial_shares = None
 
+        # Calculate baseline initial shares (if baseline info provided)
+        baseline_initial_shares = None
+        if baseline_info:
+            try:
+                start_price = baseline_info.get('start_price')
+                baseline_symbol = baseline_info.get('symbol', 'QQQ')
+
+                if start_price and start_price > 0:
+                    baseline_initial_shares = self.initial_capital / start_price
+                    logger.debug(
+                        f"Baseline: {baseline_initial_shares:.2f} shares of {baseline_symbol} "
+                        f"at ${start_price:.2f} = ${self.initial_capital:.2f}"
+                    )
+                else:
+                    logger.warning(f"Invalid baseline start_price: {start_price}, skipping baseline columns")
+            except Exception as e:
+                logger.warning(f"Failed to calculate baseline shares: {e}")
+                baseline_initial_shares = None
+
         # Write CSV
         with open(output_file, 'w', newline='') as f:
             writer = csv.writer(f)
@@ -233,7 +280,9 @@ class PortfolioCSVExporter:
                     all_tickers,
                     signal_symbol,
                     signal_prices,
-                    buyhold_initial_shares
+                    buyhold_initial_shares,
+                    baseline_info,
+                    baseline_initial_shares
                 )
                 writer.writerow(row)
                 prev_value = snapshot['total_value']
@@ -248,6 +297,8 @@ class PortfolioCSVExporter:
         signal_symbol: Optional[str] = None,
         signal_prices: Optional[Dict[str, Decimal]] = None,
         buyhold_initial_shares: Optional[Decimal] = None,
+        baseline_info: Optional[Dict[str, Any]] = None,
+        baseline_initial_shares: Optional[Decimal] = None,
     ) -> List[str]:
         """
         Build single CSV row with all columns.
@@ -259,6 +310,8 @@ class PortfolioCSVExporter:
             signal_symbol: Optional symbol for buy-and-hold comparison
             signal_prices: Optional dict mapping date strings to prices
             buyhold_initial_shares: Optional initial shares for buy-and-hold calculation
+            baseline_info: Optional dict with baseline data
+            baseline_initial_shares: Optional initial shares for baseline calculation
 
         Returns:
             List of formatted string values for CSV row
@@ -284,8 +337,29 @@ class PortfolioCSVExporter:
             f"{day_change_pct:.4f}",    # X.XXXX% format (4 decimals like other %)
             f"{overall_return:.4f}",    # X.XXXX% format
             f"{pl_percent:.4f}",        # X.XXXX% format
-            f"{cash:.2f}"              # $X.XX format
         ]
+
+        # Add baseline values if applicable
+        if baseline_initial_shares is not None and baseline_info:
+            price_history = baseline_info.get('price_history', {})
+            date_obj = snapshot['timestamp'].date()
+
+            if date_obj in price_history:
+                current_price = price_history[date_obj]
+                # Calculate baseline portfolio value
+                baseline_value = baseline_initial_shares * current_price
+                # Calculate cumulative return
+                baseline_return_pct = ((baseline_value - self.initial_capital) / self.initial_capital) * 100
+
+                row.append(f"{baseline_value:.2f}")      # $X.XX format
+                row.append(f"{baseline_return_pct:.4f}") # X.XXXX% format
+            else:
+                # Date not in price history (e.g., weekend/holiday)
+                row.append("N/A")
+                row.append("N/A")
+
+        # Add cash column
+        row.append(f"{cash:.2f}")      # $X.XX format
 
         # Add buy-and-hold value if applicable
         if buyhold_initial_shares is not None and signal_prices:

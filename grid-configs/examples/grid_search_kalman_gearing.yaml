@@ -1,0 +1,60 @@
+# Grid Search Configuration for Kalman Gearing Strategy
+# Strategy: kalman_gearing (Regime-based dynamic gearing with Kalman filter)
+# Purpose: Optimize regime thresholds and ATR stop-loss parameters
+
+# Strategy identification
+strategy: "kalman_gearing"
+
+# Symbol Sets
+symbol_sets:
+  - name: "QQQ_TQQQ_SQQQ"
+    signal_symbol: "QQQ"      # Used for Kalman filter calculations
+    bull_symbol: "TQQQ"       # 3x leveraged long for STRONG_BULL regime
+    defense_symbol: "QQQ"     # 1x for MODERATE_BULL regime
+    bear_symbol: "SQQQ"       # 3x inverse for STRONG_BEAR regime
+    vix_symbol: null          # Not used in Kalman Gearing strategy
+
+# Base Configuration
+base_config:
+  start_date: "2010-01-01"
+  end_date: "2024-12-31"
+  timeframe: "1D"
+  initial_capital: 10000
+  commission: 0.0
+  slippage: 0.0
+
+# Parameters to Optimize
+parameters:
+  # Regime thresholds (control entry aggressiveness)
+  # thresh_strong_bull: [60, 70, 80]
+  thresh_strong_bull: [60, 70]
+  thresh_moderate_bull: [10, 20, 30]
+  thresh_strong_bear: [-80, -70, -60]
+
+  # Risk management (ATR stop-loss for leveraged positions)
+  # atr_stop_multiplier: [1.5, 2.0, 2.5, 3.0]
+  atr_stop_multiplier: [2.5]
+
+  # Kalman filter parameters (signal responsiveness vs smoothness)
+  # process_noise_1: [0.001, 0.01, 0.05]
+  process_noise_1: [0.01, 0.05]
+  # measurement_noise: [100.0, 500.0, 1000.0]
+  measurement_noise: [500.0]
+
+# Grid Search Execution Notes:
+# 1. Total combinations: 3 × 3 × 3 × 4 × 3 × 3 = 972 runs
+# 2. Estimated time: ~30-45 minutes (depends on data size and compute)
+# 3. Results saved to: output/grid_search_kalman_gearing_<timestamp>/
+# 4. Top performers ranked by Sharpe ratio with secondary metrics
+# 5. Regime thresholds control entry/exit aggressiveness (regime switching frequency)
+# 6. ATR stop controls risk management for leveraged positions (TQQQ/SQQQ)
+# 7. Kalman noise parameters control signal responsiveness vs smoothness trade-off
+#
+# SQQQ Support Added:
+# - bear_symbol field now allows explicit specification of inverse leveraged symbol
+# - STRONG_BEAR regime will use SQQQ instead of QQQ
+# - All 4 KalmanGearing symbols now properly supported:
+#   - signal_symbol (QQQ): Kalman filter calculations
+#   - bull_3x_symbol (TQQQ): STRONG_BULL regime
+#   - unleveraged_symbol (QQQ): MODERATE_BULL regime
+#   - bear_3x_symbol (SQQQ): STRONG_BEAR regime

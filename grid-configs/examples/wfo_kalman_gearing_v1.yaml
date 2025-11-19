@@ -1,0 +1,179 @@
+# Walk-Forward Optimization Configuration for KalmanGearing v1.0
+# =================================================================
+# This configuration demonstrates WFO methodology for the Kalman Gearing strategy.
+#
+# Strategy Philosophy:
+# - Use Adaptive Kalman Filter to replace traditional trend indicators (EMA/MACD)
+# - Match leverage to trend strength (3x, 1x, 0x, -3x)
+# - Dynamic regime switching: STRONG_BULL (TQQQ) → MODERATE_BULL (QQQ) → CASH → STRONG_BEAR (SQQQ)
+#
+# WFO Process:
+# 1. Divide 15-year period into sliding 3-year windows
+# 2. Each window: 2.5y in-sample (optimize) + 0.5y out-of-sample (test)
+# 3. Slide forward 0.5y and repeat
+# 4. Stitch all OOS results together for true performance
+
+# Strategy to optimize
+strategy: "kalman_gearing"
+
+# Symbol Sets
+# -----------
+# Note: Kalman Gearing uses QQQ (signal), TQQQ (3x long), SQQQ (3x short), QQQ (1x unleveraged)
+# The symbol_sets format uses bull_symbol and defense_symbol
+# SQQQ is handled within strategy logic for STRONG_BEAR regime
+symbol_sets:
+  - name: "QQQ_TQQQ_SQQQ"
+    signal_symbol: "QQQ"      # Used for Kalman filter calculations
+    bull_symbol: "TQQQ"       # 3x leveraged long for STRONG_BULL regime
+    defense_symbol: "QQQ"     # 1x for MODERATE_BULL regime
+    vix_symbol: null          # Not used in Kalman Gearing strategy
+
+# Base Configuration
+# ------------------
+base_config:
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 100000
+  commission: 0.0
+  slippage: 0.0
+
+# Parameters to Optimize
+# ----------------------
+# 11 total parameters with multiple values = large search space
+# Total combinations: 4×3×3×3×3×3×3×3×3×3 = ~177,147
+parameters:
+  # Kalman filter core parameters
+  # measurement_noise: [100.0, 500.0, 1000.0, 2000.0]
+  measurement_noise: [500.0]
+  # process_noise_1: [0.001, 0.01, 0.1]
+  process_noise_1: [0.1]
+
+  # Kalman smoothing parameters
+  osc_smoothness: [5, 10, 15]
+  strength_smoothness: [5, 10, 15]
+
+  # Regime threshold parameters (the "gears")
+  thresh_strong_bull: [60, 70, 80]       # STRONG_BULL regime (TQQQ)
+  thresh_moderate_bull: [10, 20, 30]     # MODERATE_BULL regime (QQQ)
+  thresh_strong_bear: [-60, -70, -80]    # STRONG_BEAR regime (SQQQ)
+
+  # Risk management parameters
+  # atr_stop_multiplier: [2.0, 2.5, 3.0]
+  atr_stop_multiplier: [2.0, 3.0]
+
+  # Position sizing parameters
+  risk_leveraged: [0.020, 0.025]          # Risk % for TQQQ/SQQQ (1.5%, 2%, 2.5%)
+  allocation_unleveraged: [0.6, 1.0]        # Allocation % for QQQ (60%, 80%, 100%)
+
+  # Note: Fixed parameters (not optimized to reduce search space):
+  # - process_noise_2: 0.01
+  # - atr_period: 14
+  # - Symbols are configured in symbol_sets above
+
+# Walk-Forward Settings
+# ---------------------
+walk_forward:
+  # Total date range for WFO
+  # Must have sufficient market data for ALL symbols in database
+  total_start_date: "2010-03-01"
+  total_end_date: "2025-03-01"
+
+  # Window size: IS + OOS combined
+  # 3.0 years = 2.5y IS + 0.5y OOS
+  window_size_years: 3.0
+
+  # In-sample period (optimization/training)
+  # Grid search runs on this period to find best parameters
+  in_sample_years: 2.5
+
+  # Out-of-sample period (testing/validation)
+  # Backtest runs with best params on this unseen data
+  out_of_sample_years: 0.5
+
+  # Slide amount (how far to move window forward)
+  # 0.5 years = 6 months (non-overlapping OOS segments)
+  slide_years: 0.5
+
+  # Selection metric for choosing best parameters
+  # Options: sharpe_ratio, sortino_ratio, calmar_ratio, total_return, annualized_return
+  selection_metric: "sharpe_ratio"
+
+# Expected Output
+# ---------------
+# output/wfo_KalmanGearing_YYYYMMDD_HHMMSS/
+# ├── wfo_trades_master.csv      # All OOS trades (stitched chronologically)
+# ├── wfo_parameter_log.csv      # Best parameters selected per window
+# ├── wfo_equity_curve.csv       # Trade-by-trade equity progression
+# ├── wfo_summary.txt            # Performance metrics and parameter stability
+# ├── wfo_config.yaml            # Copy of this config
+# └── window_XXX/                # Individual window results
+#     ├── is_grid_search/        # Grid search results (IS period)
+#     │   ├── summary_comparison.csv
+#     │   └── run_config.csv
+#     └── oos_backtest/          # Backtest results (OOS period)
+#         ├── trades.csv
+#         ├── portfolio_daily.csv
+#         └── summary.csv
+
+# WFO Window Plan
+# ---------------
+# Total combinations per window: 177,147 (large search space!)
+# Total windows: 29 (sliding from 2010 to 2024)
+# Total backtests: 29 × 177,147 = ~5.1M
+# Estimated runtime: VERY LONG (days to weeks)
+#
+# RECOMMENDATION: Start with reduced parameter grid for initial testing
+# Example reduced grid: 2×2×2×2×2×2×2×2×2×2 = 1,024 combinations (~2-4 hours)
+
+# Usage
+# -----
+# # Preview window plan (no execution)
+# jutsu wfo --config grid-configs/examples/kalman_gearing_v1.yaml --dry-run
+#
+# # Run full WFO (WARNING: Very computationally intensive!)
+# jutsu wfo --config grid-configs/examples/kalman_gearing_v1.yaml
+#
+# # Custom output directory
+# jutsu wfo --config grid-configs/examples/kalman_gearing_v1.yaml --output-dir results/wfo_kalman
+
+# Analysis Notes
+# --------------
+# After WFO completes:
+#
+# 1. Parameter Stability Analysis:
+#    - Which regime thresholds are most stable across windows?
+#    - Does measurement_noise converge to specific values?
+#    - Are risk_leveraged values consistent?
+#
+# 2. Regime Distribution:
+#    - What % of time in each regime (STRONG_BULL, MODERATE_BULL, CASH, STRONG_BEAR)?
+#    - Does regime distribution change over time (market cycles)?
+#
+# 3. Performance Comparison:
+#    - Compare vs buy-and-hold QQQ (1x unleveraged)
+#    - Compare vs buy-and-hold TQQQ (3x leveraged)
+#    - Analyze risk-adjusted returns (Sharpe, Sortino, Calmar)
+#
+# 4. Validation:
+#    - If OOS performance is good AND parameters are stable → strategy is robust
+#    - If parameters jump randomly → strategy is overfit to market noise
+#
+# Expected Results (Target):
+# - Sharpe ratio: 1.5-2.5
+# - Max drawdown: 15-25%
+# - Win rate: 40-55%
+# - Regime distribution: Balanced across regimes (not stuck in one mode)
+#
+# Parameter Sensitivity (Expected):
+# - High sensitivity: thresh_strong_bull, thresh_moderate_bull, thresh_strong_bear
+# - Medium sensitivity: measurement_noise, atr_stop_multiplier
+# - Low sensitivity: osc_smoothness, strength_smoothness
+
+# Version History
+# ---------------
+# v1.0: Initial WFO configuration (2025-11-14)
+#       - Transformed from generic WFO format to WFORunner-specific format
+#       - All 11 parameters preserved with original value ranges
+#       - Fixed structure to match wfo_macd_v6.yaml template

@@ -370,12 +370,26 @@ class TradeLogger:
             # Add indicator columns (dynamic, sorted for consistency)
             for ind_name in sorted(all_indicators):
                 value = record.indicator_values.get(ind_name, None)
-                row[f'Indicator_{ind_name}'] = float(value) if value is not None else None
-            
+                if value is not None:
+                    try:
+                        row[f'Indicator_{ind_name}'] = float(value)
+                    except (ValueError, TypeError):
+                        # Handle non-numeric values (e.g., regime strings)
+                        row[f'Indicator_{ind_name}'] = str(value)
+                else:
+                    row[f'Indicator_{ind_name}'] = None
+
             # Add threshold columns (dynamic, sorted for consistency)
             for thresh_name in sorted(all_thresholds):
                 value = record.threshold_values.get(thresh_name, None)
-                row[f'Threshold_{thresh_name}'] = float(value) if value is not None else None
+                if value is not None:
+                    try:
+                        row[f'Threshold_{thresh_name}'] = float(value)
+                    except (ValueError, TypeError):
+                        # Handle non-numeric values
+                        row[f'Threshold_{thresh_name}'] = str(value)
+                else:
+                    row[f'Threshold_{thresh_name}'] = None
             
             # Add order details
             row.update({

@@ -87,9 +87,12 @@ class MACD_Trend_v4(Strategy):
         self.macd_signal_period = macd_signal_period
         self.ema_period = ema_period
         self.atr_period = atr_period
-        self.atr_stop_multiplier = atr_stop_multiplier
-        self.risk_bull = risk_bull
-        self.allocation_defense = allocation_defense
+
+        # BUG FIX 2: Convert float parameters to Decimal to prevent type mixing errors
+        # Parameters from YAML config come as floats, but calculations use Decimal
+        self.atr_stop_multiplier = Decimal(str(atr_stop_multiplier))
+        self.risk_bull = Decimal(str(risk_bull))
+        self.allocation_defense = Decimal(str(allocation_defense))
 
         # State tracking
         self.current_regime: Optional[str] = None  # 'CASH', 'TQQQ', or 'QQQ'
@@ -110,20 +113,23 @@ class MACD_Trend_v4(Strategy):
         """
         Validate that all required symbols are present in data handler.
 
-        This method checks that both required symbols (QQQ, TQQQ)
+        This method checks that both required symbols (signal + bull)
         are available in the loaded market data. If any symbols are missing,
         it raises a ValueError with a clear, actionable error message.
+
+        BUG FIX 1: Defers validation until all required symbols have appeared
+        in the bar stream, since symbols may have different start dates.
 
         Raises:
             ValueError: If any required symbol is missing from available symbols
 
         Note:
-            This validation runs lazily on the first on_bar() call once enough
-            bars are available, since symbols aren't known at __init__ time.
+            This validation runs lazily during on_bar() processing.
+            It only validates once all required symbols have appeared.
         """
         required_symbols = [
-            self.signal_symbol,  # QQQ - signal calculations and defensive trading
-            self.bull_symbol,    # TQQQ - leveraged long
+            self.signal_symbol,  # e.g., QQQ or NVDA - signal calculations and defensive trading
+            self.bull_symbol,    # e.g., TQQQ or NVDL - leveraged long
         ]
 
         # Get unique symbols from loaded bars
@@ -132,7 +138,10 @@ class MACD_Trend_v4(Strategy):
         # Check for missing symbols
         missing_symbols = [s for s in required_symbols if s not in available_symbols]
 
-        if missing_symbols:
+        # BUG FIX 1: Only raise error if we have enough bars but symbols still missing
+        # Some symbols (like NVDL) start later than others (like NVDA)
+        # Defer validation until all required symbols have appeared
+        if missing_symbols and len(available_symbols) >= len(required_symbols):
             raise ValueError(
                 f"MACD_Trend_v4 requires symbols {required_symbols} but "
                 f"missing: {missing_symbols}. Available symbols: {available_symbols}. "
@@ -156,13 +165,19 @@ class MACD_Trend_v4(Strategy):
         Note:
             QQQ position has NO stop-loss checking (regime-managed exit only).
         """
-        # Perform symbol validation once we have enough bars
+        # Perform symbol validation once all required symbols have appeared
         # Wait until we have enough bars for EMA calculation to ensure all symbols loaded
         lookback = max(self.ema_period, self.atr_period) + 10
         if not self._symbols_validated and len(self._bars) >= lookback:
-            self._validate_required_symbols()
-            self._symbols_validated = True
-            self.log(f"Symbol validation passed: All required symbols present")
+            # Get unique symbols from loaded bars
+            available_symbols = list(set(bar.symbol for bar in self._bars))
+            required_symbols = [self.signal_symbol, self.bull_symbol]
+
+            # Only validate if all required symbols have appeared
+            if len(available_symbols) >= len(required_symbols):
+                self._validate_required_symbols()
+                self._symbols_validated = True
+                self.log(f"Symbol validation passed: All required symbols present ({available_symbols})")
 
         # Check stop-loss on TQQQ (NOT QQQ)
         if bar.symbol == self.bull_symbol:
@@ -332,9 +347,9 @@ class MACD_Trend_v4(Strategy):
 
         # Close position (100% exit)
         if symbol == self.bull_symbol:
-            self.sell(symbol, Decimal('1.0'))  # Close TQQQ long
+            self.buy(symbol, Decimal('0.0'))  # Close TQQQ (allocate 0% = liquidate)
         else:  # QQQ
-            self.buy(symbol, Decimal('0.0'))  # Close QQQ (buy with 0% = exit)
+            self.buy(symbol, Decimal('0.0'))  # Close QQQ (allocate 0% = liquidate)
 
         self.log(f"LIQUIDATE: Closed {symbol} position")
 

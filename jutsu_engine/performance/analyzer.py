@@ -72,7 +72,8 @@ class PerformanceAnalyzer:
         self.initial_capital = initial_capital
 
         # Convert equity curve to DataFrame for analysis
-        if equity_curve:
+        # Handle None, empty DataFrame, and populated data
+        if equity_curve is not None and not (isinstance(equity_curve, pd.DataFrame) and equity_curve.empty):
             self.equity_df = pd.DataFrame(
                 equity_curve,
                 columns=['timestamp', 'value']
@@ -113,6 +114,7 @@ class PerformanceAnalyzer:
         # Risk metrics
         metrics['volatility'] = self._calculate_volatility()
         metrics['sharpe_ratio'] = self._calculate_sharpe_ratio()
+        metrics['sortino_ratio'] = self.calculate_sortino_ratio(self.equity_df['returns'])
         metrics['max_drawdown'] = self._calculate_max_drawdown()
         metrics['calmar_ratio'] = self._calculate_calmar_ratio()
 
@@ -310,7 +312,9 @@ class PerformanceAnalyzer:
         if not trade_pnls:
             # Count number of trades (buy or sell fills) but no closed trades
             return {
-                'total_trades': len(self.fills),
+                'total_fills': len(self.fills),      # All BUY/SELL executions
+                'closed_trades': 0,                  # Complete BUY→SELL cycles
+                'total_trades': len(self.fills),     # Backwards compatibility (deprecated)
                 'winning_trades': 0,
                 'losing_trades': 0,
                 'win_rate': 0.0,
@@ -338,7 +342,9 @@ class PerformanceAnalyzer:
         profit_factor = total_wins / total_losses if total_losses > 0 else 0.0
 
         return {
-            'total_trades': total_trades,
+            'total_fills': len(self.fills),           # All BUY/SELL executions
+            'closed_trades': total_trades,            # Complete BUY→SELL cycles (renamed from total_trades)
+            'total_trades': total_trades,             # Backwards compatibility (deprecated, equals closed_trades)
             'winning_trades': winning_trades,
             'losing_trades': losing_trades,
             'win_rate': win_rate,
@@ -898,6 +904,80 @@ class PerformanceAnalyzer:
 
         logger.debug(f"Rolling max drawdown calculated with window={window}")
         return rolling_max_dd
+
+    def calculate_baseline(
+        self,
+        symbol: str,
+        start_price: Decimal,
+        end_price: Decimal,
+        start_date: datetime,
+        end_date: datetime
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Calculate buy-and-hold baseline returns.
+
+        Simulates buying 100% of initial capital in the given symbol at start_price
+        and holding until end_date at end_price.
+
+        Args:
+            symbol: Baseline symbol (typically 'QQQ')
+            start_price: Price at backtest start
+            end_price: Price at backtest end
+            start_date: Backtest start date
+            end_date: Backtest end date
+
+        Returns:
+            Dict with baseline metrics:
+                - baseline_symbol: str
+                - baseline_final_value: float
+                - baseline_total_return: float
+                - baseline_annualized_return: float
+            Returns None if calculation fails (invalid inputs)
+
+        Raises:
+            ValueError: If start_price or end_price <= 0
+        """
+        # 1. Validate inputs
+        if start_price <= 0 or end_price <= 0:
+            logger.warning(
+                f"Invalid prices for baseline: start={start_price}, end={end_price}"
+            )
+            return None
+
+        # 2. Calculate shares bought with 100% of capital
+        shares_bought = self.initial_capital / start_price
+        final_value = shares_bought * end_price
+
+        # 3. Calculate total return
+        total_return = float((final_value - self.initial_capital) / self.initial_capital)
+
+        # 4. Calculate annualized return
+        days = (end_date - start_date).days
+        years = Decimal(days) / Decimal('365.25')
+
+        if years < Decimal('0.01'):  # Less than ~4 days
+            annualized_return = total_return  # Can't annualize
+            logger.debug(
+                f"Short period ({days} days) - returning total return as annualized"
+            )
+        else:
+            # Annualized return = (1 + total_return)^(1/years) - 1
+            annualized_return = float(
+                (1 + Decimal(str(total_return))) ** (1 / years) - 1
+            )
+
+        logger.info(
+            f"Baseline ({symbol}): {total_return:.2%} total, "
+            f"{annualized_return:.2%} annualized over {days} days"
+        )
+
+        # 5. Return results
+        return {
+            'baseline_symbol': symbol,
+            'baseline_final_value': float(final_value),
+            'baseline_total_return': total_return,
+            'baseline_annualized_return': annualized_return
+        }
 
     def export_trades_to_csv(
         self,

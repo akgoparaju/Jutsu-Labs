@@ -52,10 +52,10 @@ Jutsu Labs is a backtesting engine designed for **modularity**, **data integrity
 - ✅ **Parameter Optimization Framework**: Grid search, genetic algorithms, random search, walk-forward analysis
 - ✅ **REST API with FastAPI**: 20+ endpoints, JWT authentication, rate limiting, OpenAPI documentation
 - ✅ **Trade Log CSV Export**: Comprehensive audit trail with strategy context, indicators, portfolio state, and allocations
+- ✅ **Monte Carlo Simulation**: Bootstrap resampling to test strategy robustness against sequence risk and luck (NEW - 2025-11-10)
 
 ### Planned (Future Phases)
 - 📈 **Web Dashboard**: Streamlit UI for visualization and interactive analysis
-- 🎲 **Monte Carlo Simulation**: Strategy robustness testing with confidence intervals
 - 🐳 **Docker Deployment**: Multi-container orchestration with Kubernetes support
 - 🔴 **Live Trading**: Paper trading and real execution (with proper safeguards)
 
@@ -301,6 +301,313 @@ class MyStrategy(Strategy):
         elif short_sma < long_sma and self.has_position(symbol):
             self.sell(symbol, Decimal('0.0'))  # Close position
 ```
+
+## Implemented Strategies
+
+The following production-ready strategies are included with Jutsu Labs. All strategies support configuration via `.env`, CLI flags, and YAML configuration files.
+
+### MACD_Trend_v4 (Goldilocks)
+- **Type**: Regime-based trend-following with dual position sizing
+- **Assets**: Signal asset (e.g., QQQ), bull leverage (e.g., TQQQ), defensive (e.g., QQQ)
+- **Signals**: EMA trend + MACD momentum + MACD histogram confirmation
+- **Position Sizing**: Dual-mode (ATR-based risk for leveraged, flat % for defensive)
+- **Risk Management**: 3-state exit system (EMA, MACD crossdown, histogram bearish)
+- **Documentation**: `jutsu_engine/strategies/MACD_Trend-v4.md`
+- **Grid-Search**: `grid-configs/examples/grid_search_macd_v4.yaml`
+
+### MACD_Trend_v5 (Dynamic Regime)
+- **Type**: Dual-regime strategy-of-strategies with VIX volatility filter
+- **Assets**: QQQ (signal), TQQQ (3x bull), $VIX (regime detection)
+- **Regime Detection**: VIX vs VIX_EMA_50 (CALM vs CHOPPY markets)
+- **Parameter Switching**:
+  - CALM: EMA=200, ATR_Stop=3.0 (optimized for smooth trends)
+  - CHOPPY: EMA=75, ATR_Stop=2.0 (optimized for volatile markets)
+- **Position Sizing**: Dual-mode (ATR-based for TQQQ, flat 60% for QQQ)
+- **Key Feature**: Automatically adapts parameters based on market volatility regime
+- **Documentation**: `jutsu_engine/strategies/MACD_Trend-v5.md`
+- **Grid-Search**: `grid-configs/examples/grid_search_macd_v5.yaml`
+
+### MACD_Trend_v6 (VIX-Filtered) ⭐ NEW
+- **Type**: VIX-gated Goldilocks strategy with master switch
+- **Assets**: QQQ (signal), TQQQ (3x bull), $VIX (master switch)
+- **Core Philosophy**: "Only run V8.0 (v4) when market is CALM, else hold CASH"
+- **Master Switch Logic**:
+  - Step 1: VIX > VIX_EMA → CASH (stop, don't run v4)
+  - Step 2: VIX ≤ VIX_EMA → Run full v4 logic (CASH/TQQQ/QQQ)
+- **Key Difference from v5**: v5 switches parameters, v6 gates execution (simpler, binary)
+- **Position Sizing**: Dual-mode inherited from v4 (ATR-based for TQQQ, flat 60% for QQQ)
+- **Parameters**: 2 VIX params (vix_symbol, vix_ema_period=50) + all v4 parameters
+- **Conservative Default**: Holds CASH when insufficient VIX data
+- **Documentation**: `jutsu_engine/strategies/MACD_Trend-v6.md`
+- **Grid-Search**: `grid-configs/examples/grid_search_macd_v6.yaml` (432 combinations)
+
+### Grid Search Parameter Optimization
+
+Automate parameter optimization by testing all combinations of strategy parameters.
+
+**Usage**:
+```bash
+# Run grid search
+jutsu grid-search --config configs/examples/grid_search_macd_v4.yaml
+
+# Custom output directory
+jutsu grid-search -c configs/examples/grid_search_simple.yaml -o results/
+```
+
+**Configuration File** (`grid_search_macd_v4.yaml`):
+```yaml
+strategy: MACD_Trend_v4
+
+symbol_sets:
+  - name: "QQQ-TQQQ"
+    signal_symbol: QQQ
+    bull_symbol: TQQQ
+    defense_symbol: QQQ
+
+base_config:
+  start_date: "2020-01-01"
+  end_date: "2024-12-31"
+
+parameters:
+  ema_period: [50, 100, 150]
+  atr_stop_multiplier: [2.0, 3.0]
+  risk_bull: [0.02, 0.025]
+```
+
+**Output Structure**:
+```
+output/grid_search_MACD_Trend_v4_2025-11-07_143022/
+├── summary_comparison.csv   # All metrics for comparison
+├── run_config.csv          # Parameter mapping
+├── parameters.yaml         # Copy of input config
+├── README.txt             # Summary statistics
+├── run_001/
+│   ├── portfolio_daily.csv
+│   └── trades.csv
+└── run_002/
+    ├── portfolio_daily.csv
+    └── trades.csv
+```
+
+**Output CSV Metrics**:
+- Final Value, Total Return %, Annualized Return %
+- Sharpe Ratio, Sortino Ratio
+- Max Drawdown %, Calmar Ratio
+- Win Rate %, Total Trades
+- Profit Factor, Avg Win/Loss
+
+**Tips**:
+- Start with fewer combinations (< 50) to test configuration
+- Use `max_combinations` to limit total runs
+- Results automatically checkpoint every 10 runs (resume capability)
+- Sort `summary_comparison.csv` by Sharpe Ratio to find optimal parameters
+
+### Walk-Forward Optimization (NEW - 2025-11-09)
+
+Defeat curve-fitting with rigorous Walk-Forward Optimization. Periodically re-optimizes parameters on past data (In-Sample) and tests on future data (Out-of-Sample).
+
+**Why WFO?**
+Standard backtesting optimizes over entire history, leading to brittle strategies. WFO simulates real-world trading where parameters need periodic adjustment based only on past data.
+
+**Usage**:
+```bash
+# Preview window plan without running
+jutsu wfo --config grid-configs/examples/wfo_macd_v6.yaml --dry-run
+
+# Run full WFO
+jutsu wfo --config grid-configs/examples/wfo_macd_v6.yaml
+
+# Custom output directory
+jutsu wfo -c grid-configs/examples/wfo_macd_v6.yaml -o results/wfo_test
+```
+
+**Configuration** (`wfo_macd_v6.yaml`):
+```yaml
+strategy: "MACD_Trend_v6"
+
+# Same as grid search
+symbol_sets: [...]
+base_config: {...}
+parameters: {...}
+
+# WFO-specific settings (NEW)
+walk_forward:
+  total_start_date: "2010-01-01"
+  total_end_date: "2024-12-31"
+  window_size_years: 3.0        # Total window (IS + OOS)
+  in_sample_years: 2.5          # Optimization period
+  out_of_sample_years: 0.5      # Testing period
+  slide_years: 0.5              # Window advance amount
+  selection_metric: "sharpe_ratio"  # Metric to optimize
+```
+
+**Output Structure**:
+```
+output/wfo_MACD_Trend_v6_2025-11-09_153022/
+├── wfo_trades_master.csv       # All OOS trades (stitched chronologically)
+├── wfo_parameter_log.csv       # Best params per window
+├── wfo_equity_curve.csv        # Trade-by-trade equity progression
+├── wfo_summary.txt             # Performance + parameter stability
+├── wfo_config.yaml             # Copy of input config
+└── window_XXX/                 # Individual window results
+    ├── is_grid_search/         # In-sample optimization
+    │   ├── summary_comparison.csv
+    │   └── run_config.csv
+    └── oos_backtest/           # Out-of-sample testing
+        ├── trades.csv
+        ├── portfolio_daily.csv
+        └── summary.csv
+```
+
+**Key Outputs**:
+1. **wfo_trades_master.csv**: All OOS trades with Portfolio_Return_Percent
+2. **wfo_equity_curve.csv**: Compounded equity growth (OOS only)
+3. **wfo_parameter_log.csv**: Parameter evolution over time
+4. **wfo_summary.txt**: Final metrics + parameter stability (CV%)
+
+**Parameter Stability** (Coefficient of Variation):
+- CV < 20%: Stable parameters → Robust strategy
+- CV 20-50%: Moderate stability → Adaptive strategy
+- CV > 50%: High variability → Potential overfitting
+
+**Example Output**:
+```
+OOS Return: 45.23%
+Parameter Stability (CV%):
+  ✓ ema_period: 12.45%
+  ✓ atr_stop_multiplier: 18.32%
+  ⚠ risk_bull: 35.67%
+```
+
+**Performance**:
+- Window calculation: <10ms
+- Per window: 2-15 min (depends on grid size)
+- Total: 30 min - 8 hours (depends on # windows × grid size)
+- Example: 24 windows × 432 combinations = 10,368 backtests (~4-8 hours)
+
+**Tips**:
+- Start with smaller date ranges to test (2-3 years)
+- Use smaller parameter grids for faster iteration
+- OOS period should be ≥ average holding period
+- Check parameter stability - jumping values indicate overfitting
+- Compare OOS equity curve smoothness vs buy-and-hold
+
+### Monte Carlo Simulation (NEW - 2025-11-10)
+
+Test if your strategy's performance is due to **skill** or **luck** by shuffling trade order. Monte Carlo simulation uses bootstrap resampling to answer: "If my trades happened in random order, what's the probability of catastrophic loss?"
+
+**Why Monte Carlo?**
+A strategy's performance depends on trade sequence. Monte Carlo shuffles trades 10,000+ times to reveal if your result was due to favorable ordering (luck) or consistent edge (skill). Critical for live trading decisions.
+
+**Usage**:
+```bash
+# Step 1: Run WFO first (generates monte_carlo_input.csv)
+jutsu wfo --config grid-configs/examples/wfo_macd_v6.yaml
+
+# Step 2: Run Monte Carlo on WFO results
+jutsu monte-carlo --config config/examples/monte_carlo_config.yaml
+
+# Override iterations for faster testing
+jutsu monte-carlo -c config.yaml --iterations 1000
+
+# Override input/output paths
+jutsu monte-carlo -c config.yaml \
+  --input wfo_output/monte_carlo_input.csv \
+  --output results/monte_carlo/
+
+# Verbose logging
+jutsu monte-carlo -c config.yaml --verbose
+```
+
+**Configuration** (`monte_carlo_config.yaml`):
+```yaml
+monte_carlo:
+  # Input from WFO (supports glob patterns)
+  input_file: output/wfo_MACD_Trend_v6_*/monte_carlo_input.csv
+  output_directory: output/monte_carlo_MACD_Trend_v6
+
+  # Simulation parameters
+  iterations: 10000           # Bootstrap samples
+  initial_capital: 10000      # Match WFO initial capital
+  random_seed: 42             # For reproducibility (optional)
+
+  # Analysis configuration
+  analysis:
+    percentiles: [5, 25, 50, 75, 95]
+    confidence_level: 0.95    # 95% confidence interval
+    risk_of_ruin_thresholds: [30, 40, 50]  # % loss thresholds
+
+  # Performance options
+  performance:
+    parallel: false           # Enable for faster execution
+    num_workers: 4           # CPU count - 1 (if parallel: true)
+```
+
+**Output Structure**:
+```
+output/monte_carlo_MACD_Trend_v6/
+├── monte_carlo_results_2025-11-10_142530.csv  # All 10,000 simulation results
+└── monte_carlo_summary_2025-11-10_142530.txt  # Statistical analysis + interpretation
+```
+
+**Key Outputs**:
+1. **monte_carlo_results.csv**: All simulation results
+   - Columns: Run_ID, Final_Equity, Annualized_Return, Max_Drawdown
+   - 10,000 rows (one per bootstrap sample)
+
+2. **monte_carlo_summary.txt**: Human-readable interpretation
+   - Percentile analysis (5th, 25th, 50th, 75th, 95th)
+   - Risk of ruin (% of runs with >30%, >40%, >50% loss)
+   - Confidence intervals (95% by default)
+   - Original result ranking (where your WFO result falls)
+   - Recommendations (robust/moderate/high risk)
+
+**Example Summary Output**:
+```
+Percentile Analysis - Final Equity:
+   5th percentile:  $8,934  (Very unlucky scenario)
+  25th percentile: $11,245  (Below average)
+  50th percentile: $13,156  (Median outcome)
+  75th percentile: $15,678  (Above average)
+  95th percentile: $18,923  (Very lucky scenario)
+
+Your original result ($14,281) is at the 62nd percentile.
+Interpretation: Near median - likely reflects true strategy edge (not luck)
+
+Risk of Ruin:
+  30% loss: 2.3% of simulations (ACCEPTABLE)
+  40% loss: 0.7% of simulations (LOW RISK)
+  50% loss: 0.1% of simulations (VERY LOW RISK)
+
+Recommendation: Strategy appears robust. Proceed with paper trading.
+```
+
+**Interpreting Results**:
+- **Original Result Percentile**:
+  - 50th percentile: Strategy has true edge (skill, not luck)
+  - 95th percentile: Very lucky sequence (be cautious)
+  - 5th percentile: Very unlucky sequence
+- **Risk of Ruin**:
+  - <10%: Robust strategy (acceptable for live trading)
+  - 10-25%: Moderate risk (consider position sizing)
+  - >25%: High sequence dependency (risky)
+- **Percentile Range** (95th - 5th):
+  - Narrow range: Consistent performance (robust)
+  - Wide range: High sensitivity to trade order (volatile)
+
+**Performance**:
+- 1,000 iterations: 30-60s (quick test)
+- 10,000 iterations: 2-5 min (standard)
+- 100,000 iterations: 20-30 min (high precision)
+- Parallel mode: ~4x faster (enable in config)
+
+**Tips**:
+- Run Monte Carlo AFTER WFO (requires monte_carlo_input.csv)
+- Use random_seed for reproducible research
+- 10,000 iterations is sufficient for most strategies
+- If risk of ruin >10%, consider smaller position sizes
+- Compare percentile range with buy-and-hold benchmark
+- Re-run Monte Carlo periodically as you add more trades
 
 ### Trade Log Export (NEW - 2025-11-06)
 

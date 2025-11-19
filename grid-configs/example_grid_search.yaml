@@ -1,0 +1,35 @@
+# Example Grid Search Configuration
+# Demonstrates grid search for MACD_Trend_v4 strategy
+
+strategy: MACD_Trend_v4
+
+# Symbol sets ensure valid symbol combinations
+symbol_sets:
+  - name: QQQ-TQQQ
+    signal_symbol: QQQ
+    bull_symbol: TQQQ
+    defense_symbol: QQQ
+
+# Fixed configuration for all backtests
+base_config:
+  timeframe: 1D
+  start_date: "2024-01-01"
+  end_date: "2024-12-31"
+  initial_capital: 100000.00
+  commission_per_share: 0.01
+  slippage_percent: 0.0
+
+# Parameters to vary (grid search)
+parameters:
+  fast_period: [12, 14]
+  slow_period: [26, 28]
+  signal_period: [9]
+  ema_period: [100]
+  atr_period: [14]
+  atr_stop_multiplier: [3.0]
+  risk_bull: [0.025]
+  allocation_defense: [0.60]
+
+# Optional: Grid search limits
+max_combinations: 500
+checkpoint_interval: 10

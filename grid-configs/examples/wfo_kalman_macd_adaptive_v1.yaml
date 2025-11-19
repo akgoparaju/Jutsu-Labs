@@ -1,0 +1,269 @@
+# Walk-Forward Optimization Configuration for Kalman-MACD Adaptive v1
+# ==========================================================================
+# This configuration uses WFO methodology to validate strategy robustness
+# and prevent curve-fitting.
+#
+# WFO Process:
+# 1. Divide 15-year period into sliding 3-year windows
+# 2. Each window: 2.5y in-sample (optimize) + 0.5y out-of-sample (test)
+# 3. Slide forward 0.5y and repeat
+# 4. Stitch all OOS results together for true performance
+#
+# This ensures parameters are re-optimized periodically (mimicking real trading)
+# and performance is measured ONLY on unseen future data.
+#
+# Strategy Overview:
+# - Master Filter: Kalman Filter Trend Strength Oscillator (-100 to +100)
+# - 4 Regimes: Strong Bull, Moderate Bull, Chop/Neutral, Bear
+# - 4 Trading Vehicles: TQQQ (3x long), QQQ (1x), SQQQ (3x inverse), CASH
+# - Regime-Specific Logic: Each regime has different EMA/MACD parameters
+
+# Strategy to optimize (same as grid search)
+strategy: "Kalman_MACD_Adaptive_v1"
+
+# Symbol Sets (same as grid search)
+# ---------------------------------
+symbol_sets:
+  - name: "QQQ_TQQQ_SQQQ"
+    signal_symbol: "QQQ"      # Kalman filter calculations
+    bull_symbol: "TQQQ"       # 3x leveraged long for aggressive regime
+    defense_symbol: "QQQ"     # 1x for moderate regime
+    bear_symbol: "SQQQ"       # 3x inverse for bear regime
+    vix_symbol: null          # Not used in this strategy
+
+# Base Configuration
+# ------------------
+# Note: start_date and end_date here are IGNORED for WFO
+# WFO uses walk_forward.total_start_date and total_end_date instead
+base_config:
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 100000  # Matches strategy spec ($100,000)
+  commission: 0.0          # Strategy spec: $0.00 per trade
+  slippage: 0.0005         # Strategy spec: 0.05% per trade
+
+# Parameters to Optimize
+# ----------------------
+# REDUCED PARAMETER SET for WFO (to keep runtime reasonable)
+# WFO runs multiple grid searches (one per window), so we use smaller ranges
+# USER CONFIGURABLE: Expand cautiously (increases runtime significantly)
+#
+# Current combinations per window: 2 * 2 * 2 * 2 * 2 * 2 * 2 * 2 = 128
+# Total windows: ~29
+# Total backtests: 29 * 128 = 3,712
+# Estimated runtime: 4-6 hours
+
+parameters:
+  # ============================================================================
+  # KALMAN FILTER PARAMETERS (Reduced for WFO)
+  # ============================================================================
+  # Starting with 2 values each for faster WFO iteration
+  # USER CAN EXPAND: Add more values after initial WFO run
+
+  measurement_noise: [2000.0, 5000.0]     # Grid-search had [2000, 5000], keep same
+  osc_smoothness: [15, 20]                # Grid-search had [15, 20], keep same
+  strength_smoothness: [15, 20]           # Grid-search had [15, 20], keep same
+
+  # ============================================================================
+  # REGIME THRESHOLD PARAMETERS (Reduced for WFO)
+  # ============================================================================
+  # Starting with 2 values each for faster iteration
+  # USER CAN EXPAND: After finding stable ranges
+
+  thresh_strong_bull: [60, 70]            # Grid-search had [60, 70, 80], reduced
+  thresh_moderate_bull: [20, 30]          # Grid-search had [15, 20, 30], reduced
+  thresh_moderate_bear: [-20, -30]        # Grid-search had [-15, -20, -30], reduced
+
+  # ============================================================================
+  # RISK MANAGEMENT PARAMETERS (Reduced for WFO)
+  # ============================================================================
+
+  atr_stop_multiplier: [2.5, 3.0]         # Grid-search had [2.0, 2.5, 3.0], reduced
+  risk_leveraged: [0.02, 0.025]           # Grid-search had [0.02, 0.025], keep same
+  allocation_unleveraged: [0.8]           # Grid-search had [0.8], keep same
+
+  # ============================================================================
+  # REGIME-SPECIFIC PARAMETERS (Fixed at defaults for WFO)
+  # ============================================================================
+  # These remain fixed to reduce combinatorial explosion
+  # Focus WFO on Kalman filter and threshold optimization
+  # USER CAN EXPAND: After validating core params are robust
+
+  # Strong Bull Regime
+  ema_trend_sb: [100]
+  macd_fast_sb: [12]
+  macd_slow_sb: [26]
+  macd_signal_sb: [9]
+
+  # Moderate Bull Regime
+  ema_trend_mb: [150]
+  macd_fast_mb: [20]
+  macd_slow_mb: [50]
+  macd_signal_mb: [12]
+
+  # Bear Regime
+  ema_trend_b: [100]
+  macd_fast_b: [12]
+  macd_slow_b: [26]
+  macd_signal_b: [9]
+
+  # ATR Calculation
+  atr_period: [14]
+
+# Walk-Forward Settings
+# ---------------------
+# This section defines how WFO windows are calculated
+# USER CONFIGURABLE: Adjust window sizes and date range
+walk_forward:
+  # Total date range for WFO
+  # USER CAN CHANGE: Adjust based on available data
+  # Must have sufficient market data for ALL symbols in database
+  # TQQQ started: 2010-02-11
+  # SQQQ started: 2010-02-11
+  # Recommendation: Start from 2010-03-01 to ensure data availability
+  total_start_date: "2010-03-01"
+  total_end_date: "2025-03-01"
+
+  # Window size: IS + OOS combined
+  # Example: 3.0 years = 2.5y IS + 0.5y OOS
+  # USER CAN CHANGE: Smaller windows = more frequent re-optimization
+  #                  Larger windows = more stable parameters
+  window_size_years: 3.0
+
+  # In-sample period (optimization/training)
+  # Grid search runs on this period to find best parameters
+  # USER CAN CHANGE: Larger IS = more data for optimization
+  #                  Smaller IS = faster adaptation to regime changes
+  in_sample_years: 2.5
+
+  # Out-of-sample period (testing/validation)
+  # Backtest runs with best params on this unseen data
+  # USER CAN CHANGE: Larger OOS = more robust validation
+  #                  Smaller OOS = more frequent re-optimization
+  out_of_sample_years: 0.5
+
+  # Slide amount (how far to move window forward)
+  # Typically equals OOS period for non-overlapping OOS segments
+  # USER CAN CHANGE: Smaller slide = overlapping windows (more data points)
+  #                  Larger slide = independent windows (less correlation)
+  slide_years: 0.5
+
+  # Selection metric for choosing best parameters
+  # Options: sharpe_ratio, sortino_ratio, calmar_ratio, total_return, annualized_return
+  # USER CAN CHANGE: Different metrics may select different parameters
+  # Recommendation: sortino_ratio (focuses on downside risk)
+  selection_metric: "sortino_ratio"
+
+# Expected Output
+# ---------------
+# output/wfo_Kalman_MACD_Adaptive_v1_YYYYMMDD_HHMMSS/
+# ├── wfo_trades_master.csv      # All OOS trades (stitched chronologically)
+# ├── wfo_parameter_log.csv      # Best parameters selected per window
+# ├── wfo_equity_curve.csv       # Trade-by-trade equity progression
+# ├── wfo_summary.txt            # Performance metrics and parameter stability
+# ├── wfo_config.yaml            # Copy of this config
+# └── window_001/                # First window results
+#     ├── is_grid_search/        # Grid search results (IS period)
+#     │   ├── summary_comparison.csv
+#     │   └── run_config.csv
+#     └── oos_backtest/          # Backtest results (OOS period)
+#         ├── trades.csv
+#         ├── portfolio_daily.csv
+#         └── summary.csv
+# └── window_002/                # Second window results
+#     └── ... (same structure)
+# └── ... (~27 more windows)
+
+# WFO Window Plan (with above settings)
+# --------------------------------------
+# Total combinations per window: 128
+# Total windows: ~29 (sliding from 2010 to 2025)
+# Total backtests: 29 * 128 = 3,712
+# Estimated runtime: 4-6 hours (depending on hardware)
+#
+# Window 1:  IS 2010-03-01 to 2012-09-01 → OOS 2012-09-01 to 2013-03-01
+# Window 2:  IS 2010-09-01 to 2013-03-01 → OOS 2013-03-01 to 2013-09-01
+# Window 3:  IS 2011-03-01 to 2013-09-01 → OOS 2013-09-01 to 2014-03-01
+# ...
+# Window 29: IS 2022-03-01 to 2024-09-01 → OOS 2024-09-01 to 2025-03-01
+
+# Usage
+# -----
+# # Preview window plan (no execution)
+# jutsu wfo --config grid-configs/examples/wfo_kalman_macd_adaptive_v1.yaml --dry-run
+#
+# # Run full WFO
+# jutsu wfo --config grid-configs/examples/wfo_kalman_macd_adaptive_v1.yaml
+#
+# # Custom output directory
+# jutsu wfo --config grid-configs/examples/wfo_kalman_macd_adaptive_v1.yaml --output-dir results/wfo_test
+
+# Analysis Workflow
+# -----------------
+# After WFO completes:
+#
+# 1. Review Equity Curve (wfo_equity_curve.csv)
+#    - Consistent growth across all OOS periods = robust strategy
+#    - Large drops in specific periods = regime sensitivity
+#    - Compare to QQQ buy-and-hold baseline
+#
+# 2. Check Parameter Stability (wfo_parameter_log.csv)
+#    - Calculate coefficient of variation (CV%) for each parameter
+#    - Low CV% (<30%) = stable, robust parameters
+#    - High CV% (>50%) = parameters jump randomly = overfitting
+#    - Look for temporal patterns (e.g., tighter stops in volatile periods)
+#
+# 3. Analyze OOS Performance (wfo_summary.txt)
+#    - Compare OOS Sharpe to IS Sharpe (should be close)
+#    - Large gap = overfitting in grid search
+#    - Check max drawdown and recovery across all OOS periods
+#
+# 4. Parameter Trends
+#    - Plot parameter values over time (from wfo_parameter_log.csv)
+#    - Do certain values consistently appear? (e.g., always uses thresh_strong_bull=70)
+#    - Are there market-condition patterns? (e.g., higher risk in bull markets)
+#
+# 5. Regime Analysis
+#    - Extract regime distribution from trades (STRONG_BULL, MODERATE_BULL, etc.)
+#    - Does the strategy adapt correctly to market conditions?
+#    - Are certain regimes more profitable than others?
+#
+# 6. Validation Criteria
+#    ✅ PASS: OOS performance good AND parameters stable → Strategy is robust
+#    ❌ FAIL: OOS performance poor OR parameters unstable → Strategy is overfit
+#    ⚠️  REVIEW: Mixed results → Need deeper analysis or parameter adjustment
+
+# Research Suggestions
+# --------------------
+# PROGRESSIVE WFO APPROACH:
+#
+# Step 1: Run this WFO config (Kalman + Thresholds focus)
+# - Validates core regime classification is robust
+# - Identifies stable Kalman filter settings across time
+# - Finds optimal threshold spacing for your market period
+#
+# Step 2: Analyze parameter stability
+# - If Kalman params stable → Fix at most common values
+# - If thresholds stable → Fix at most common values
+# - If parameters unstable → Strategy may not be robust (revisit design)
+#
+# Step 3: Run regime-specific WFO (if Step 1 passes)
+# - Create separate WFO configs for each regime's params
+# - Use stable Kalman/threshold values from Step 1
+# - Optimize Strong Bull EMA/MACD independently
+# - Optimize Moderate Bull EMA/MACD independently
+# - Optimize Bear EMA/MACD independently
+#
+# Step 4: Final validation WFO
+# - Use best stable parameters from all previous steps
+# - Run on fresh OOS period (2025 data when available)
+# - Compare to buy-and-hold and other benchmarks
+#
+# CAUTIONARY NOTES:
+# - WFO is computationally expensive (3,712 backtests)
+# - Start with grid-search first to validate strategy concept
+# - Only run WFO after grid-search shows promising results
+# - If grid-search shows poor performance, WFO won't help
+# - WFO reveals overfitting, it doesn't fix poor strategy design

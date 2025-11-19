@@ -609,9 +609,9 @@ def test_transition_tqqq_to_cash(strategy):
     assert strategy.tqqq_stop_loss is None
     signals = strategy.get_signals()
     assert len(signals) == 1
-    assert signals[0].signal_type == 'SELL'
+    assert signals[0].signal_type == 'BUY'  # Liquidation uses buy(0.0)
     assert signals[0].symbol == 'TQQQ'
-    assert signals[0].portfolio_percent == Decimal('1.0')  # 100% exit
+    assert signals[0].portfolio_percent == Decimal('0.0')  # 0% allocation = liquidate
 
 
 def test_transition_qqq_to_cash(strategy):
@@ -675,9 +675,10 @@ def test_transition_tqqq_to_qqq(strategy):
     assert strategy.tqqq_entry_price is None
     assert strategy.tqqq_stop_loss is None
     signals = strategy.get_signals()
-    assert len(signals) == 2  # SELL TQQQ + BUY QQQ
-    assert signals[0].signal_type == 'SELL'
+    assert len(signals) == 2  # BUY TQQQ (0% = liquidate) + BUY QQQ
+    assert signals[0].signal_type == 'BUY'  # Liquidation uses buy(0.0)
     assert signals[0].symbol == 'TQQQ'
+    assert signals[0].portfolio_percent == Decimal('0.0')  # 0% allocation = liquidate
     assert signals[1].signal_type == 'BUY'
     assert signals[1].symbol == 'QQQ'
 
@@ -1330,7 +1331,8 @@ def test_integration_full_lifecycle_tqqq(mock_atr, mock_ema, mock_macd, strategy
     assert strategy.current_position_symbol is None
     signals = strategy.get_signals()
     assert len(signals) == 1  # Exit signal
-    assert signals[0].signal_type == 'SELL'
+    assert signals[0].signal_type == 'BUY'  # Liquidation uses buy(0.0)
+    assert signals[0].portfolio_percent == Decimal('0.0')  # 0% allocation = liquidate
 
 
 @patch('jutsu_engine.strategies.MACD_Trend_v4.macd')
