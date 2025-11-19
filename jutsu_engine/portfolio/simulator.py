@@ -294,8 +294,10 @@ class PortfolioSimulator:
                 f"This is expected for direct portfolio usage but NOT in EventLoop context."
             )
 
-        # Special case: 0% allocation means "close position"
+        # Get current position for rebalancing logic
         current_position = self.positions.get(signal.symbol, 0)
+        
+        # Special case: 0% allocation means "close position"
         if signal.portfolio_percent == Decimal('0.0'):
             if current_position == 0:
                 logger.debug(f"0% allocation for {signal.symbol} with no position, skipping")
@@ -341,6 +343,75 @@ class PortfolioSimulator:
             
             return fill
 
+        # REBALANCING LOGIC: Check if we have an existing position
+        # If yes, calculate delta between target and current allocation
+        if current_position != 0:
+            # Calculate current position value and allocation percentage
+            position_value = Decimal(str(abs(current_position))) * price
+            current_allocation_pct = position_value / portfolio_value
+            
+            # Calculate delta between target and current allocation
+            delta_pct = signal.portfolio_percent - current_allocation_pct
+            
+            # Calculate shares to adjust (positive = buy more, negative = sell some)
+            delta_amount = portfolio_value * delta_pct
+            delta_shares = int(delta_amount / price)
+            
+            logger.info(
+                f"Rebalancing {signal.symbol}: current={current_allocation_pct*100:.2f}%, "
+                f"target={signal.portfolio_percent*100:.2f}%, "
+                f"delta={delta_pct*100:+.2f}% ({delta_shares:+d} shares)"
+            )
+            
+            # If delta is negligible (within rebalance threshold), skip
+            # Using 1 share as minimum threshold to avoid tiny rebalances
+            if abs(delta_shares) < 1:
+                logger.debug(
+                    f"Delta too small ({delta_shares} shares), skipping rebalance for {signal.symbol}"
+                )
+                return None
+            
+            # Determine direction based on delta
+            if delta_shares > 0:
+                # Need to BUY more shares (increase position)
+                rebalance_direction = 'BUY'
+                rebalance_quantity = delta_shares
+            else:
+                # Need to SELL shares (reduce position)
+                rebalance_direction = 'SELL'
+                rebalance_quantity = abs(delta_shares)
+            
+            # Create rebalancing order
+            order = OrderEvent(
+                symbol=signal.symbol,
+                order_type='MARKET',
+                direction=rebalance_direction,
+                quantity=rebalance_quantity,
+                timestamp=signal.timestamp,
+                price=None
+            )
+            
+            fill = self.execute_order(order, current_bar)
+            
+            # Log trade execution (rebalance)
+            if fill and self._trade_logger:
+                portfolio_value_after = self.get_portfolio_value()
+                cash_after = self.cash
+                allocation_after = self._calculate_allocation_percentages()
+                
+                self._trade_logger.log_trade_execution(
+                    fill=fill,
+                    portfolio_value_before=portfolio_value_before,
+                    portfolio_value_after=portfolio_value_after,
+                    cash_before=cash_before,
+                    cash_after=cash_after,
+                    allocation_before=allocation_before,
+                    allocation_after=allocation_after
+                )
+            
+            return fill
+        
+        # NEW POSITION LOGIC: No existing position, treat as new allocation
         # Calculate shares based on signal type (normal allocation)
         if signal.signal_type == 'BUY':
             # Long position calculation

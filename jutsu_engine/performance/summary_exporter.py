@@ -105,7 +105,9 @@ class SummaryCSVExporter:
         sharpe = results.get('sharpe_ratio', 0)
         max_dd = results.get('max_drawdown', 0)
         win_rate = results.get('win_rate', 0)
-        total_trades = results.get('total_trades', 0)
+        total_fills = results.get('total_fills', 0)        # All BUY/SELL executions
+        closed_trades = results.get('closed_trades', 0)    # Complete BUY→SELL cycles
+        total_trades = results.get('total_trades', 0)      # Backwards compatibility (deprecated)
 
         # Extract baseline metrics (if available)
         if baseline:
@@ -180,9 +182,17 @@ class SummaryCSVExporter:
 
         rows.append([
             'Trading',
-            'Total_Trades',
+            'Total_Fills',
             'N/A',
-            f'{int(total_trades)}',
+            f'{int(total_fills)}',
+            'N/A'
+        ])
+
+        rows.append([
+            'Trading',
+            'Closed_Trades',
+            'N/A',
+            f'{int(closed_trades)}',
             'N/A'
         ])
 

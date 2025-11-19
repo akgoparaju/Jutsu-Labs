@@ -424,3 +424,43 @@ def adx(high: Union[pd.Series, List], low: Union[pd.Series, List],
     adx_values = dx.ewm(span=period, adjust=False).mean()
 
     return adx_values
+
+
+def annualized_volatility(
+    closes: Union[pd.Series, List],
+    lookback: int = 20,
+    trading_days_per_year: int = 252
+) -> pd.Series:
+    """
+    Calculate annualized realized volatility from price series.
+
+    Uses log returns for statistical properties:
+    - Symmetry (up/down moves)
+    - Time additivity
+    - Better for compounding
+
+    Args:
+        closes: Price series
+        lookback: Window for volatility calculation (default: 20 days)
+        trading_days_per_year: Annualization factor (default: 252)
+
+    Returns:
+        pandas Series of annualized volatility (e.g., 0.20 = 20% annual vol)
+
+    Example:
+        >>> closes = pd.Series([100, 101, 99, 102, 98])
+        >>> vol = annualized_volatility(closes, lookback=20)
+        >>> # Returns rolling 20-day annualized volatility
+    """
+    close_series = _to_series(closes)
+
+    # Calculate log returns
+    log_returns = np.log(close_series / close_series.shift(1))
+
+    # Rolling standard deviation of log returns
+    rolling_std = log_returns.rolling(window=lookback).std()
+
+    # Annualize by multiplying by sqrt(trading days per year)
+    annualized_vol = rolling_std * np.sqrt(trading_days_per_year)
+
+    return annualized_vol

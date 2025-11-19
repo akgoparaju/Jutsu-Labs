@@ -23,6 +23,7 @@ Example:
 import logging
 import json
 import shutil
+import inspect
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from decimal import Decimal
@@ -43,6 +44,191 @@ from jutsu_engine.performance.analyzer import PerformanceAnalyzer
 logger = setup_logger('APPLICATION.GRID_SEARCH', log_to_console=True)
 
 
+# Known index symbols that require $ prefix in database
+INDEX_SYMBOLS = {'VIX', 'DJI', 'SPX', 'NDX', 'RUT', 'VXN'}
+
+
+def normalize_index_symbols(symbols: List[str]) -> List[str]:
+    """
+    Normalize index symbols by adding $ prefix if missing.
+    
+    Allows YAML configs to use 'VIX' which gets normalized to '$VIX' to match
+    database convention. Prevents symbol mismatch between config and database.
+    
+    Args:
+        symbols: List of symbol strings from YAML config
+        
+    Returns:
+        List with normalized symbols (index symbols get $ prefix)
+        
+    Examples:
+        ['QQQ', 'VIX', 'TQQQ'] → ['QQQ', '$VIX', 'TQQQ']
+        ['QQQ', '$VIX', 'TQQQ'] → ['QQQ', '$VIX', 'TQQQ']  # Already prefixed
+        ['AAPL', 'MSFT'] → ['AAPL', 'MSFT']  # No change
+    """
+    if not symbols:
+        return symbols
+    
+    normalized = []
+    for symbol in symbols:
+        # Check if it's a known index symbol WITHOUT $ prefix
+        if symbol.upper() in INDEX_SYMBOLS and not symbol.startswith('$'):
+            normalized_symbol = f'${symbol.upper()}'
+            logger.info(f"Normalized index symbol: {symbol} → {normalized_symbol}")
+            normalized.append(normalized_symbol)
+        else:
+            # Keep as is (regular symbols or already prefixed)
+            normalized.append(symbol.upper())
+    
+    return normalized
+
+
+def _get_strategy_class_from_module(module):
+    """
+    Find concrete Strategy subclass in module, regardless of class name.
+
+    Handles cases where module name ≠ class name (e.g., kalman_gearing.py → KalmanGearing).
+
+    Args:
+        module: Imported strategy module
+
+    Returns:
+        Strategy subclass found in module
+
+    Raises:
+        ValueError: If no Strategy subclass found or multiple candidates
+    """
+    from jutsu_engine.core.strategy_base import Strategy
+
+    candidates = []
+    for name, obj in inspect.getmembers(module, inspect.isclass):
+        # Must be a Strategy subclass (but not Strategy itself)
+        if issubclass(obj, Strategy) and obj is not Strategy:
+            # Must be defined in this module (not imported from elsewhere)
+            if obj.__module__ == module.__name__:
+                candidates.append(obj)
+
+    if not candidates:
+        raise ValueError(f"No Strategy subclass found in {module.__name__}")
+    if len(candidates) > 1:
+        raise ValueError(f"Multiple Strategy subclasses in {module.__name__}: {[c.__name__ for c in candidates]}")
+
+    return candidates[0]
+
+
+def _build_strategy_params(strategy_class, symbol_set, optimization_params):
+    """
+    Build strategy parameters based on strategy's __init__ signature.
+
+    Uses introspection to detect which symbol parameters the strategy accepts,
+    allowing different strategies to use different parameter naming conventions.
+
+    Also performs type conversion based on strategy's type hints - if strategy
+    expects Decimal but receives float/int from YAML, automatically converts.
+
+    Args:
+        strategy_class: Strategy class (obtained from _get_strategy_class_from_module)
+        symbol_set: SymbolSet or dict with symbol configuration
+        optimization_params: Dict of optimization parameters from config
+
+    Returns:
+        Dict of parameters to pass to strategy __init__
+
+    Examples:
+        MACD_Trend_v6 accepts: signal_symbol, bull_symbol, defense_symbol, vix_symbol
+        KalmanGearing accepts: signal_symbol, bull_3x_symbol, bear_3x_symbol, unleveraged_symbol
+
+        This function passes only the parameters each strategy expects.
+    """
+    from typing import get_type_hints
+
+    # Get strategy's __init__ parameters
+    sig = inspect.signature(strategy_class.__init__)
+    param_names = set(sig.parameters.keys()) - {'self'}
+
+    strategy_params = {}
+
+    # Conditionally add symbol parameters (only if strategy accepts them AND value exists)
+    # Handle both dict and SymbolSet object access
+    signal_sym = symbol_set.get('signal_symbol') if isinstance(symbol_set, dict) else symbol_set.signal_symbol
+    bull_sym = symbol_set.get('bull_symbol') if isinstance(symbol_set, dict) else symbol_set.bull_symbol
+    defense_sym = symbol_set.get('defense_symbol') if isinstance(symbol_set, dict) else symbol_set.defense_symbol
+    vix_sym = symbol_set.get('vix_symbol') if isinstance(symbol_set, dict) else symbol_set.vix_symbol
+
+    # Map config symbols to strategy-specific parameter names
+    # MACD strategies use: bull_symbol, defense_symbol
+    # KalmanGearing uses: bull_3x_symbol, bear_3x_symbol, unleveraged_symbol
+    if 'signal_symbol' in param_names and signal_sym:
+        strategy_params['signal_symbol'] = signal_sym
+    if 'bull_symbol' in param_names and bull_sym:
+        strategy_params['bull_symbol'] = bull_sym
+    if 'bull_3x_symbol' in param_names and bull_sym:
+        strategy_params['bull_3x_symbol'] = bull_sym
+    if 'defense_symbol' in param_names and defense_sym:
+        strategy_params['defense_symbol'] = defense_sym
+    if 'unleveraged_symbol' in param_names and defense_sym:
+        strategy_params['unleveraged_symbol'] = defense_sym
+    
+    # Get bear_symbol from symbol_set (new optional field)
+    bear_sym = symbol_set.get('bear_symbol') if isinstance(symbol_set, dict) else symbol_set.bear_symbol
+    
+    if 'bear_3x_symbol' in param_names:
+        if bear_sym:
+            # Use bear_symbol if specified (SQQQ for KalmanGearing)
+            strategy_params['bear_3x_symbol'] = bear_sym
+        elif defense_sym:
+            # Fallback to defense_symbol for backward compatibility
+            strategy_params['bear_3x_symbol'] = defense_sym
+    
+    if 'vix_symbol' in param_names and vix_sym:
+        # Normalize index symbols to match database convention (VIX → $VIX)
+        normalized_vix = normalize_index_symbols([vix_sym])[0] if vix_sym else vix_sym
+        strategy_params['vix_symbol'] = normalized_vix
+    
+    # Get core_long_symbol and leveraged_long_symbol (for Hierarchical_Adaptive_v2)
+    core_long_sym = symbol_set.get('core_long_symbol') if isinstance(symbol_set, dict) else symbol_set.core_long_symbol
+    leveraged_long_sym = symbol_set.get('leveraged_long_symbol') if isinstance(symbol_set, dict) else symbol_set.leveraged_long_symbol
+    
+    if 'core_long_symbol' in param_names and core_long_sym:
+        strategy_params['core_long_symbol'] = core_long_sym
+    if 'leveraged_long_symbol' in param_names and leveraged_long_sym:
+        strategy_params['leveraged_long_symbol'] = leveraged_long_sym
+
+    # Type introspection: Convert optimization params based on strategy's type hints
+    try:
+        type_hints = get_type_hints(strategy_class.__init__)
+    except (AttributeError, NameError):
+        # Fallback if type hints not available
+        type_hints = {}
+
+    # Convert optimization parameters based on expected types
+    converted_params = {}
+    for param_name, param_value in optimization_params.items():
+        # Skip None values
+        if param_value is None:
+            converted_params[param_name] = param_value
+            continue
+
+        # Check if parameter has type hint
+        if param_name in type_hints:
+            expected_type = type_hints[param_name]
+
+            # If Decimal expected but got float/int, convert
+            if expected_type is Decimal and isinstance(param_value, (float, int)):
+                converted_params[param_name] = Decimal(str(param_value))
+            else:
+                # Keep original value (type already matches or no conversion needed)
+                converted_params[param_name] = param_value
+        else:
+            # No type hint, use original value
+            converted_params[param_name] = param_value
+
+    # Add converted optimization parameters
+    strategy_params.update(converted_params)
+
+    return strategy_params
+
+
 @dataclass
 class SymbolSet:
     """
@@ -54,16 +240,27 @@ class SymbolSet:
     Attributes:
         name: Human-readable name (e.g., "NVDA-NVDL" or "QQQ-TQQQ-VIX")
         signal_symbol: Symbol for signals (e.g., NVDA, QQQ)
-        bull_symbol: Leveraged bull symbol (e.g., NVDL, TQQQ)
-        defense_symbol: Defensive position symbol (e.g., NVDA, QQQ)
+        bull_symbol: Optional leveraged bull symbol (e.g., NVDL, TQQQ)
+                    Used for MACD strategies and KalmanGearing bull regime
+        defense_symbol: Optional defensive position symbol (e.g., NVDA, QQQ)
+                       Used for MACD strategies and KalmanGearing defense regime
+        bear_symbol: Optional inverse leveraged symbol (e.g., SQQQ)
+                    Used for STRONG_BEAR regime in KalmanGearing
         vix_symbol: Optional VIX symbol for regime detection (e.g., VIX)
                    Required for MACD_Trend_v5 and other VIX-filtered strategies
+        core_long_symbol: Optional 1x base allocation symbol (e.g., QQQ)
+                         Required for Hierarchical_Adaptive_v2 continuous exposure
+        leveraged_long_symbol: Optional 3x leveraged overlay symbol (e.g., TQQQ)
+                              Required for Hierarchical_Adaptive_v2 continuous exposure
     """
     name: str
     signal_symbol: str
-    bull_symbol: str
-    defense_symbol: str
+    bull_symbol: Optional[str] = None
+    defense_symbol: Optional[str] = None
+    bear_symbol: Optional[str] = None
     vix_symbol: Optional[str] = None
+    core_long_symbol: Optional[str] = None
+    leveraged_long_symbol: Optional[str] = None
 
 
 @dataclass
@@ -114,14 +311,22 @@ class RunConfig:
             'run_id': self.run_id,
             'symbol_set': self.symbol_set.name,
             'signal_symbol': self.symbol_set.signal_symbol,
-            'bull_symbol': self.symbol_set.bull_symbol,
-            'defense_symbol': self.symbol_set.defense_symbol,
             **self.parameters
         }
 
-        # Include vix_symbol if present (for v5 strategies)
+        # Include optional symbols if present
+        if self.symbol_set.bull_symbol is not None:
+            result['bull_symbol'] = self.symbol_set.bull_symbol
+        if self.symbol_set.defense_symbol is not None:
+            result['defense_symbol'] = self.symbol_set.defense_symbol
+        if self.symbol_set.bear_symbol is not None:
+            result['bear_symbol'] = self.symbol_set.bear_symbol
         if self.symbol_set.vix_symbol is not None:
             result['vix_symbol'] = self.symbol_set.vix_symbol
+        if self.symbol_set.core_long_symbol is not None:
+            result['core_long_symbol'] = self.symbol_set.core_long_symbol
+        if self.symbol_set.leveraged_long_symbol is not None:
+            result['leveraged_long_symbol'] = self.symbol_set.leveraged_long_symbol
 
         return result
 
@@ -475,24 +680,39 @@ class GridSearchRunner:
         if isinstance(end_date, str):
             end_date = datetime.strptime(end_date, '%Y-%m-%d')
 
-        # Prepare symbols list (conditionally include vix_symbol)
-        symbols = [
-            run_config.symbol_set.signal_symbol,
-            run_config.symbol_set.bull_symbol,
-            run_config.symbol_set.defense_symbol
-        ]
+        # Import strategy class dynamically (MUST happen before building strategy_params)
+        import importlib
+        module = importlib.import_module(f"jutsu_engine.strategies.{self.config.strategy_name}")
+        strategy_class = _get_strategy_class_from_module(module)
+
+        # Prepare symbols list (conditionally include all optional symbols)
+        symbols = [run_config.symbol_set.signal_symbol]
+        if run_config.symbol_set.bull_symbol is not None:
+            symbols.append(run_config.symbol_set.bull_symbol)
+        if run_config.symbol_set.defense_symbol is not None:
+            symbols.append(run_config.symbol_set.defense_symbol)
+        if run_config.symbol_set.bear_symbol is not None:
+            symbols.append(run_config.symbol_set.bear_symbol)
         if run_config.symbol_set.vix_symbol is not None:
             symbols.append(run_config.symbol_set.vix_symbol)
+        if run_config.symbol_set.core_long_symbol is not None:
+            symbols.append(run_config.symbol_set.core_long_symbol)
+        if run_config.symbol_set.leveraged_long_symbol is not None:
+            symbols.append(run_config.symbol_set.leveraged_long_symbol)
+        
+        # Normalize index symbols (add $ prefix for VIX, DJI, etc.)
+        # This ensures YAML config "VIX" matches database "$VIX"
+        symbols = normalize_index_symbols(symbols)
+        
+        # Deduplicate while preserving order
+        symbols = list(dict.fromkeys(symbols))
 
-        # Prepare strategy params (conditionally include vix_symbol)
-        strategy_params = {
-            'signal_symbol': run_config.symbol_set.signal_symbol,
-            'bull_symbol': run_config.symbol_set.bull_symbol,
-            'defense_symbol': run_config.symbol_set.defense_symbol,
-            **run_config.parameters
-        }
-        if run_config.symbol_set.vix_symbol is not None:
-            strategy_params['vix_symbol'] = run_config.symbol_set.vix_symbol
+        # Prepare strategy params using introspection
+        strategy_params = _build_strategy_params(
+            strategy_class,
+            run_config.symbol_set,
+            run_config.parameters
+        )
 
         # Prepare backtest config
         config = {
@@ -508,10 +728,7 @@ class GridSearchRunner:
             # Run backtest (BacktestRunner handles all complexity)
             runner = BacktestRunner(config)
 
-            # Import strategy class dynamically
-            import importlib
-            module = importlib.import_module(f"jutsu_engine.strategies.{self.config.strategy_name}")
-            strategy_class = getattr(module, self.config.strategy_name)
+            # Instantiate strategy with introspection-based params
             strategy = strategy_class(**config['strategy_params'])
 
             result = runner.run(strategy, output_dir=str(run_dir))
@@ -519,13 +736,13 @@ class GridSearchRunner:
             # Extract metrics
             metrics = {
                 'final_value': result.get('final_value', 0.0),
-                'total_return_pct': result.get('total_return', 0.0) * 100,
-                'annualized_return_pct': result.get('annualized_return', 0.0) * 100,
+                'total_return_pct': float(result.get('total_return', 0.0) * 100),
+                'annualized_return_pct': float(result.get('annualized_return', 0.0) * 100),
                 'sharpe_ratio': result.get('sharpe_ratio', 0.0),
                 'sortino_ratio': result.get('sortino_ratio', 0.0),
-                'max_drawdown_pct': result.get('max_drawdown', 0.0) * 100,
+                'max_drawdown_pct': float(result.get('max_drawdown', 0.0) * 100),
                 'calmar_ratio': result.get('calmar_ratio', 0.0),
-                'win_rate_pct': result.get('win_rate', 0.0) * 100,
+                'win_rate_pct': float(result.get('win_rate', 0.0) * 100),
                 'total_trades': result.get('total_trades', 0),
                 'profit_factor': result.get('profit_factor', 0.0),
                 'avg_win_usd': result.get('avg_win', 0.0),

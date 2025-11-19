@@ -277,6 +277,42 @@ def parse_symbols_callback(ctx, param, value):
     return tuple(all_symbols) if all_symbols else None
 
 
+def _get_strategy_class_from_module(module):
+    """
+    Auto-detect Strategy subclass from module using introspection.
+
+    Handles cases where module name (snake_case) differs from class name (PascalCase).
+
+    Args:
+        module: Imported strategy module
+
+    Returns:
+        Strategy subclass found in module
+
+    Raises:
+        ValueError: If no Strategy subclass found or multiple found
+    """
+    from jutsu_engine.core.strategy_base import Strategy
+
+    # Get all classes defined in this module
+    members = inspect.getmembers(module, inspect.isclass)
+
+    # Filter for Strategy subclasses (but not Strategy itself, and defined in this module)
+    strategy_classes = [
+        cls for name, cls in members
+        if issubclass(cls, Strategy)
+        and cls is not Strategy
+        and cls.__module__ == module.__name__
+    ]
+
+    if not strategy_classes:
+        raise ValueError(f"No Strategy subclass found in {module.__name__}")
+    if len(strategy_classes) > 1:
+        raise ValueError(f"Multiple Strategy subclasses found in {module.__name__}: {[cls.__name__ for cls in strategy_classes]}")
+
+    return strategy_classes[0]
+
+
 def _display_baseline_section(baseline: dict):
     """
     Display baseline (buy-and-hold) metrics.
@@ -608,9 +644,9 @@ def backtest(
             # Try to import strategy module
             module_name = f"jutsu_engine.strategies.{strategy}"
             strategy_module = importlib.import_module(module_name)
-            
-            # Get strategy class (assume class name matches file name)
-            strategy_class = getattr(strategy_module, strategy)
+
+            # Get strategy class (auto-detect Strategy subclass)
+            strategy_class = _get_strategy_class_from_module(strategy_module)
             
             # Inspect constructor to build parameter dict dynamically
             sig = inspect.signature(strategy_class.__init__)
@@ -1083,6 +1119,144 @@ def grid_search(config: str, output: str):
         click.echo(click.style("\n⚠ No valid results to display", fg='yellow'))
 
     click.echo("=" * 60)
+
+
+@cli.command()
+@click.option(
+    '--config',
+    '-c',
+    required=True,
+    type=click.Path(exists=True),
+    help='Path to WFO YAML configuration',
+)
+@click.option(
+    '--output-dir',
+    '-o',
+    type=click.Path(),
+    help='Custom output directory (default: auto-generated)',
+)
+@click.option(
+    '--dry-run',
+    is_flag=True,
+    help='Show window plan without running',
+)
+def wfo(config: str, output_dir: Optional[str], dry_run: bool):
+    """
+    Walk-Forward Optimization - defeat curve-fitting through periodic re-optimization.
+
+    Implements rigorous WFO methodology:
+    - Divide total period into sliding windows (IS + OOS)
+    - Optimize on In-Sample period (grid search)
+    - Test on Out-of-Sample period (backtest)
+    - Stitch all OOS results for true performance
+
+    Example:
+        jutsu wfo --config grid-configs/examples/wfo_macd_v6.yaml
+        jutsu wfo -c grid-configs/examples/wfo_macd_v6.yaml --dry-run
+    """
+    from jutsu_engine.application.wfo_runner import WFORunner
+
+    click.echo("=" * 60)
+    click.echo("Walk-Forward Optimization")
+    click.echo("=" * 60)
+
+    # Load configuration
+    click.echo(f"\nLoading config: {config}")
+    try:
+        runner = WFORunner(config_path=config, output_dir=output_dir)
+    except Exception as e:
+        click.echo(click.style(f"✗ Configuration error: {e}", fg='red'))
+        logger.error(f"Failed to load config: {e}", exc_info=True)
+        raise click.Abort()
+
+    # Display configuration summary
+    click.echo(f"\nStrategy: {runner.config['strategy']}")
+    click.echo(f"Date Range: {runner.config['walk_forward']['total_start_date']} to "
+              f"{runner.config['walk_forward']['total_end_date']}")
+    click.echo(f"Window: {runner.config['walk_forward']['in_sample_years']}y IS + "
+              f"{runner.config['walk_forward']['out_of_sample_years']}y OOS")
+    click.echo(f"Slide: {runner.config['walk_forward']['slide_years']}y")
+    click.echo(f"Selection Metric: {runner.config['walk_forward']['selection_metric']}")
+
+    # Calculate windows
+    try:
+        windows = runner.calculate_windows()
+        click.echo(f"\nTotal Windows: {len(windows)}")
+    except Exception as e:
+        click.echo(click.style(f"✗ Window calculation failed: {e}", fg='red'))
+        logger.error(f"Failed to calculate windows: {e}", exc_info=True)
+        raise click.Abort()
+
+    # Dry run - show window plan
+    if dry_run:
+        click.echo("\n" + "=" * 60)
+        click.echo("Window Plan (Dry Run)")
+        click.echo("=" * 60)
+        for w in windows:
+            click.echo(f"\nWindow {w.window_id}:")
+            click.echo(f"  IS:  {w.is_start.date()} to {w.is_end.date()}")
+            click.echo(f"  OOS: {w.oos_start.date()} to {w.oos_end.date()}")
+        click.echo("\n" + "=" * 60)
+        click.echo(click.style("✓ Dry run complete (no execution)", fg='green'))
+        return
+
+    # Calculate total combinations
+    param_values = [len(v) for v in runner.config['parameters'].values()]
+    import functools
+    import operator
+    total_combinations = functools.reduce(operator.mul, param_values, 1)
+    total_backtests = len(windows) * total_combinations
+
+    click.echo(f"\nParameter Combinations: {total_combinations}")
+    click.echo(f"Total Backtests: {total_backtests}")
+    click.echo(click.style(f"\n⚠ This will take significant time!", fg='yellow'))
+
+    # Confirm execution
+    if not click.confirm("\nProceed with WFO?"):
+        click.echo("Aborted.")
+        return
+
+    # Run WFO
+    click.echo("\n" + "=" * 60)
+    click.echo("Executing Walk-Forward Optimization")
+    click.echo("=" * 60)
+
+    try:
+        result = runner.run()
+    except Exception as e:
+        click.echo(click.style(f"\n✗ WFO failed: {e}", fg='red'))
+        logger.error(f"WFO execution failed: {e}", exc_info=True)
+        raise click.Abort()
+
+    # Display results
+    click.echo("\n" + "=" * 60)
+    click.echo(click.style("✓ Walk-Forward Optimization Complete!", fg='green'))
+    click.echo("=" * 60)
+
+    click.echo(f"\nWindows Processed: {result['num_windows']}")
+    click.echo(f"Total OOS Trades: {result['total_oos_trades']}")
+    click.echo(f"Final Equity: ${result['final_equity']:,.2f}")
+    click.echo(f"OOS Return: {result['oos_return_pct']:.2%}")
+
+    click.echo(f"\nOutput Directory: {result['output_dir']}")
+    click.echo("\nOutput Files:")
+    for file_type, path in result['output_files'].items():
+        click.echo(f"  - {file_type}: {path}")
+
+    # Parameter stability
+    if result.get('parameter_stability'):
+        click.echo("\nParameter Stability (CV%):")
+        for param, cv in sorted(result['parameter_stability'].items()):
+            if param != 'mean_cv':
+                status = "✓" if cv < 20 else ("⚠" if cv < 50 else "✗")
+                click.echo(f"  {status} {param}: {cv:.2f}%")
+
+    click.echo("=" * 60)
+
+
+# Import and register Monte Carlo command
+from jutsu_engine.cli.commands.monte_carlo import monte_carlo as monte_carlo_cmd
+cli.add_command(monte_carlo_cmd, name='monte-carlo')
 
 
 if __name__ == '__main__':

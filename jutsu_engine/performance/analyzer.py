@@ -72,7 +72,8 @@ class PerformanceAnalyzer:
         self.initial_capital = initial_capital
 
         # Convert equity curve to DataFrame for analysis
-        if equity_curve:
+        # Handle None, empty DataFrame, and populated data
+        if equity_curve is not None and not (isinstance(equity_curve, pd.DataFrame) and equity_curve.empty):
             self.equity_df = pd.DataFrame(
                 equity_curve,
                 columns=['timestamp', 'value']
@@ -311,7 +312,9 @@ class PerformanceAnalyzer:
         if not trade_pnls:
             # Count number of trades (buy or sell fills) but no closed trades
             return {
-                'total_trades': len(self.fills),
+                'total_fills': len(self.fills),      # All BUY/SELL executions
+                'closed_trades': 0,                  # Complete BUY→SELL cycles
+                'total_trades': len(self.fills),     # Backwards compatibility (deprecated)
                 'winning_trades': 0,
                 'losing_trades': 0,
                 'win_rate': 0.0,
@@ -339,7 +342,9 @@ class PerformanceAnalyzer:
         profit_factor = total_wins / total_losses if total_losses > 0 else 0.0
 
         return {
-            'total_trades': total_trades,
+            'total_fills': len(self.fills),           # All BUY/SELL executions
+            'closed_trades': total_trades,            # Complete BUY→SELL cycles (renamed from total_trades)
+            'total_trades': total_trades,             # Backwards compatibility (deprecated, equals closed_trades)
             'winning_trades': winning_trades,
             'losing_trades': losing_trades,
             'win_rate': win_rate,

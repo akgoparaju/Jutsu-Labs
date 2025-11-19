@@ -200,7 +200,13 @@ class MACD_Trend_v6(MACD_Trend_v4):
 
         # Log context BEFORE liquidation signal
         if self._trade_logger and hasattr(self, '_current_bar'):
-            regime_desc = f"VIX CHOPPY regime: Liquidating {symbol} position"
+            # Create descriptive regime message with VIX values
+            if len(self._vix_bars) >= self.vix_ema_period:
+                vix_current = self._vix_bars[-1].close
+                vix_ema = self._last_indicator_values.get('VIX_EMA', 'N/A')
+                regime_desc = f"VIX CHOPPY regime: VIX({vix_current:.2f}) > VIX_EMA({vix_ema:.2f}), Liquidating {symbol}"
+            else:
+                regime_desc = f"VIX CHOPPY regime (insufficient data): Liquidating {symbol} position"
 
             self._trade_logger.log_strategy_context(
                 timestamp=self._current_bar.timestamp,
@@ -243,6 +249,26 @@ class MACD_Trend_v6(MACD_Trend_v4):
         if bar.symbol == self.vix_symbol:
             self._process_vix_bar(bar)
             return
+
+        # NEW: Store current bar for context logging (BEFORE checking VIX regime)
+        if bar.symbol == self.signal_symbol:
+            self._current_bar = bar
+
+            # Calculate VIX indicators for logging (if sufficient data)
+            if len(self._vix_bars) >= self.vix_ema_period:
+                vix_closes = [b.close for b in self._vix_bars[-self.vix_ema_period-10:]]
+                vix_ema_values = ema(vix_closes, period=self.vix_ema_period)
+                vix_ema = Decimal(str(vix_ema_values.iloc[-1]))
+                vix_current = self._vix_bars[-1].close
+
+                # Store VIX-specific indicator/threshold values for logging
+                self._last_indicator_values = {
+                    'VIX': vix_current,
+                    'VIX_EMA': vix_ema,
+                }
+                self._last_threshold_values = {
+                    'vix_ema_period': self.vix_ema_period,
+                }
 
         # Step 2: VIX Master Switch (evaluated BEFORE v4 logic)
         if bar.symbol == self.signal_symbol:
