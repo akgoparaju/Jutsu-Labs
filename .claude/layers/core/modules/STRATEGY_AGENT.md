@@ -93,12 +93,23 @@ I am the **Strategy Module Agent**, responsible for defining the Strategy interf
    - VIX regime detection and parameter switching
    - Test coverage: 98% (36 tests)
 
-4. **MACD_Trend_v6** (`MACD_Trend_v6.py`) ⭐ NEW
+4. **MACD_Trend_v6** (`MACD_Trend_v6.py`)
    - VIX-Filtered strategy (v4 + VIX master switch)
    - Inheritance: Extends MACD_Trend_v4 (NOT v5)
    - VIX as execution gate (binary: run v4 or hold CASH)
    - Core philosophy: "Only run v4 when CALM, else CASH"
    - Test coverage: 95% (31 tests, 100% passing)
+
+5. **Kalman_Gearing** (`kalman_gearing.py`) ⭐ NEW
+   - Dynamic leverage matching strategy (v1.0)
+   - Uses Adaptive Kalman Filter for regime detection
+   - 4-regime system: STRONG_BULL, MODERATE_BULL, CHOP_NEUTRAL, STRONG_BEAR
+   - 4 trading vehicles: TQQQ (3x long), QQQ (1x long), SQQQ (3x short), CASH
+   - Signal asset: QQQ with Kalman Filter
+   - Dual position sizing: ATR-based for leveraged, flat % for unleveraged
+   - Stop-loss: ATR-based hard stops for leveraged positions only
+   - Test coverage: 80% (34 tests: 23 unit + 11 integration, 100% passing)
+   - WFO ready: 11 configurable parameters
 
 **Dependencies (Imports Allowed)**:
 ```python
