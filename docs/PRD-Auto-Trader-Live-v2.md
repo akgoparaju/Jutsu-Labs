@@ -1,7 +1,7 @@
 # Product Requirements Document: Jutsu Labs Live Trader v2.0
 
-**Version:** 2.0
-**Status:** Draft
+**Version:** 2.0.1
+**Status:** Draft (Audit Corrected)
 **Strategy:** Hierarchical Adaptive v3.5b (Golden Config)
 **Platform:** Schwab-py + Local Database + Web Dashboard
 **Last Updated:** December 3, 2025
@@ -214,6 +214,8 @@ jutsu live --mode online --execution-time 15:55 --confirm
 
 **Rationale**: Track all trades locally regardless of mode.
 
+**Current State**: Trade logging currently uses CSV files (`order_executor.py:418-430`). Phase 2 migrates to SQLite for better querying and dashboard integration.
+
 **Benefits**:
 1. **Independence**: Not dependent on Schwab's data retention policies
 2. **Analysis**: Strategy context (cell, vol_state, indicators) captured
@@ -259,60 +261,136 @@ class LiveTrade(Base):
 
 ### 4.1 Golden Config (Hierarchical Adaptive v3.5b)
 
-The system uses the optimized "Golden Config" parameters from grid-search:
+The system uses the optimized "Golden Config" parameters from grid-search.
+
+**⚠️ IMPORTANT**: Configuration uses **FLAT parameter structure** matching the strategy's `__init__` signature exactly. This ensures:
+1. Direct compatibility with grid search output configs
+2. No translation layer bugs (parameter name mismatches)
+3. Simple `**kwargs` injection into strategy
+
+**Canonical Configuration Schema** (matches grid search output):
 
 ```yaml
 strategy:
-  name: "Hierarchical_Adaptive_v3_5b"
+  name: Hierarchical_Adaptive_v3_5b
+  parameters:
+    # ==================================================================
+    # KALMAN TREND PARAMETERS (6 parameters)
+    # ==================================================================
+    measurement_noise: 3000.0       # Kalman filter measurement noise
+    process_noise_1: 0.01           # Process noise for position
+    process_noise_2: 0.01           # Process noise for velocity
+    osc_smoothness: 15              # Oscillator smoothing period
+    strength_smoothness: 15         # Strength smoothing period
+    T_max: 50.0                     # Maximum trend value for normalization
 
-  # Trading Universe
-  universe:
-    signal_symbol: "QQQ"
-    leveraged_long_symbol: "TQQQ"
-    core_long_symbol: "QQQ"
-    inverse_hedge_symbol: "PSQ"
-    treasury_trend_symbol: "TLT"
-    bull_bond_symbol: "TMF"
-    bear_bond_symbol: "TMV"
+    # ==================================================================
+    # STRUCTURAL TREND PARAMETERS (4 parameters)
+    # ==================================================================
+    sma_fast: 40                    # Fast SMA for trend structure
+    sma_slow: 140                   # Slow SMA for trend structure
+    t_norm_bull_thresh: 0.20        # Bull threshold for T_norm
+    t_norm_bear_thresh: -0.30       # Bear threshold for T_norm
 
-  # Kalman Trend Parameters
-  kalman:
-    measurement_noise: 3000.0
-    process_noise_1: 0.01
-    process_noise_2: 0.01
-    osc_smoothness: 15
-    strength_smoothness: 15
-    T_max: 50.0
+    # ==================================================================
+    # VOLATILITY Z-SCORE PARAMETERS (4 parameters)
+    # ==================================================================
+    realized_vol_window: 21         # Short-term realized vol window
+    vol_baseline_window: 126        # Long-term vol baseline window
+    upper_thresh_z: 1.0             # Upper Z threshold for High Vol
+    lower_thresh_z: 0.2             # Lower Z threshold for Low Vol
 
-  # SMA Structure Parameters
-  sma:
-    fast: 40
-    slow: 140
-    t_norm_bull_thresh: 0.20
-    t_norm_bear_thresh: -0.30
+    # ==================================================================
+    # VOL-CRUSH OVERRIDE (2 parameters)
+    # ==================================================================
+    vol_crush_threshold: -0.15      # Threshold for vol crush detection
+    vol_crush_lookback: 5           # Lookback period for vol crush
 
-  # Volatility Z-Score Parameters
-  volatility:
-    realized_vol_window: 21
-    vol_baseline_window: 126
-    upper_thresh_z: 1.0
-    lower_thresh_z: 0.2
-    vol_crush_threshold: -0.15
-    vol_crush_lookback: 5
+    # ==================================================================
+    # ALLOCATION PARAMETERS (1 parameter)
+    # ==================================================================
+    leverage_scalar: 1.0            # Multiplier for base allocations
 
-  # Allocation Parameters
-  allocation:
-    leverage_scalar: 1.0
-    use_inverse_hedge: false
-    max_bond_weight: 0.40
-    rebalance_threshold: 0.025
+    # ==================================================================
+    # INSTRUMENT TOGGLES (2 parameters)
+    # ==================================================================
+    use_inverse_hedge: false        # Enable PSQ in bear regimes
+    w_PSQ_max: 0.5                  # Maximum PSQ weight when enabled
 
-  # Treasury Overlay
-  treasury:
-    enabled: true
-    bond_sma_fast: 20
-    bond_sma_slow: 60
+    # ==================================================================
+    # TREASURY OVERLAY PARAMETERS (5 parameters)
+    # ==================================================================
+    allow_treasury: true            # Enable Treasury Overlay (TMF/TMV)
+    bond_sma_fast: 20               # Fast SMA for bond trend
+    bond_sma_slow: 60               # Slow SMA for bond trend
+    max_bond_weight: 0.4            # Maximum allocation to bonds
+    treasury_trend_symbol: TLT      # Bond trend signal symbol
+
+    # ==================================================================
+    # REBALANCING CONTROL (1 parameter)
+    # ==================================================================
+    rebalance_threshold: 0.025      # Min allocation drift to trigger rebalance
+
+    # ==================================================================
+    # EXECUTION TIMING (1 parameter)
+    # ==================================================================
+    execution_time: close           # Fill pricing: open, 15min_after_open,
+                                    # 15min_before_close, close
+
+    # ==================================================================
+    # SYMBOL CONFIGURATION (6 parameters)
+    # ==================================================================
+    signal_symbol: QQQ              # Primary signal symbol
+    core_long_symbol: QQQ           # Core long position symbol
+    leveraged_long_symbol: TQQQ     # Leveraged long symbol (3x)
+    inverse_hedge_symbol: PSQ       # Inverse hedge symbol (-1x)
+    bull_bond_symbol: TMF           # Bull bond position (3x long)
+    bear_bond_symbol: TMV           # Bear bond position (3x short)
 ```
+
+**Total: 32 configurable parameters** (matching `Hierarchical_Adaptive_v3_5b.__init__`)
+
+### 4.1.1 ⚠️ KNOWN ISSUE: Current LiveStrategyRunner Incompatibility
+
+**Problem**: The current `jutsu_engine/live/strategy_runner.py` uses a NESTED config structure with DIFFERENT parameter names that don't match the strategy's actual `__init__` signature.
+
+**Current (BROKEN) structure in `strategy_runner.py`**:
+```python
+# Lines 92-116 - INCORRECT parameter mapping
+strategy = self.strategy_class(
+    signal_symbol=universe['signal_symbol'],
+    leveraged_long_symbol=universe['bull_symbol'],       # ❌ Should be 'leveraged_long_symbol'
+    treasury_trend_symbol=universe['bond_signal'],       # ❌ Should be 'treasury_trend_symbol'
+    bull_bond_symbol=universe['bull_bond'],              # ❌ Should be 'bull_bond_symbol'
+    bear_bond_symbol=universe['bear_bond'],              # ❌ Should be 'bear_bond_symbol'
+    sma_fast=trend_engine['equity_fast_sma'],           # ❌ Should be 'sma_fast'
+    sma_slow=trend_engine['equity_slow_sma'],           # ❌ Should be 'sma_slow'
+    # ... 15+ parameters MISSING (all Kalman params, thresholds, etc.)
+)
+```
+
+**Missing Parameters** (not passed to strategy):
+| Category | Missing Parameters |
+|----------|-------------------|
+| Kalman | `measurement_noise`, `process_noise_1`, `process_noise_2`, `osc_smoothness`, `strength_smoothness`, `T_max` |
+| Trend | `t_norm_bull_thresh`, `t_norm_bear_thresh` |
+| Vol-Crush | `vol_crush_lookback` |
+| Allocation | `w_PSQ_max`, `rebalance_threshold` |
+| Execution | `execution_time` |
+| Symbols | `inverse_hedge_symbol` |
+
+**Impact**: Strategy uses DEFAULT values for all missing parameters, which may not match the optimized Golden Config.
+
+**Fix Required (Phase 0)**:
+```python
+# CORRECT approach - pass flat parameters directly
+def _initialize_strategy(self) -> Strategy:
+    params = self.config['strategy']['parameters']
+    strategy = self.strategy_class(**params)
+    return strategy
+```
+
+This fix is tracked in **Phase 0: Foundation Enhancement**.
 
 ### 4.2 Parameter Injection System
 
@@ -347,7 +425,7 @@ class ConfigOverride(Base):
     __tablename__ = 'config_overrides'
 
     id = Column(Integer, primary_key=True)
-    parameter_path = Column(String(100))  # e.g., "sma.fast"
+    parameter_name = Column(String(100))  # e.g., "sma_fast" (flat, matches __init__)
     override_value = Column(String(100))  # JSON encoded
     effective_from = Column(DateTime(timezone=True))
     effective_until = Column(DateTime(timezone=True))  # Null = permanent
@@ -357,21 +435,27 @@ class ConfigOverride(Base):
 
 ### 4.3 Parameter Validation
 
-All parameter changes must pass validation:
+All parameter changes must pass validation. Uses **FLAT parameter names** matching strategy `__init__`:
 
 ```python
 PARAMETER_CONSTRAINTS = {
-    "sma.fast": {"type": int, "min": 10, "max": 100},
-    "sma.slow": {"type": int, "min": 50, "max": 300},
-    "volatility.upper_thresh_z": {"type": float, "min": 0.5, "max": 2.0},
-    "volatility.lower_thresh_z": {"type": float, "min": -0.5, "max": 0.5},
-    "allocation.leverage_scalar": {"type": float, "min": 0.5, "max": 1.5},
-    # ... etc
+    # Structural Trend
+    "sma_fast": {"type": int, "min": 10, "max": 100},
+    "sma_slow": {"type": int, "min": 50, "max": 300},
+    # Volatility Z-Score
+    "upper_thresh_z": {"type": float, "min": 0.5, "max": 2.0},
+    "lower_thresh_z": {"type": float, "min": -0.5, "max": 0.5},
+    # Allocation
+    "leverage_scalar": {"type": float, "min": 0.5, "max": 1.5},
+    # Kalman
+    "measurement_noise": {"type": float, "min": 500.0, "max": 10000.0},
+    "T_max": {"type": float, "min": 20.0, "max": 100.0},
+    # ... etc (all 32 parameters)
 }
 
-def validate_parameter_change(path: str, value: Any) -> bool:
+def validate_parameter_change(param_name: str, value: Any) -> bool:
     """Validate parameter change against constraints."""
-    constraint = PARAMETER_CONSTRAINTS.get(path)
+    constraint = PARAMETER_CONSTRAINTS.get(param_name)
     if not constraint:
         return False
     if not isinstance(value, constraint["type"]):
@@ -633,7 +717,7 @@ CREATE TABLE performance_snapshots (
 -- Configuration tables
 CREATE TABLE config_overrides (
     id INTEGER PRIMARY KEY,
-    parameter_path VARCHAR(100) NOT NULL,
+    parameter_name VARCHAR(100) NOT NULL,  -- Flat name, e.g., "sma_fast"
     override_value TEXT NOT NULL,
     effective_from DATETIME,
     effective_until DATETIME,
@@ -751,16 +835,36 @@ CREATE TABLE system_state (
 ### Phase 0: Foundation Enhancement (Week 1-2)
 
 **Objectives**:
+- **FIX CRITICAL**: Refactor LiveStrategyRunner to use flat parameter structure
 - Add 5min_before_close execution time option
 - Create LiveTrade database model
 - Refactor to unified executor interface
 - Add mode flag to all components
 
 **Deliverables**:
+- [ ] **CRITICAL**: Refactor `strategy_runner.py` to use `**params` injection (see Section 4.1.1)
+- [ ] **CRITICAL**: Update `live_trading_config.yaml` to flat parameter structure
 - [ ] Updated strategy with `5min_before_close` option
 - [ ] Database migration for live_trades table
 - [ ] MockOrderExecutor class
 - [ ] Mode enum and validation
+
+**LiveStrategyRunner Fix** (Priority 1):
+```python
+# jutsu_engine/live/strategy_runner.py - _initialize_strategy()
+def _initialize_strategy(self) -> Strategy:
+    """Initialize strategy with flat parameters from config."""
+    params = self.config['strategy']['parameters'].copy()
+
+    # Remove non-strategy params if present
+    params.pop('name', None)
+    params.pop('trade_logger', None)
+
+    # Direct injection - no translation layer
+    strategy = self.strategy_class(**params)
+    strategy.init()
+    return strategy
+```
 
 ### Phase 1: Offline Mock Trading (Week 3-4)
 
@@ -782,11 +886,14 @@ CREATE TABLE system_state (
 - Fill verification and slippage tracking
 - Safety confirmation workflow
 
+**Note**: `order_executor.py` already exists with Schwab integration, retry logic, and CSV logging. Phase 2 refactors it into the unified executor interface.
+
 **Deliverables**:
-- [ ] SchwabOrderExecutor class
+- [ ] Refactor existing `order_executor.py` into `SchwabOrderExecutor` class
 - [ ] `jutsu live --mode online --confirm` command
 - [ ] Fill reconciliation logic
 - [ ] Slippage abort mechanism
+- [ ] Migrate trade logging from CSV to SQLite
 
 ### Phase 3: Dashboard MVP (Week 7-10)
 
@@ -864,12 +971,52 @@ CREATE TABLE system_state (
 
 ### Files to Update
 
-| File | Changes |
-|------|---------|
-| `jutsu_engine/live/dry_run_executor.py` | Rename to MockOrderExecutor |
-| `jutsu_engine/data/models.py` | Add LiveTrade, ConfigOverride models |
-| `config/live_trading_config.yaml` | Add mode, execution_time options |
-| `scripts/daily_dry_run.py` | Refactor to use unified executor |
+| File | Changes | Priority |
+|------|---------|----------|
+| `jutsu_engine/live/strategy_runner.py` | **CRITICAL**: Refactor to use flat `**params` injection | P0 |
+| `config/live_trading_config.yaml` | **CRITICAL**: Convert to flat parameter structure | P0 |
+| `jutsu_engine/live/dry_run_executor.py` | Rename to MockOrderExecutor | P1 |
+| `jutsu_engine/data/models.py` | Add LiveTrade, ConfigOverride models | P1 |
+| `scripts/daily_dry_run.py` | Refactor to use unified executor | P1 |
+
+### Config Migration: NESTED → FLAT
+
+**Before** (BROKEN - `config/live_trading_config.yaml`):
+```yaml
+strategy:
+  name: "Hierarchical_Adaptive_v3_5b"
+  universe:
+    signal_symbol: "QQQ"
+    bull_symbol: "TQQQ"         # ❌ Wrong key name
+    bond_signal: "TLT"          # ❌ Wrong key name
+  trend_engine:
+    equity_fast_sma: 40         # ❌ Wrong key name
+    equity_slow_sma: 140        # ❌ Wrong key name
+  volatility_engine:
+    short_window: 21            # ❌ Wrong key name
+    # ... missing 15+ parameters
+```
+
+**After** (CORRECT - matches grid search output):
+```yaml
+strategy:
+  name: Hierarchical_Adaptive_v3_5b
+  parameters:
+    # All 32 parameters FLAT, using exact __init__ names
+    measurement_noise: 3000.0
+    process_noise_1: 0.01
+    process_noise_2: 0.01
+    # ... see Section 4.1 for complete schema
+    signal_symbol: QQQ
+    leveraged_long_symbol: TQQQ
+    treasury_trend_symbol: TLT
+```
+
+### Existing Files to Refactor
+
+| File | Current State | Refactoring Needed |
+|------|---------------|-------------------|
+| `jutsu_engine/live/order_executor.py` | Schwab integration with CSV logging | Refactor into `SchwabOrderExecutor` class, migrate to SQLite |
 
 ### New Files to Create
 
@@ -877,7 +1024,6 @@ CREATE TABLE system_state (
 |------|---------|
 | `jutsu_engine/live/executor_router.py` | Route to Mock or Schwab executor |
 | `jutsu_engine/live/mock_executor.py` | Mock order execution |
-| `jutsu_engine/live/schwab_executor.py` | Real Schwab order execution |
 | `jutsu_engine/api/main.py` | FastAPI application |
 | `dashboard/` | React dashboard application |
 
@@ -913,6 +1059,7 @@ jutsu dashboard --port 8000
 |---------|------|--------|---------|
 | 1.0 | Nov 2025 | Team | Original PRD |
 | 2.0 | Dec 2025 | Team | Added dual-mode, dashboard, multi-time execution |
+| 2.0.1 | Dec 2025 | Claude | Audit corrections: fixed parameter count (31→32), Treasury Overlay (4→5 params), nested→flat paths in 4.3, added existing order_executor.py reference, CSV→SQLite migration note |
 
 ---
 
