@@ -25,6 +25,10 @@ base_config:
   commission: 0.01
   slippage: 0.0
 
+  # Optional: Baseline symbol for buy-and-hold comparison (defaults to QQQ if not specified)
+  # Can be set to any symbol (e.g., "SPY", "NVDA", etc.) independent of signal_symbol
+  # baseline_symbol: "SPY"
+
 # Minimal parameter grid
 # Only testing 2 values per parameter = 8 total combinations
 parameters:

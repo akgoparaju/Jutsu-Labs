@@ -114,11 +114,19 @@ class SummaryCSVExporter:
             baseline_final = baseline.get('baseline_final_value', 0)
             baseline_return = baseline.get('baseline_total_return', 0)
             baseline_annual = baseline.get('baseline_annualized_return', 0)
+            baseline_sharpe = baseline.get('baseline_sharpe_ratio')
+            baseline_max_dd = baseline.get('baseline_max_drawdown')
+            baseline_sortino = baseline.get('baseline_sortino_ratio')
+            baseline_calmar = baseline.get('baseline_calmar_ratio')
             alpha = baseline.get('alpha')
         else:
             baseline_final = None
             baseline_return = None
             baseline_annual = None
+            baseline_sharpe = None
+            baseline_max_dd = None
+            baseline_sortino = None
+            baseline_calmar = None
             alpha = None
 
         # Performance Metrics
@@ -158,17 +166,17 @@ class SummaryCSVExporter:
         rows.append([
             'Risk',
             'Sharpe_Ratio',
-            'N/A',
+            f'{float(baseline_sharpe):.2f}' if baseline_sharpe is not None else 'N/A',
             f'{float(sharpe):.2f}',
-            'N/A'
+            f'+{float(sharpe) - float(baseline_sharpe):.2f}' if baseline_sharpe is not None else 'N/A'
         ])
 
         rows.append([
             'Risk',
             'Max_Drawdown',
-            'N/A',
+            f'{float(baseline_max_dd) * 100:.2f}%' if baseline_max_dd is not None else 'N/A',
             f'{float(max_dd) * 100:.2f}%',
-            'N/A'
+            f'+{(float(max_dd) - float(baseline_max_dd)) * 100:.2f}%' if baseline_max_dd is not None else 'N/A'
         ])
 
         # Trading Metrics

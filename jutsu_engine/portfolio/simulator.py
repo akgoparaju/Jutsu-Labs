@@ -88,9 +88,14 @@ class PortfolioSimulator:
 
         # Latest prices for each symbol
         self._latest_prices: Dict[str, Decimal] = {}
-        
+
         # Trade logger (optional)
         self._trade_logger = trade_logger
+
+        # Execution timing context (optional, for intraday fill pricing)
+        self._execution_time: Optional[str] = None
+        self._end_date: Optional[datetime] = None
+        self._data_handler = None
 
         logger.info(
             f"Portfolio initialized with ${initial_capital:,.2f}, "
@@ -296,7 +301,7 @@ class PortfolioSimulator:
 
         # Get current position for rebalancing logic
         current_position = self.positions.get(signal.symbol, 0)
-        
+
         # Special case: 0% allocation means "close position"
         if signal.portfolio_percent == Decimal('0.0'):
             if current_position == 0:
@@ -322,15 +327,15 @@ class PortfolioSimulator:
                 timestamp=signal.timestamp,
                 price=None
             )
-            
+
             fill = self.execute_order(order, current_bar)
-            
+
             # Log trade execution (close position)
             if fill and self._trade_logger:
                 portfolio_value_after = self.get_portfolio_value()
                 cash_after = self.cash
                 allocation_after = self._calculate_allocation_percentages()
-                
+
                 self._trade_logger.log_trade_execution(
                     fill=fill,
                     portfolio_value_before=portfolio_value_before,
@@ -340,7 +345,7 @@ class PortfolioSimulator:
                     allocation_before=allocation_before,
                     allocation_after=allocation_after
                 )
-            
+
             return fill
 
         # REBALANCING LOGIC: Check if we have an existing position
@@ -349,20 +354,45 @@ class PortfolioSimulator:
             # Calculate current position value and allocation percentage
             position_value = Decimal(str(abs(current_position))) * price
             current_allocation_pct = position_value / portfolio_value
-            
+
             # Calculate delta between target and current allocation
             delta_pct = signal.portfolio_percent - current_allocation_pct
-            
+
             # Calculate shares to adjust (positive = buy more, negative = sell some)
             delta_amount = portfolio_value * delta_pct
-            delta_shares = int(delta_amount / price)
-            
+
+            # Account for slippage and commission in share calculation
+            # Cash-constrained position sizing fix
+            if delta_pct > 0:
+                # BUY operation: include slippage and commission in cost per share
+                # Slippage is applied in execute_order(): BUY at price × (1 + slippage)
+                slippage_adjusted_price = price * (Decimal('1') + self.slippage_percent)
+                cost_per_share = slippage_adjusted_price + self.commission_per_share
+
+                # ROOT CAUSE: delta_amount calculated from total portfolio value (cash + illiquid positions)
+                # but execution can only spend actual cash. In multi-position rebalancing, remaining
+                # positions are illiquid and cannot be spent like cash.
+                # SOLUTION: Limit BUY to available cash. Accepts small allocation drift for zero errors.
+                affordable_amount = min(delta_amount, self.cash)
+                delta_shares = int(affordable_amount / cost_per_share)
+
+                logger.debug(
+                    f"CASH-CONSTRAINED BUY: delta_amount=${delta_amount:.2f}, "
+                    f"available_cash=${self.cash:.2f}, affordable=${affordable_amount:.2f}, "
+                    f"delta_shares={delta_shares}"
+                )
+            else:
+                # SELL operation: include slippage (we sell at lower price)
+                # Slippage is applied in execute_order(): SELL at price × (1 - slippage)
+                slippage_adjusted_price = price * (Decimal('1') - self.slippage_percent)
+                delta_shares = int(delta_amount / slippage_adjusted_price)
+
             logger.info(
                 f"Rebalancing {signal.symbol}: current={current_allocation_pct*100:.2f}%, "
                 f"target={signal.portfolio_percent*100:.2f}%, "
                 f"delta={delta_pct*100:+.2f}% ({delta_shares:+d} shares)"
             )
-            
+
             # If delta is negligible (within rebalance threshold), skip
             # Using 1 share as minimum threshold to avoid tiny rebalances
             if abs(delta_shares) < 1:
@@ -370,7 +400,7 @@ class PortfolioSimulator:
                     f"Delta too small ({delta_shares} shares), skipping rebalance for {signal.symbol}"
                 )
                 return None
-            
+
             # Determine direction based on delta
             if delta_shares > 0:
                 # Need to BUY more shares (increase position)
@@ -380,7 +410,7 @@ class PortfolioSimulator:
                 # Need to SELL shares (reduce position)
                 rebalance_direction = 'SELL'
                 rebalance_quantity = abs(delta_shares)
-            
+
             # Create rebalancing order
             order = OrderEvent(
                 symbol=signal.symbol,
@@ -390,15 +420,15 @@ class PortfolioSimulator:
                 timestamp=signal.timestamp,
                 price=None
             )
-            
+
             fill = self.execute_order(order, current_bar)
-            
+
             # Log trade execution (rebalance)
             if fill and self._trade_logger:
                 portfolio_value_after = self.get_portfolio_value()
                 cash_after = self.cash
                 allocation_after = self._calculate_allocation_percentages()
-                
+
                 self._trade_logger.log_trade_execution(
                     fill=fill,
                     portfolio_value_before=portfolio_value_before,
@@ -408,9 +438,9 @@ class PortfolioSimulator:
                     allocation_before=allocation_before,
                     allocation_after=allocation_after
                 )
-            
+
             return fill
-        
+
         # NEW POSITION LOGIC: No existing position, treat as new allocation
         # Calculate shares based on signal type (normal allocation)
         if signal.signal_type == 'BUY':
@@ -455,13 +485,13 @@ class PortfolioSimulator:
         )
 
         fill = self.execute_order(order, current_bar)
-        
+
         # Log trade execution (if logger provided and fill succeeded)
         if fill and self._trade_logger:
             portfolio_value_after = self.get_portfolio_value()
             cash_after = self.cash
             allocation_after = self._calculate_allocation_percentages()
-            
+
             self._trade_logger.log_trade_execution(
                 fill=fill,
                 portfolio_value_before=portfolio_value_before,
@@ -471,7 +501,7 @@ class PortfolioSimulator:
                 allocation_before=allocation_before,
                 allocation_after=allocation_after
             )
-        
+
         return fill
 
     def _calculate_long_shares(
@@ -496,10 +526,10 @@ class PortfolioSimulator:
             Maximum affordable shares for long purchase
 
         Formula (ATR-based, when risk_per_share provided):
-            shares = allocation_amount / risk_per_share
+            shares = min(allocation_amount, self.cash) / risk_per_share
 
         Formula (Percentage-based, when risk_per_share is None):
-            shares = allocation_amount / (price + commission_per_share)
+            shares = min(allocation_amount, self.cash) / (price + commission_per_share)
 
         Example (ATR-based):
             allocation = Decimal('1500')   # Dollar risk
@@ -512,33 +542,45 @@ class PortfolioSimulator:
             commission = Decimal('0.01')   # $0.01 per share
             # Result: 80000 / 150.01 = 533 shares
         """
+        # CASH-CONSTRAINED FIX: Limit to available cash
+        # ROOT CAUSE: allocation_amount calculated from total portfolio value (cash + illiquid positions)
+        # but execution can only spend actual cash. In multi-position strategies, remaining
+        # positions are illiquid and cannot be spent like cash.
+        # SOLUTION: Use min(allocation_amount, self.cash) for share calculation.
+        affordable_amount = min(allocation_amount, self.cash)
+
         if risk_per_share is not None:
             # ATR-based position sizing
             if risk_per_share <= 0:
                 logger.error(f"Invalid risk_per_share: {risk_per_share}")
                 return 0
 
-            shares = allocation_amount / risk_per_share
+            shares = affordable_amount / risk_per_share
             shares_int = int(shares)
 
             logger.debug(
-                f"ATR-based long sizing: ${allocation_amount:,.2f} / "
-                f"${risk_per_share:.2f} risk/share = {shares_int} shares"
+                f"ATR-based long sizing: ${affordable_amount:,.2f} / "
+                f"${risk_per_share:.2f} risk/share = {shares_int} shares "
+                f"(allocation=${allocation_amount:,.2f}, cash=${self.cash:,.2f})"
             )
         else:
             # Percentage-based position sizing (legacy)
-            cost_per_share = price + self.commission_per_share
+            # Account for slippage and commission (fix for "Insufficient cash" issue)
+            # Slippage is applied in execute_order(): BUY at price × (1 + slippage)
+            slippage_adjusted_price = price * (Decimal('1') + self.slippage_percent)
+            cost_per_share = slippage_adjusted_price + self.commission_per_share
 
             if cost_per_share <= 0:
                 logger.error(f"Invalid cost per share: {cost_per_share}")
                 return 0
 
-            shares = allocation_amount / cost_per_share
+            shares = affordable_amount / cost_per_share
             shares_int = int(shares)
 
             logger.debug(
-                f"Percentage-based long sizing: ${allocation_amount:,.2f} / "
-                f"${cost_per_share:.2f} = {shares_int} shares"
+                f"Percentage-based long sizing: ${affordable_amount:,.2f} / "
+                f"${cost_per_share:.2f} = {shares_int} shares "
+                f"(allocation=${allocation_amount:,.2f}, cash=${self.cash:,.2f})"
             )
 
         return shares_int
@@ -602,8 +644,11 @@ class PortfolioSimulator:
             )
         else:
             # Percentage-based position sizing with margin (legacy)
+            # Account for slippage and commission (fix for "Insufficient cash" issue)
+            # Slippage is applied in execute_order(): SELL at price × (1 - slippage)
+            slippage_adjusted_price = price * (Decimal('1') - self.slippage_percent)
             # Calculate collateral needed per share (price * margin + commission)
-            collateral_per_share = (price * SHORT_MARGIN_REQUIREMENT) + self.commission_per_share
+            collateral_per_share = (slippage_adjusted_price * SHORT_MARGIN_REQUIREMENT) + self.commission_per_share
 
             if collateral_per_share <= 0:
                 logger.error(f"Invalid collateral per share: {collateral_per_share}")
@@ -619,6 +664,124 @@ class PortfolioSimulator:
             )
 
         return shares_int
+
+    def set_execution_context(
+        self,
+        execution_time: str,
+        end_date: datetime,
+        data_handler
+    ) -> None:
+        """
+        Set execution timing context for intraday fill pricing.
+
+        Enables portfolio to use intraday prices for fills on the last day
+        of backtest when execution_time is not "close".
+
+        Args:
+            execution_time: Execution time ("open", "15min_after_open", "15min_before_close", "close")
+            end_date: Last date of backtest (used to detect last trading day)
+            data_handler: Data handler with get_intraday_bars_for_time_window() method
+
+        Example:
+            portfolio.set_execution_context(
+                execution_time="15min_after_open",
+                end_date=datetime(2025, 11, 24),
+                data_handler=data_handler
+            )
+        """
+        self._execution_time = execution_time
+        self._end_date = end_date
+        self._data_handler = data_handler
+        logger.info(f"Execution context set: execution_time={execution_time}, end_date={end_date.date()}")
+
+    def _should_use_intraday_price(self, current_bar: MarketDataEvent) -> bool:
+        """
+        Check if intraday fill price should be used instead of EOD close.
+
+        Returns True only if:
+        1. Execution context has been injected (execution_time, end_date, data_handler)
+        2. execution_time is not "close"
+        3. Current bar is on the last trading day
+
+        Args:
+            current_bar: Current market data bar
+
+        Returns:
+            True if intraday price should be used, False for EOD close
+        """
+        # No injection = use EOD close (backward compatible)
+        if self._execution_time is None or self._end_date is None or self._data_handler is None:
+            return False
+
+        # execution_time="close" = use EOD close (standard behavior)
+        if self._execution_time == "close":
+            return False
+
+        # Check if today is last trading day
+        is_last_day = current_bar.timestamp.date() == self._end_date.date()
+
+        return is_last_day
+
+    def _get_intraday_fill_price(self, symbol: str, current_bar: MarketDataEvent) -> Decimal:
+        """
+        Fetch intraday fill price based on execution_time.
+
+        Fetches 5-minute intraday bar at execution_time and returns close price.
+        Falls back to EOD close if intraday data is unavailable.
+
+        Args:
+            symbol: Symbol to fetch price for
+            current_bar: Current EOD bar (used for fallback)
+
+        Returns:
+            Intraday close price at execution_time, or EOD close as fallback
+
+        Example:
+            # execution_time="15min_after_open" → fetch 9:45 AM bar
+            price = portfolio._get_intraday_fill_price("QQQ", current_bar)
+        """
+        from datetime import time
+
+        # Map execution_time to time objects
+        execution_times = {
+            "open": time(9, 30),
+            "15min_after_open": time(9, 45),
+            "15min_before_close": time(15, 45),
+            "close": time(16, 0),
+        }
+
+        target_time = execution_times[self._execution_time]
+
+        try:
+            # Fetch intraday bar at target time
+            intraday_bars = self._data_handler.get_intraday_bars_for_time_window(
+                symbol=symbol,
+                date=current_bar.timestamp.date(),
+                start_time=target_time,
+                end_time=target_time,
+                interval='5m'
+            )
+
+            if intraday_bars and len(intraday_bars) > 0:
+                intraday_price = intraday_bars[0].close
+                logger.debug(
+                    f"Using intraday fill price for {symbol}: ${intraday_price:.2f} "
+                    f"at {target_time} (last day execution timing)"
+                )
+                return intraday_price
+            else:
+                logger.warning(
+                    f"No intraday data for {symbol} at {target_time}, "
+                    f"falling back to EOD close: ${current_bar.close:.2f}"
+                )
+                return current_bar.close
+
+        except Exception as e:
+            logger.error(
+                f"Error fetching intraday price for {symbol} at {target_time}: {e}. "
+                f"Falling back to EOD close: ${current_bar.close:.2f}"
+            )
+            return current_bar.close
 
     def execute_order(
         self,
@@ -655,18 +818,22 @@ class PortfolioSimulator:
 
         # Determine fill price
         if order_type == 'MARKET':
-            # Use price already set by EventLoop.update_market_value()
-            # NOTE: _latest_prices contains correct close price for this symbol
-            # Fallback to current_bar.close for direct usage (tests, manual execution)
-            fill_price = self._latest_prices.get(symbol, current_bar.close)
+            # Check if we should use intraday price (last day execution timing)
+            if self._should_use_intraday_price(current_bar):
+                fill_price = self._get_intraday_fill_price(symbol, current_bar)
+            else:
+                # Use price already set by EventLoop.update_market_value()
+                # NOTE: _latest_prices contains correct close price for this symbol
+                # Fallback to current_bar.close for direct usage (tests, manual execution)
+                fill_price = self._latest_prices.get(symbol, current_bar.close)
 
-            # Log if using fallback (indicates potential symbol mismatch)
-            if symbol not in self._latest_prices:
-                logger.debug(
-                    f"Using fallback price from current_bar for {symbol} "
-                    f"(current_bar.symbol={current_bar.symbol}). "
-                    f"This is expected for direct portfolio usage but NOT in EventLoop context."
-                )
+                # Log if using fallback (indicates potential symbol mismatch)
+                if symbol not in self._latest_prices:
+                    logger.debug(
+                        f"Using fallback price from current_bar for {symbol} "
+                        f"(current_bar.symbol={current_bar.symbol}). "
+                        f"This is expected for direct portfolio usage but NOT in EventLoop context."
+                    )
 
             # Apply slippage (disadvantageous to trader)
             if direction == 'BUY':
@@ -824,14 +991,14 @@ class PortfolioSimulator:
     def _calculate_allocation_percentages(self) -> Dict[str, Decimal]:
         """
         Calculate current portfolio allocation as percentages.
-        
+
         Used by TradeLogger to record portfolio allocation before/after trades.
         Calculates percentage of total portfolio value for each position and cash.
-        
+
         Returns:
             Dict of symbol → allocation percentage (0-100)
             Includes 'CASH' if cash > 1% of portfolio
-        
+
         Example:
             allocations = portfolio._calculate_allocation_percentages()
             # {'TQQQ': Decimal('60.5'), 'CASH': Decimal('39.5')}
@@ -839,21 +1006,21 @@ class PortfolioSimulator:
         portfolio_value = self.get_portfolio_value()
         if portfolio_value == Decimal('0'):
             return {}
-        
+
         allocations = {}
-        
+
         # Add positions
         for symbol, quantity in self.positions.items():
             if symbol in self._latest_prices:
                 position_value = self._latest_prices[symbol] * Decimal(quantity)
                 percent = (position_value / portfolio_value) * Decimal('100')
                 allocations[symbol] = percent
-        
+
         # Add cash (if significant)
         cash_percent = (self.cash / portfolio_value) * Decimal('100')
         if cash_percent > Decimal('1'):  # Only show if >1%
             allocations['CASH'] = cash_percent
-        
+
         return allocations
 
     def get_position(self, symbol: str) -> int:

@@ -23,15 +23,29 @@ class Strategy(ABC):
     All custom strategies must inherit from this class and implement:
     - init(): Setup parameters and state
     - on_bar(): Process each new bar and generate signals
+    - get_required_warmup_bars(): (Optional) Specify warmup period for indicators
 
     The Strategy is "dumb" - it only generates signals, does not manage state.
     PortfolioSimulator handles all state management (cash, positions, PnL).
+
+    Warmup Period:
+        Strategies that use indicators (SMA, EMA, RSI, etc.) need historical data
+        to "warm up" before generating valid signals. Override get_required_warmup_bars()
+        to specify how many bars are needed before start_date.
+
+        The backtest runner will fetch warmup_bars BEFORE start_date to initialize
+        indicators without consuming trading days. This ensures indicators are fully
+        warmed up when the backtest period begins.
 
     Example:
         class SMA_Crossover(Strategy):
             def init(self):
                 self.short_period = 20
                 self.long_period = 50
+
+            def get_required_warmup_bars(self) -> int:
+                # Need 50 bars for long SMA + 10 buffer
+                return self.long_period + 10
 
             def on_bar(self, bar: MarketDataEvent):
                 closes = self.get_closes(self.long_period)
@@ -147,6 +161,45 @@ class Strategy(ABC):
                     self.buy(bar.symbol, Decimal('0.8'))  # Allocate 80%
         """
         pass
+
+    def get_required_warmup_bars(self) -> int:
+        """
+        Calculate the number of historical bars required for indicator warmup.
+
+        This method should return the maximum lookback period needed by all
+        indicators used in the strategy. The backtest will fetch this many
+        bars BEFORE start_date to warm up indicators without consuming
+        trading days.
+
+        Returns:
+            int: Number of bars needed for warmup (default: 0)
+
+        Notes:
+            - Base implementation returns 0 (no warmup needed)
+            - Override in strategy subclasses that use indicators
+            - Calculate as max(all indicator lookback requirements)
+            - For moving averages: period + buffer (e.g., sma_slow + 10)
+            - For volatility: baseline_window + realized_window
+            - For complex strategies: max of all indicator requirements
+
+        Example:
+            # Strategy using 50-period SMA
+            def get_required_warmup_bars(self) -> int:
+                return self.long_period + 10  # 50 + 10 = 60
+
+            # Strategy using 126+21 volatility windows
+            def get_required_warmup_bars(self) -> int:
+                return self.baseline_window + self.realized_window  # 126 + 21 = 147
+
+            # Strategy with multiple indicators
+            def get_required_warmup_bars(self) -> int:
+                return max(
+                    self.sma_period + 10,  # 50 + 10 = 60
+                    self.ema_period + 5,   # 20 + 5 = 25
+                    self.rsi_period + 10   # 14 + 10 = 24
+                )  # Returns 60
+        """
+        return 0
 
     # Helper methods provided to strategies
 

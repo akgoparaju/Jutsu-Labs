@@ -115,27 +115,65 @@ def _build_strategy_params(strategy_class, symbol_set, optimization_params):
 
     # Conditionally add symbol parameters (only if strategy accepts them AND value exists)
     # Handle both dict and SymbolSet object access
+    # Support both legacy and new naming conventions
     signal_sym = symbol_set.get('signal_symbol') if isinstance(symbol_set, dict) else symbol_set.signal_symbol
-    bull_sym = symbol_set.get('bull_symbol') if isinstance(symbol_set, dict) else symbol_set.bull_symbol
-    defense_sym = symbol_set.get('defense_symbol') if isinstance(symbol_set, dict) else symbol_set.defense_symbol
-    vix_sym = symbol_set.get('vix_symbol') if isinstance(symbol_set, dict) else symbol_set.vix_symbol
+
+    # Support both bull_symbol (legacy) and leveraged_long_symbol (new)
+    bull_sym = (symbol_set.get('leveraged_long_symbol') or symbol_set.get('bull_symbol')) if isinstance(symbol_set, dict) else (getattr(symbol_set, 'leveraged_long_symbol', None) or symbol_set.bull_symbol)
+
+    # Support both defense_symbol (legacy) and core_long_symbol (new)
+    defense_sym = (symbol_set.get('core_long_symbol') or symbol_set.get('defense_symbol')) if isinstance(symbol_set, dict) else (getattr(symbol_set, 'core_long_symbol', None) or symbol_set.defense_symbol)
+
+    vix_sym = symbol_set.get('vix_symbol') if isinstance(symbol_set, dict) else getattr(symbol_set, 'vix_symbol', None)
+
+    # Support new v3.5b symbol types
+    inverse_hedge_sym = symbol_set.get('inverse_hedge_symbol') if isinstance(symbol_set, dict) else getattr(symbol_set, 'inverse_hedge_symbol', None)
+    treasury_trend_sym = symbol_set.get('treasury_trend_symbol') if isinstance(symbol_set, dict) else getattr(symbol_set, 'treasury_trend_symbol', None)
+    bull_bond_sym = symbol_set.get('bull_bond_symbol') if isinstance(symbol_set, dict) else getattr(symbol_set, 'bull_bond_symbol', None)
+    bear_bond_sym = symbol_set.get('bear_bond_symbol') if isinstance(symbol_set, dict) else getattr(symbol_set, 'bear_bond_symbol', None)
 
     # Map config symbols to strategy-specific parameter names
-    # MACD strategies use: bull_symbol, defense_symbol
-    # KalmanGearing uses: bull_3x_symbol, bear_3x_symbol, unleveraged_symbol
+    # Symbol naming conventions:
+    # - Legacy (MACD v4/v5/v6): bull_symbol, defense_symbol, vix_symbol
+    # - KalmanGearing: bull_3x_symbol, bear_3x_symbol, unleveraged_symbol
+    # - Modern (Hierarchical v3.5b): leveraged_long_symbol, core_long_symbol, inverse_hedge_symbol, treasury symbols
+    # This code supports ALL for backward compatibility
+
     if 'signal_symbol' in param_names and signal_sym:
         strategy_params['signal_symbol'] = signal_sym
+
+    # Legacy MACD naming
     if 'bull_symbol' in param_names and bull_sym:
         strategy_params['bull_symbol'] = bull_sym
-    if 'bull_3x_symbol' in param_names and bull_sym:
-        strategy_params['bull_3x_symbol'] = bull_sym
     if 'defense_symbol' in param_names and defense_sym:
         strategy_params['defense_symbol'] = defense_sym
+
+    # KalmanGearing naming
+    if 'bull_3x_symbol' in param_names and bull_sym:
+        strategy_params['bull_3x_symbol'] = bull_sym
     if 'unleveraged_symbol' in param_names and defense_sym:
         strategy_params['unleveraged_symbol'] = defense_sym
     if 'bear_3x_symbol' in param_names and defense_sym:
         # Use defense_symbol for bear_3x_symbol if not specified separately
         strategy_params['bear_3x_symbol'] = defense_sym
+
+    # Modern v3.5b naming (Hierarchical_Adaptive_v3_5b)
+    if 'core_long_symbol' in param_names and defense_sym:
+        strategy_params['core_long_symbol'] = defense_sym
+    if 'leveraged_long_symbol' in param_names and bull_sym:
+        strategy_params['leveraged_long_symbol'] = bull_sym
+    if 'inverse_hedge_symbol' in param_names and inverse_hedge_sym:
+        strategy_params['inverse_hedge_symbol'] = inverse_hedge_sym
+
+    # Treasury overlay symbols (v3.5b)
+    if 'treasury_trend_symbol' in param_names and treasury_trend_sym:
+        strategy_params['treasury_trend_symbol'] = treasury_trend_sym
+    if 'bull_bond_symbol' in param_names and bull_bond_sym:
+        strategy_params['bull_bond_symbol'] = bull_bond_sym
+    if 'bear_bond_symbol' in param_names and bear_bond_sym:
+        strategy_params['bear_bond_symbol'] = bear_bond_sym
+
+    # Legacy VIX symbol
     if 'vix_symbol' in param_names and vix_sym:
         strategy_params['vix_symbol'] = vix_sym
 
@@ -474,6 +512,7 @@ class WFORunner:
             param_cols = [col for col in best_row.index if col not in exclude_cols]
 
             # Build parameters dict (convert Title Case back to snake_case)
+            # CRITICAL: Preserve parameter case sensitivity from strategy signature
             param_mapping_reverse = {
                 'EMA Period': 'ema_period',
                 'ATR Stop Multiplier': 'atr_stop_multiplier',
@@ -486,10 +525,40 @@ class WFORunner:
                 'VIX EMA Period': 'vix_ema_period',
             }
 
+            # Import strategy to get __init__ signature for case-sensitive parameter matching
+            import importlib
+            module = importlib.import_module(f"jutsu_engine.strategies.{self.config['strategy']}")
+            strategy_class = _get_strategy_class_from_module(module)
+
+            # Get strategy __init__ signature for case-sensitive parameter matching
+            sig = inspect.signature(strategy_class.__init__)
+            # Create lowercase → correct case mapping (e.g., 't_max' → 'T_max')
+            param_case_map = {p.lower(): p for p in sig.parameters.keys() if p != 'self'}
+
             best_params = {}
             for col in param_cols:
-                param_name = param_mapping_reverse.get(col, col.lower().replace(' ', '_'))
+                # First apply reverse mapping or convert to lowercase snake_case
+                param_name_lower = param_mapping_reverse.get(col, col.lower().replace(' ', '_'))
+                # Then apply case-sensitive correction from strategy signature
+                param_name = param_case_map.get(param_name_lower, param_name_lower)
                 best_params[param_name] = best_row[col]
+
+            # Filter to only parameters that strategy actually accepts
+            # This excludes metadata parameters like 'version', 'description', etc.
+            strategy_param_names = set(sig.parameters.keys()) - {'self'}
+            best_params = {k: v for k, v in best_params.items() if k in strategy_param_names}
+
+            # Convert parameter types to match strategy signature
+            # This handles CSV Decimal values → int for lookback parameters
+            for param_name in list(best_params.keys()):
+                if param_name in sig.parameters:
+                    expected_type = sig.parameters[param_name].annotation
+                    if expected_type == int:
+                        best_params[param_name] = int(best_params[param_name])
+                    elif expected_type == bool:
+                        # Handle bool conversion (Decimal(1.0) → True)
+                        best_params[param_name] = bool(int(best_params[param_name]))
+                    # Decimal type passes through as-is (financial precision)
 
             metric_value = float(best_row[column_name])
 
@@ -860,14 +929,41 @@ class WFORunner:
             module = importlib.import_module(f"jutsu_engine.strategies.{self.config['strategy']}")
             strategy_class = _get_strategy_class_from_module(module)
 
-            # Prepare symbols list
-            symbols = [
-                symbol_set['signal_symbol'],
-                symbol_set['bull_symbol'],
-                symbol_set['defense_symbol']
-            ]
+            # Prepare symbols list with flexible naming (support both old and new conventions)
+            # Symbol naming conventions:
+            # - Legacy (MACD v4/v5/v6): bull_symbol, defense_symbol, vix_symbol
+            # - Modern (Hierarchical v3.5b): leveraged_long_symbol, core_long_symbol, inverse_hedge_symbol, treasury symbols
+            # This code supports BOTH for backward compatibility
+
+            symbols = [symbol_set['signal_symbol']]  # Always required
+
+            # Add leveraged/bull symbol (handles both naming conventions)
+            if 'leveraged_long_symbol' in symbol_set:
+                symbols.append(symbol_set['leveraged_long_symbol'])
+            elif 'bull_symbol' in symbol_set:
+                symbols.append(symbol_set['bull_symbol'])
+
+            # Add core/defense symbol (handles both naming conventions)
+            if 'core_long_symbol' in symbol_set:
+                symbols.append(symbol_set['core_long_symbol'])
+            elif 'defense_symbol' in symbol_set:
+                symbols.append(symbol_set['defense_symbol'])
+
+            # Add optional inverse hedge symbol (v3.5b only)
+            if symbol_set.get('inverse_hedge_symbol'):
+                symbols.append(symbol_set['inverse_hedge_symbol'])
+
+            # Add optional VIX symbol (legacy strategies)
             if symbol_set.get('vix_symbol'):
                 symbols.append(symbol_set['vix_symbol'])
+
+            # Add optional treasury symbols (v3.5b Treasury Overlay)
+            if symbol_set.get('treasury_trend_symbol'):
+                symbols.append(symbol_set['treasury_trend_symbol'])
+            if symbol_set.get('bull_bond_symbol'):
+                symbols.append(symbol_set['bull_bond_symbol'])
+            if symbol_set.get('bear_bond_symbol'):
+                symbols.append(symbol_set['bear_bond_symbol'])
 
             # Prepare strategy params using introspection
             strategy_params = _build_strategy_params(

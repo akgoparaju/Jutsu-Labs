@@ -1,0 +1,435 @@
+# Grid Search Configuration for Hierarchical Adaptive v3.5b
+# =========================================================
+# Grid Search: ~243 runs (moderate focus on regime boundaries)
+# Validates v3.5b Binarized Regime Allocator design
+#
+# v3.5b Changes from v2.8:
+# -----------------------
+# 1. BINARIZED REGIME GRID (3×2 = 6 cells):
+#    - v2.8: Continuous exposure pipeline (6 tiers → single E_t)
+#    - v3.5b: Discrete regime cells (Trend×Vol → 6 allocations)
+#    - Eliminates "Medium Volatility" - binary High/Low only
+#
+# 2. HIERARCHICAL TREND DETECTION:
+#    - v2.8: Kalman trend only (T_norm)
+#    - v3.5b: Fast (Kalman) gated by Slow (SMA 50/200 structure)
+#    - Rules: Bull (T_norm>0.3 AND SMA_fast>SMA_slow), Bear, Sideways
+#
+# 3. ROLLING Z-SCORE VOLATILITY:
+#    - v2.8: Fixed percentile thresholds (lookback bias)
+#    - v3.5b: Adaptive z-score (σ_t - μ_vol) / σ_vol
+#    - Baseline: 126-day rolling mean/std
+#
+# 4. HYSTERESIS STATE MACHINE:
+#    - v2.8: No vol regime persistence
+#    - v3.5b: Deadband (upper_thresh=+1.0, lower_thresh=0.0)
+#    - Prevents flickering when vol hovers near threshold
+#
+# 5. VOL-CRUSH OVERRIDE:
+#    - v2.8: No V-recovery detection
+#    - v3.5b: Override Bear→Sideways when vol drops >20% in 5 days
+#    - Captures rapid recovery before SMA confirms
+#
+# 6. INSTRUMENT CHANGES:
+#    - v2.8: QQQ/TQQQ/SQQQ/VIX (SQQQ with cap)
+#    - v3.5b: QQQ/TQQQ/PSQ/Cash (optional PSQ toggle, no VIX)
+#    - Removed SQQQ (toxic asset in high vol), replaced with PSQ (-1x)
+#
+# Strategy Overview (v3.5b Regime Grid):
+# --------------------------------------
+# 6-Cell Allocation Matrix:
+# | Cell | Trend     | Vol  | TQQQ | QQQ | Cash | PSQ | Net Beta |
+# |------|-----------|------|------|-----|------|-----|----------|
+# | 1    | Bull      | Low  | 0.6  | 0.4 | 0.0  | 0.0 | 2.2      |
+# | 2    | Bull      | High | 0.0  | 1.0 | 0.0  | 0.0 | 1.0      |
+# | 3    | Sideways  | Low  | 0.2  | 0.8 | 0.0  | 0.0 | 1.4      |
+# | 4    | Sideways  | High | 0.0  | 0.0 | 1.0  | 0.0 | 0.0      |
+# | 5    | Bear      | Low  | 0.0  | 0.5 | 0.5  | 0.0 | 0.5      |
+# | 6a   | Bear      | High | 0.0  | 0.0 | 1.0  | 0.0 | 0.0      | (no PSQ)
+# | 6b   | Bear      | High | 0.0  | 0.0 | 0.5  | 0.5 | -0.5     | (PSQ enabled)
+#
+# Grid Search Strategy (User Q9: Option B - Moderate):
+# -----------------------------------------------------
+# Focus: Regime Boundaries (Z-scores, SMA periods, vol-crush)
+# - These parameters determine WHEN to trade (regime classification)
+# - Statistically more significant than optimizing HOW MUCH to trade
+# - Fix allocation parameters (leverage_scalar, PSQ toggle) at defaults
+#
+# Parameter Groups:
+# 1. Volatility Z-Score Thresholds (3×3 = 9 combinations)
+#    - upper_thresh_z: [0.8, 1.0, 1.2]
+#    - lower_thresh_z: [-0.2, 0.0, 0.2]
+#
+# 2. Vol-Crush Override (3 values)
+#    - vol_crush_threshold: [-0.15, -0.20, -0.25]
+#
+# 3. SMA Structure Periods (3×3 = 9 combinations)
+#    - sma_fast: [40, 50, 60]
+#    - sma_slow: [180, 200, 220]
+#
+# 4. Kalman Trend (Fixed at v2.8 winners)
+#    - measurement_noise: 2000.0
+#    - T_max: 50.0
+#    - process_noise_1/2: 0.01
+#
+# 5. Trend Classification Thresholds (Fixed at spec defaults)
+#    - t_norm_bull_thresh: 0.3
+#    - t_norm_bear_thresh: -0.3
+#
+# 6. Allocation Parameters (Fixed at spec defaults)
+#    - leverage_scalar: 1.0 (no scaling)
+#    - use_inverse_hedge: false (no PSQ)
+#    - w_PSQ_max: 0.5 (not used if PSQ disabled)
+#
+# Total Combinations: 9 (z-score) × 3 (vol-crush) × 9 (SMA) = 243 runs
+# Estimated Runtime: 60-90 minutes
+
+# Strategy to optimize
+strategy: "Hierarchical_Adaptive_v3_5b"
+
+# Symbol Sets
+# -----------
+# v3.5b with Treasury Overlay requires 6 symbols:
+# - QQQ/TQQQ/PSQ for equity allocation
+# - TLT/TMF/TMV for bond overlay
+symbol_sets:
+  - name: "GOOG-Strategy"
+    signal_symbol: "GOOG"                # Kalman + SMA + vol calculations
+    core_long_symbol: "GOOG"             # 1x base allocation
+    leveraged_long_symbol: "GGLL"       # 3x leveraged overlay
+    inverse_hedge_symbol: "PSQ"         # -1x inverse (optional, disabled by default)
+    treasury_trend_symbol: "TLT"        # 20+ Year Treasury (bond trend signal)
+    bull_bond_symbol: "TMF"             # 3x Bull Bonds (deflation/safety)
+    bear_bond_symbol: "TMV"             # 3x Bear Bonds (inflation/rate shock)
+
+# Base Configuration
+# ------------------
+# Fixed settings applied to ALL backtests
+base_config:
+  # Date range - Full history (2010-2024)
+  # Includes: Financial crisis recovery, bull market, COVID crash, 2022 bear, recovery
+  start_date: "2022-09-07"
+  end_date: "2025-11-24"
+
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 10000   # $10,000 starting capital
+  commission: 0.0          # $0.00 per trade
+  slippage: 0.0005         # 0.05% per trade
+
+  # Optional: Baseline symbol for buy-and-hold comparison (defaults to QQQ if not specified)
+  # Can be set to any symbol independent of signal_symbol (e.g., "QQQ", "SPY", "NVDA", etc.)
+  # Useful for comparing against different market benchmarks or asset-specific buy-and-hold
+  baseline_symbol: "GOOG"
+
+# Parameters to Optimize
+# ----------------------
+# Grid Search: Regime Boundary Parameters (User Q9: Option B)
+# Focus on WHEN to trade (regime classification) not HOW MUCH (allocation)
+#
+# Total combinations: 9 (z-score) × 3 (vol-crush) × 9 (SMA) = 243 runs
+
+parameters:
+  # ===========================================================================
+  # KALMAN TREND PARAMETERS (Fixed at v2.8 winners)
+  # ===========================================================================
+  # Controls T_norm calculation (Fast Signal)
+
+  # Measurement noise (Fixed at v2.8 winner)
+  measurement_noise: [3000]  # Fixed: Proven value from v2.8
+
+  # Process noise (Fixed at defaults)
+  process_noise_1: [0.01]      # Fixed
+  process_noise_2: [0.01]      # Fixed
+
+  # Smoothness (Fixed at defaults)
+  osc_smoothness: [15]         # Fixed
+  strength_smoothness: [15]    # Fixed
+
+  # Trend normalization max (Fixed at v2.8 winner)
+  T_max: [50.0]                # Fixed: Aggressive normalization
+
+  # ===========================================================================
+  # SMA STRUCTURE PARAMETERS (GRID-SEARCH - 9 combinations)
+  # ===========================================================================
+  # Controls Slow Signal (Structural Filter)
+  # User Q3: Ranges [40, 50, 60] × [180, 200, 220]
+
+  # Fast SMA period (3 values)
+  # Default: 50-day (2.5-month trend)
+  # Range: [40, 50, 60] - test sensitivity to fast trend window
+  sma_fast: [40]       # 3 values - OPTIMIZE
+
+  # Slow SMA period (3 values)
+  # Default: 200-day (10-month structure)
+  # Range: [180, 200, 220] - test sensitivity to slow structure window
+  sma_slow: [140]    # 3 values - OPTIMIZE
+
+  # ===========================================================================
+  # TREND CLASSIFICATION THRESHOLDS (Fixed at spec defaults)
+  # ===========================================================================
+  # Controls Bull/Bear/Sideways regime classification
+
+  # Bull threshold (Fixed at spec)
+  # T_norm > 0.3 AND SMA_fast > SMA_slow → Bull
+  t_norm_bull_thresh: [0.20]    # Fixed
+
+  # Bear threshold (Fixed at spec)
+  # T_norm < -0.3 AND SMA_fast < SMA_slow → Bear
+  t_norm_bear_thresh: [-0.3]   # Fixed
+
+  # ===========================================================================
+  # VOLATILITY Z-SCORE PARAMETERS (GRID-SEARCH - 9 combinations)
+  # ===========================================================================
+  # Controls High/Low volatility regime classification
+  # User Q3: upper_thresh [0.8, 1.0, 1.2], lower_thresh [-0.2, 0.0, 0.2]
+
+  # Realized volatility window (Fixed at spec)
+  # 21-day (1-month) realized vol calculation
+  realized_vol_window: [21]    # Fixed
+
+  # Volatility baseline window (Fixed at spec)
+  # 126-day (6-month) rolling mean/std for z-score
+  vol_baseline_window: [126]   # Fixed
+
+  # Upper hysteresis threshold (3 values)
+  # Default: +1.0 (1 std dev above 6-month average)
+  # Range: [0.8, 1.0, 1.2] - test sensitivity to vol spike detection
+  # Higher = less frequent High vol regime (more aggressive)
+  upper_thresh_z: [1]  # 3 values - OPTIMIZE
+
+  # Lower hysteresis threshold (3 values)
+  # Default: 0.0 (returned to 6-month average)
+  # Range: [-0.2, 0.0, 0.2] - test sensitivity to vol normalization
+  # Lower = requires deeper vol drop to exit High regime (more conservative)
+  lower_thresh_z: [0.2]  # 3 values - OPTIMIZE
+
+  # ===========================================================================
+  # VOL-CRUSH OVERRIDE PARAMETERS (GRID-SEARCH - 3 values)
+  # ===========================================================================
+  # Controls V-shaped recovery detection
+  # User Q3: vol_crush [-0.15, -0.20, -0.25]
+
+  # Vol-crush threshold (3 values)
+  # Default: -0.20 (20% vol drop in 5 days)
+  # Range: [-0.15, -0.20, -0.25] - test sensitivity to vol collapse
+  # More negative = requires larger vol drop to trigger override (more conservative)
+  vol_crush_threshold: [-0.15]  # 3 values - OPTIMIZE
+
+  # Vol-crush lookback window (Fixed at spec)
+  # 5-day window for vol change calculation
+  vol_crush_lookback: [5]      # Fixed
+
+  # ===========================================================================
+  # ALLOCATION PARAMETERS (Fixed at spec defaults)
+  # ===========================================================================
+  # User Q9: Focus on WHEN to trade (regime boundaries), not HOW MUCH
+  # Fix allocation parameters for this grid-search phase
+
+  # Leverage scalar (Fixed at default)
+  # Multiplier for base cell weights
+  # Default: 1.0 (no scaling, use base ratios like 60/40)
+  # User Q4: Hybrid approach - can optimize in future phase
+  leverage_scalar: [1]       # Fixed: No scaling
+
+  # ===========================================================================
+  # INSTRUMENT TOGGLES (Fixed at conservative defaults)
+  # ===========================================================================
+  # User Q1: PSQ optional toggle
+  # User Q7: Separate logic optimization from instrument constraints
+
+  # PSQ toggle (Fixed at disabled)
+  # Default: false (no inverse hedge, Cell 6 = 100% cash)
+  # Can test PSQ in separate grid-search phase if needed
+  use_inverse_hedge: [false]   # Fixed: Disabled
+
+  # PSQ maximum weight (Fixed at spec default)
+  # Default: 0.5 (50% portfolio cap for PSQ)
+  # User Q2: Parameterized, default 50%
+  # Not used when use_inverse_hedge = false
+  w_PSQ_max: [0.5]             # Fixed: Not applicable (PSQ disabled)
+
+  # ===========================================================================
+  # TREASURY OVERLAY PARAMETERS (Fixed at spec defaults)
+  # ===========================================================================
+  # v3.5b Treasury Overlay: Dynamic Safe Haven Selector
+  # Replaces static Cash allocation in defensive cells with bond logic
+
+  # Treasury Overlay toggle (Fixed at enabled)
+  # Default: true (enable Treasury Overlay feature)
+  # Set to false for backwards compatibility with original v3.5b
+  allow_treasury: [true]       # Fixed: Enable Treasury Overlay
+
+  # Bond SMA periods (Fixed at spec defaults)
+  # Fast: 20-day (1-month bond trend)
+  # Slow: 60-day (3-month bond structure)
+  bond_sma_fast: [20]          # Fixed
+  bond_sma_slow: [60]          # Fixed
+
+  # Maximum bond allocation (Fixed at spec default)
+  # Global cap: 40% of portfolio to control leveraged bond volatility
+  max_bond_weight: [0.4]       # Fixed: 40% global cap
+
+  # Bond symbols (Fixed at spec defaults)
+  # TLT: 20+ Year Treasury ETF (trend signal)
+  # TMF: 3x Bull Bonds (deflation/safety)
+  # TMV: 3x Bear Bonds (inflation/rate shock)
+  treasury_trend_symbol: ["TLT"]   # Fixed
+  bull_bond_symbol: ["TMF"]        # Fixed
+  bear_bond_symbol: ["TMV"]        # Fixed
+
+  # ===========================================================================
+  # REBALANCING (Fixed at default)
+  # ===========================================================================
+
+  rebalance_threshold: [0.025]  # Fixed: 2.5% drift triggers rebalance
+
+# Optional Constraints
+# --------------------
+
+# Maximum total combinations to run
+# Current combinations: 9 × 3 × 9 = 243
+max_combinations: 250
+
+# Checkpoint interval (save progress every N runs)
+checkpoint_interval: 50
+
+# Expected Output
+# ---------------
+# output/grid_search_Hierarchical_Adaptive_v3_5_YYYYMMDD_HHMMSS/
+# ├── summary_comparison.csv   # Metrics for all 243 runs
+# ├── run_config.csv          # Parameter mapping
+# ├── parameters.yaml         # Copy of this config
+# ├── README.txt             # Summary statistics
+# └── run_XXXX/              # Individual runs
+#     ├── portfolio_daily.csv
+#     ├── trades.csv
+#     └── summary.csv
+
+# Usage
+# -----
+# jutsu grid-search --config grid-configs/examples/grid_search_hierarchical_adaptive_v3_5b.yaml
+#
+# After completion:
+# 1. Review summary_comparison.csv for top performers
+# 2. Analyze parameter sensitivity:
+#    - Which upper_thresh_z/lower_thresh_z combination wins?
+#    - Which sma_fast/sma_slow combination wins?
+#    - Which vol_crush_threshold wins?
+# 3. Compare to v2.8 baseline (continuous vs discrete regime approach)
+# 4. Validate regime classification logic:
+#    - Bull/Sideways/Bear distribution (should match market history)
+#    - High/Low vol distribution (should match volatility cycles)
+#    - Vol-crush override frequency (should be rare, <5% of bars)
+# 5. Review performance in key periods:
+#    - COVID crash (March 2020): Did Cash/PSQ cells protect capital?
+#    - 2022 bear market: Did Bear regime classification work?
+#    - Bull markets (2017, 2021): Did Bull cells capture upside?
+# 6. Check allocation effectiveness:
+#    - Cell 1 (Bull/Low): Should be most profitable
+#    - Cell 4 (Sideways/High): Should avoid whipsaw
+#    - Cell 6 (Bear/High): Should minimize drawdown
+# 7. Decide on Phase 2 optimization:
+#    - Fix winning regime boundary params
+#    - Optimize allocation params (leverage_scalar, PSQ toggle)
+
+# v3.5b SPECIFIC ANALYSIS:
+# -----------------------
+# REGIME CLASSIFICATION VALIDATION:
+# - [ ] Trend classification: Bull/Sideways/Bear distribution reasonable?
+# - [ ] Vol classification: High/Low distribution matches market cycles?
+# - [ ] Hysteresis effectiveness: Does deadband prevent flickering?
+# - [ ] Vol-crush override: Triggers during V-recoveries (COVID, 2020)?
+#
+# REGIME GRID VALIDATION:
+# - [ ] Cell 1 (Bull/Low): Most time spent here in bull markets?
+# - [ ] Cell 2 (Bull/High): Transitions during vol spikes?
+# - [ ] Cell 3 (Sideways/Low): Captures drift/consolidation?
+# - [ ] Cell 4 (Sideways/High): Avoids whipsaw in chop?
+# - [ ] Cell 5 (Bear/Low): Defensive during slow corrections?
+# - [ ] Cell 6 (Bear/High): Maximum protection during crashes?
+#
+# PERFORMANCE COMPARISON (v3.5b vs v2.8):
+# - [ ] Max drawdown: v3.5b ≤ v2.8? (discrete cells more defensive?)
+# - [ ] Sharpe ratio: v3.5b ≥ v2.8? (regime clarity improves returns?)
+# - [ ] Win rate: v3.5b maintained vs v2.8?
+# - [ ] Calmar ratio: v3.5b improvement with discrete regime logic?
+# - [ ] Crisis performance: v3.5b better in COVID/2022 bear?
+#
+# PARAMETER SENSITIVITY ANALYSIS:
+# - [ ] upper_thresh_z: 0.8 (aggressive) vs 1.0 (balanced) vs 1.2 (conservative)
+# - [ ] lower_thresh_z: -0.2 (fast exit) vs 0.0 (balanced) vs 0.2 (slow exit)
+# - [ ] vol_crush: -0.15 (sensitive) vs -0.20 (balanced) vs -0.25 (conservative)
+# - [ ] sma_fast: 40 (responsive) vs 50 (balanced) vs 60 (smooth)
+# - [ ] sma_slow: 180 (responsive) vs 200 (balanced) vs 220 (smooth)
+#
+# ARCHITECTURE VALIDATION:
+# - [ ] Hierarchical trend (Kalman + SMA) better than Kalman alone?
+# - [ ] Binarized vol (High/Low) clearer than continuous modulation?
+# - [ ] 6-cell grid interpretable and actionable?
+# - [ ] Hysteresis reduces rebalancing frequency vs no deadband?
+# - [ ] Vol-crush override improves V-recovery capture?
+#
+# RISK ANALYSIS:
+# - [ ] Regime flickering frequency (transitions/year)?
+# - [ ] Rebalancing frequency vs v2.8?
+# - [ ] Cell dwell time distribution (stable or jumpy)?
+# - [ ] Drawdown control in each cell?
+# - [ ] Transaction costs impact (rebalancing threshold appropriate)?
+#
+# DECISION CRITERIA:
+# ✅ SUCCESS: v3.5b clearer regime logic, ≤ v2.8 drawdown, ≥ v2.8 Sharpe
+# ⚠️  INVESTIGATE: Mixed results, parameter sensitivity high
+# ❌ ROLLBACK: v3.5b worse than v2.8, stick with continuous approach
+
+# v3.5b Testing Notes
+# ------------------
+# This grid search validates the v3.5b regime grid approach:
+# 1. Binarized volatility (High/Low) vs v2.8 continuous modulation
+# 2. Hierarchical trend (Kalman + SMA) vs v2.8 Kalman-only
+# 3. Discrete 6-cell allocation vs v2.8 continuous exposure
+# 4. Hysteresis state machine reduces flickering
+# 5. Vol-crush override captures V-shaped recoveries
+#
+# Key validation points:
+# - v2.8: Continuous exposure pipeline (6 tiers → single E_t)
+# - v3.5b: Discrete regime grid (3×2 = 6 cells with fixed ratios)
+# - Expected: Clearer interpretability, more stable regime classification
+# - Risk: Less flexibility, potential underperformance in transitional markets
+#
+# Comparison workflow:
+# 1. Run this v3.5b grid search (243 runs)
+# 2. Compare best v3.5b to best v2.8 (same date range)
+# 3. Analyze regime classification accuracy (vs market history)
+# 4. Check cell allocation appropriateness (vs market conditions)
+# 5. Validate hysteresis effectiveness (vs no deadband)
+# 6. Make go/no-go decision for v3.5b adoption
+
+# Phase 2 Planning (After Regime Boundary Optimization)
+# ------------------------------------------------------
+# IF v3.5b regime boundaries validate well:
+#
+# PHASE 2A: Allocation Optimization
+# - Fix winning regime boundary params from this grid-search
+# - Optimize allocation params:
+#   - leverage_scalar: [0.8, 1.0, 1.2] (tune aggression)
+#   - use_inverse_hedge: [false, true] (test PSQ benefit)
+#   - w_PSQ_max: [0.3, 0.5, 0.7] (if PSQ enabled)
+# - Smaller grid: 3 × 2 × 3 = 18 runs (fast iteration)
+#
+# PHASE 2B: Trend Threshold Refinement
+# - Fix winning z-score and SMA params
+# - Optimize trend thresholds:
+#   - t_norm_bull_thresh: [0.2, 0.3, 0.4]
+#   - t_norm_bear_thresh: [-0.4, -0.3, -0.2]
+# - Test asymmetric thresholds (easier to enter Bull, harder to enter Bear)
+# - Grid: 3 × 3 = 9 runs
+#
+# PHASE 2C: Combined Refinement
+# - Take Phase 2A + 2B winners
+# - Test interactions between allocation and trend thresholds
+# - Final validation grid: ~50 runs
+#
+# Total Phase 2 effort: ~77 runs (~15-20 minutes)

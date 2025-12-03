@@ -459,3 +459,270 @@ class TestEdgeCases:
         assert portfolio.cash < initial_cash  # Cash deducted
         assert len(portfolio.fills) == 1  # Fill recorded
         assert portfolio.get_position('AAPL') > 0  # Position created
+
+
+class TestIntradayFillPricing:
+    """Test intraday fill pricing for execution timing feature."""
+
+    def test_no_injection_uses_eod_close(self, portfolio, market_bar):
+        """Test that without injection, portfolio uses EOD close (backward compatible)."""
+        order = OrderEvent(
+            symbol='AAPL',
+            order_type='MARKET',
+            direction='BUY',
+            quantity=100,
+            timestamp=market_bar.timestamp
+        )
+
+        fill = portfolio.execute_order(order, market_bar)
+
+        assert fill is not None
+        # Should use EOD close with slippage
+        expected_price = market_bar.close * (Decimal('1') + portfolio.slippage_percent)
+        assert fill.fill_price == expected_price
+
+    def test_execution_time_close_uses_eod(self, portfolio, market_bar):
+        """Test that execution_time='close' uses EOD close even with injection."""
+        # Mock data handler
+        class MockDataHandler:
+            def get_intraday_bars_for_time_window(self, **kwargs):
+                return []
+
+        portfolio.set_execution_context(
+            execution_time="close",
+            end_date=market_bar.timestamp,
+            data_handler=MockDataHandler()
+        )
+
+        order = OrderEvent(
+            symbol='AAPL',
+            order_type='MARKET',
+            direction='BUY',
+            quantity=100,
+            timestamp=market_bar.timestamp
+        )
+
+        fill = portfolio.execute_order(order, market_bar)
+
+        assert fill is not None
+        # Should use EOD close even though injection exists
+        expected_price = market_bar.close * (Decimal('1') + portfolio.slippage_percent)
+        assert fill.fill_price == expected_price
+
+    def test_intraday_price_on_last_day(self, portfolio, market_bar):
+        """Test that intraday price is used on last day with execution_time != 'close'."""
+        # Mock data handler with intraday data
+        intraday_bar = MarketDataEvent(
+            symbol='AAPL',
+            timestamp=datetime(2025, 11, 24, 9, 45, tzinfo=timezone.utc),
+            open=Decimal('148.00'),
+            high=Decimal('149.00'),
+            low=Decimal('147.50'),
+            close=Decimal('148.50'),  # Intraday price at 9:45 AM
+            volume=50000,
+            timeframe='5m'
+        )
+
+        class MockDataHandler:
+            def get_intraday_bars_for_time_window(self, **kwargs):
+                return [intraday_bar]
+
+        portfolio.set_execution_context(
+            execution_time="15min_after_open",
+            end_date=market_bar.timestamp,
+            data_handler=MockDataHandler()
+        )
+
+        order = OrderEvent(
+            symbol='AAPL',
+            order_type='MARKET',
+            direction='BUY',
+            quantity=100,
+            timestamp=market_bar.timestamp
+        )
+
+        fill = portfolio.execute_order(order, market_bar)
+
+        assert fill is not None
+        # Should use intraday close with slippage
+        expected_price = intraday_bar.close * (Decimal('1') + portfolio.slippage_percent)
+        assert fill.fill_price == expected_price
+
+    def test_fallback_to_eod_when_no_intraday_data(self, portfolio, market_bar):
+        """Test graceful fallback to EOD close when intraday data unavailable."""
+        # Mock data handler with no intraday data
+        class MockDataHandler:
+            def get_intraday_bars_for_time_window(self, **kwargs):
+                return []
+
+        portfolio.set_execution_context(
+            execution_time="open",
+            end_date=market_bar.timestamp,
+            data_handler=MockDataHandler()
+        )
+
+        order = OrderEvent(
+            symbol='AAPL',
+            order_type='MARKET',
+            direction='BUY',
+            quantity=100,
+            timestamp=market_bar.timestamp
+        )
+
+        fill = portfolio.execute_order(order, market_bar)
+
+        assert fill is not None
+        # Should fallback to EOD close with slippage
+        expected_price = market_bar.close * (Decimal('1') + portfolio.slippage_percent)
+        assert fill.fill_price == expected_price
+
+    def test_non_last_day_uses_eod(self, portfolio, market_bar):
+        """Test that non-last days always use EOD close regardless of execution_time."""
+        # Mock data handler (should NOT be called)
+        class MockDataHandler:
+            def get_intraday_bars_for_time_window(self, **kwargs):
+                raise AssertionError("Should not fetch intraday data for non-last day")
+
+        # Set end_date to future date (so current bar is NOT last day)
+        future_date = datetime(2025, 12, 31, tzinfo=timezone.utc)
+        portfolio.set_execution_context(
+            execution_time="15min_after_open",
+            end_date=future_date,
+            data_handler=MockDataHandler()
+        )
+
+        order = OrderEvent(
+            symbol='AAPL',
+            order_type='MARKET',
+            direction='BUY',
+            quantity=100,
+            timestamp=market_bar.timestamp
+        )
+
+        fill = portfolio.execute_order(order, market_bar)
+
+        assert fill is not None
+        # Should use EOD close (intraday only applies to last day)
+        expected_price = market_bar.close * (Decimal('1') + portfolio.slippage_percent)
+        assert fill.fill_price == expected_price
+
+    def test_multiple_symbols_intraday_pricing(self, portfolio):
+        """Test intraday pricing works for multiple symbols."""
+        # Create bars for QQQ and TQQQ
+        qqq_bar = MarketDataEvent(
+            symbol='QQQ',
+            timestamp=datetime(2025, 11, 24, tzinfo=timezone.utc),
+            open=Decimal('500.00'),
+            high=Decimal('502.00'),
+            low=Decimal('499.00'),
+            close=Decimal('501.00'),
+            volume=1000000,
+            timeframe='1D'
+        )
+
+        tqqq_bar = MarketDataEvent(
+            symbol='TQQQ',
+            timestamp=datetime(2025, 11, 24, tzinfo=timezone.utc),
+            open=Decimal('150.00'),
+            high=Decimal('152.00'),
+            low=Decimal('149.00'),
+            close=Decimal('151.00'),
+            volume=2000000,
+            timeframe='1D'
+        )
+
+        # Mock intraday bars
+        qqq_intraday = MarketDataEvent(
+            symbol='QQQ',
+            timestamp=datetime(2025, 11, 24, 9, 30, tzinfo=timezone.utc),
+            open=Decimal('498.00'),
+            high=Decimal('499.00'),
+            low=Decimal('497.50'),
+            close=Decimal('498.50'),
+            volume=50000,
+            timeframe='5m'
+        )
+
+        tqqq_intraday = MarketDataEvent(
+            symbol='TQQQ',
+            timestamp=datetime(2025, 11, 24, 9, 30, tzinfo=timezone.utc),
+            open=Decimal('148.00'),
+            high=Decimal('149.00'),
+            low=Decimal('147.50'),
+            close=Decimal('148.50'),
+            volume=100000,
+            timeframe='5m'
+        )
+
+        # Mock data handler
+        class MockDataHandler:
+            def get_intraday_bars_for_time_window(self, symbol, **kwargs):
+                if symbol == 'QQQ':
+                    return [qqq_intraday]
+                elif symbol == 'TQQQ':
+                    return [tqqq_intraday]
+                return []
+
+        portfolio.set_execution_context(
+            execution_time="open",
+            end_date=qqq_bar.timestamp,
+            data_handler=MockDataHandler()
+        )
+
+        # Execute orders for both symbols
+        qqq_order = OrderEvent(
+            symbol='QQQ',
+            order_type='MARKET',
+            direction='BUY',
+            quantity=10,
+            timestamp=qqq_bar.timestamp
+        )
+
+        tqqq_order = OrderEvent(
+            symbol='TQQQ',
+            order_type='MARKET',
+            direction='BUY',
+            quantity=20,
+            timestamp=tqqq_bar.timestamp
+        )
+
+        qqq_fill = portfolio.execute_order(qqq_order, qqq_bar)
+        tqqq_fill = portfolio.execute_order(tqqq_order, tqqq_bar)
+
+        assert qqq_fill is not None
+        assert tqqq_fill is not None
+
+        # Verify each uses its own intraday price
+        qqq_expected = qqq_intraday.close * (Decimal('1') + portfolio.slippage_percent)
+        tqqq_expected = tqqq_intraday.close * (Decimal('1') + portfolio.slippage_percent)
+
+        assert qqq_fill.fill_price == qqq_expected
+        assert tqqq_fill.fill_price == tqqq_expected
+
+    def test_error_handling_in_intraday_fetch(self, portfolio, market_bar):
+        """Test graceful error handling when intraday fetch fails."""
+        # Mock data handler that raises exception
+        class MockDataHandler:
+            def get_intraday_bars_for_time_window(self, **kwargs):
+                raise RuntimeError("Database connection error")
+
+        portfolio.set_execution_context(
+            execution_time="open",
+            end_date=market_bar.timestamp,
+            data_handler=MockDataHandler()
+        )
+
+        order = OrderEvent(
+            symbol='AAPL',
+            order_type='MARKET',
+            direction='BUY',
+            quantity=100,
+            timestamp=market_bar.timestamp
+        )
+
+        fill = portfolio.execute_order(order, market_bar)
+
+        assert fill is not None
+        # Should fallback to EOD close despite error
+        expected_price = market_bar.close * (Decimal('1') + portfolio.slippage_percent)
+        assert fill.fill_price == expected_price

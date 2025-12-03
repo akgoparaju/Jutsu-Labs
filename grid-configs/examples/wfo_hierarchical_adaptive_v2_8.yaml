@@ -1,0 +1,465 @@
+# Walk-Forward Optimization for Hierarchical Adaptive v2.8
+# =========================================================
+# Validates robustness of v2.8 (Two-Parameter Floor System) across time periods
+#
+# v2.8 Changes from v2.7:
+# -----------------------
+# 1. TWO-PARAMETER FLOOR SYSTEM:
+#    - v2.7: Single E_min (conflated defensive anchor + short clip floor)
+#    - v2.8: E_anchor (positive DD anchor) + E_short (negative clip floor)
+#    - Decouples DD-driven defensive behavior from trend-driven short positioning
+#
+# 2. STRONGER k_short (Bug Fix):
+#    - v2.7: k_short = 0.7 (too weak, prevented negative E_trend → no SQQQ)
+#    - v2.8: k_short ∈ [0.8, 1.2] (enables negative E_trend → SQQQ reachable!)
+#    - Mathematical proof: k_short ≥ 0.8 allows E_trend < 0 for strong downtrends
+#
+# 3. SQQQ CAP (Risk Management):
+#    - v2.7: No SQQQ cap (theoretical tail risk)
+#    - v2.8: w_SQQQ_max = 0.25 (caps SQQQ at 25% portfolio)
+#    - Prevents over-leveraged short positions
+#
+# 4. All v2.6 features preserved:
+#    - 4-weight position mapping (QQQ, TQQQ, SQQQ, cash)
+#    - Asymmetric DD governor (compatible with two-parameter system)
+#    - All modulators unchanged
+#
+# Walk-Forward Methodology:
+# -------------------------
+# - Total Period: 2010-03-01 to 2025-03-01 (15 years)
+# - Window Size: 3.0 years (2.5y IS + 0.5y OOS)
+# - Slide: 0.5 years (6 months forward each iteration)
+# - Windows: 29 total walk-forward windows
+# - Selection Metric: Sortino Ratio (downside risk focus)
+#
+# Process:
+# 1. In-Sample (IS): Optimize v2.8 parameters on 2.5y training data
+# 2. Out-of-Sample (OOS): Test winning params on next 0.5y validation data
+# 3. Slide forward 0.5y and repeat
+# 4. Aggregate OOS results to measure true predictive performance
+#
+# v2.8 WFO Parameter Set: Ultra-Focused (8 runs per window)
+# ----------------------------------------------------------
+# Fix ALL v2.6 proven parameters:
+#   - k_long: 0.7 (v2.6 winner)
+#   - E_max: 1.5 (v2.6 standard)
+#   - measurement_noise: 2000.0 (v2.6 winner)
+#   - T_max: 50 (v2.6 winner)
+#   - sigma_target_multiplier: 0.8 (v2.6 winner)
+#   - alpha_VIX: 2.0 (v2.6 winner)
+#   - DD thresholds: 0.10, 0.20 (v2.5 standard)
+#   - w_SQQQ_max: 0.25 (v2.8 maximum allowed)
+#
+# Optimize ONLY v2.8 two-parameter system (2^3 = 8 runs):
+#   - k_short ∈ {0.9, 1.1} (2 values: test symmetry)
+#   - E_anchor ∈ {0.6, 0.7} (2 values: aggressive/conservative DD anchor)
+#   - E_short ∈ {-0.1, -0.2} (2 values: light/moderate short clip)
+#
+# Total Backtests: 29 windows × 8 combinations = 232 total backtests
+# Estimated Runtime: 30-45 minutes
+
+# Strategy to optimize
+strategy: "Hierarchical_Adaptive_v2_8"
+
+# Symbol Sets
+# -----------
+# Same as v2.6/v2.7 configuration
+symbol_sets:
+  - name: "QQQ_TQQQ_SQQQ_VIX"
+    signal_symbol: "QQQ"                # Kalman filter calculations
+    core_long_symbol: "QQQ"             # 1x base allocation
+    leveraged_long_symbol: "TQQQ"       # 3x leveraged overlay
+    leveraged_short_symbol: "SQQQ"      # 3x inverse (v2.8 FIXED ACCESS!)
+    vix_symbol: "VIX"                   # Volatility compression modulator
+
+# Base Configuration
+# ------------------
+base_config:
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 100000  # $100,000 starting capital
+  commission: 0.0          # $0.00 per trade
+  slippage: 0.0005         # 0.05% per trade
+
+# Walk-Forward Configuration
+# --------------------------
+walk_forward:
+  # Total period to analyze
+  total_start_date: "2010-03-01"
+  total_end_date: "2025-03-01"
+
+  # Window sizing (same as v2.5 WFO)
+  window_size_years: 3.0      # Total window size (IS + OOS)
+  in_sample_years: 2.5        # Training period
+  out_of_sample_years: 0.5    # Validation period
+
+  # Iteration control
+  slide_years: 0.5            # Slide forward 6 months each iteration
+
+  # Selection criteria
+  selection_metric: "sortino_ratio"  # Optimize for downside risk
+
+  # Performance requirements (filters before OOS testing)
+  min_sharpe_ratio: 1.0      # Minimum Sharpe in IS period
+  max_drawdown: 0.30         # Maximum 30% drawdown in IS period
+
+# Parameters to Optimize
+# ----------------------
+# v2.8 Ultra-Focused WFO: Test ONLY new two-parameter system
+# All v2.6 parameters fixed at proven values for fast iteration
+#
+# Total combinations: 2^3 = 8 runs per window
+
+parameters:
+  # ===========================================================================
+  # VERSION IDENTIFIER (v2.8 - Two-Parameter Floor System)
+  # ===========================================================================
+  version: ["2.8"]
+
+  # ===========================================================================
+  # TIER 1: KALMAN FILTER PARAMETERS (Fixed at v2.6 winners)
+  # ===========================================================================
+
+  # Measurement noise (Fixed at v2.6 winner)
+  measurement_noise: [2000.0]  # Fixed: v2.6 grid-search winner
+
+  # Oscillator and strength smoothness (Fixed at defaults)
+  osc_smoothness: [15]         # Fixed
+  strength_smoothness: [15]    # Fixed
+
+  # Process noise (Fixed at defaults)
+  process_noise_1: [0.01]      # Fixed
+  process_noise_2: [0.01]      # Fixed
+
+  # ===========================================================================
+  # TIER 2: BASELINE EXPOSURE PARAMETERS (v2.8 TWO-PARAMETER SYSTEM - WFO)
+  # ===========================================================================
+
+  # Trend normalization max (Fixed at v2.6 winner)
+  T_max: [50]  # Fixed: v2.6 winner (aggressive trend normalization)
+
+  # Long-side slope (Fixed at v2.6 winner)
+  k_long: [0.7]  # Fixed: v2.6 winner (strong long-side responsiveness)
+
+  # SHORT-SIDE SLOPE (v2.8 WFO - 2 values)
+  # Test values around default (1.0):
+  #   0.9: Asymmetric (weaker short than long response)
+  #   1.1: Aggressive (stronger short than long response)
+  # Expected: 1.1 enables more SQQQ allocation, 0.9 more conservative
+  k_short: [0.9, 1.1]  # 2 values - WFO TEST
+
+  # DRAWDOWN DEFENSIVE ANCHOR (v2.8 WFO - 2 values)
+  # Test values:
+  #   0.6: Aggressive DD anchor (60% QQQ floor at max DD)
+  #   0.7: Conservative DD anchor (70% QQQ floor at max DD)
+  # Expected: 0.7 better risk control, 0.6 higher returns
+  E_anchor: [0.6, 0.7]  # 2 values - WFO TEST
+
+  # SHORT CLIP FLOOR (v2.8 WFO - 2 values)
+  # Test values:
+  #   -0.1: Light short clip (10% max short exposure)
+  #   -0.2: Moderate short clip (20% max short exposure)
+  # Note: Skipping -0.3 for WFO (too aggressive, tested in grid-search)
+  # Expected: -0.2 provides better balance
+  E_short: [-0.1, -0.2]  # 2 values - WFO TEST
+
+  # Maximum exposure (Fixed at v2.6 standard)
+  E_max: [1.5]  # Fixed: 1.5x leverage cap
+
+  # SQQQ RISK CAP (Fixed at maximum for WFO)
+  # Use w_SQQQ_max = 0.25 (maximum allowed) for WFO
+  # Grid-search can explore 0.20 vs 0.25
+  w_SQQQ_max: [0.25]  # Fixed: Maximum SQQQ risk exposure
+
+  # ===========================================================================
+  # TIER 3: VOLATILITY MODULATOR (Fixed at v2.6 winners)
+  # ===========================================================================
+
+  sigma_target_multiplier: [0.8]  # Fixed: v2.6 winner
+  realized_vol_lookback: [20]     # Fixed: v2.6 default
+  S_vol_min: [0.5]                # Fixed
+  S_vol_max: [1.5]                # Fixed
+
+  # ===========================================================================
+  # TIER 4: VIX COMPRESSION MODULATOR (Fixed at v2.6 winners)
+  # ===========================================================================
+
+  vix_ema_period: [50]   # Fixed
+  alpha_VIX: [2.0]       # Fixed: v2.6 winner
+
+  # ===========================================================================
+  # TIER 5: DRAWDOWN GOVERNOR (Fixed at v2.5 values)
+  # ===========================================================================
+  # v2.5's asymmetric formula works correctly for v2.8 two-parameter system
+
+  DD_soft: [0.10]   # Fixed: 10% DD starts compression
+  DD_hard: [0.20]   # Fixed: 20% DD full compression
+  p_min: [0.0]      # Fixed
+
+  # ===========================================================================
+  # TIER 6: REBALANCING (Fixed at default)
+  # ===========================================================================
+
+  rebalance_threshold: [0.025]  # Fixed: 2.5% drift
+
+# Expected Output
+# ---------------
+# output/wfo_Hierarchical_Adaptive_v2_8_YYYYMMDD_HHMMSS/
+# ├── wfo_summary.csv           # Overall WFO results across all windows
+# ├── parameter_stability.csv   # How often each parameter value wins
+# ├── oos_performance.csv       # Out-of-sample performance metrics
+# ├── is_vs_oos_comparison.csv  # IS vs OOS performance degradation
+# ├── parameters.yaml           # Copy of this config file
+# ├── README.txt               # Summary and analysis
+# │
+# ├── window_001/              # First window (2010-03 to 2013-03)
+# │   ├── is_period/          # In-sample optimization results
+# │   │   ├── summary_comparison.csv  # All 8 combinations tested
+# │   │   └── best_params.yaml        # Winning parameters
+# │   ├── oos_period/         # Out-of-sample validation
+# │   │   ├── portfolio_daily.csv
+# │   │   ├── trades.csv
+# │   │   └── summary.csv
+# │   └── window_summary.csv  # IS + OOS metrics
+# │
+# ├── window_002/              # Second window (2010-09 to 2013-09)
+# │   └── ... (same structure)
+# │
+# └── ... (27 more windows)
+
+# Usage
+# -----
+# jutsu wfo --config grid-configs/examples/wfo_hierarchical_adaptive_v2_8.yaml
+#
+# After completion:
+# 1. Review wfo_summary.csv for overall OOS performance
+# 2. Compare to v2.7 and v2.6 WFO results (same windows)
+# 3. Check parameter_stability.csv:
+#    - Does k_short = 1.1 or 0.9 win more often?
+#    - Does E_anchor = 0.7 or 0.6 win more often?
+#    - Does E_short = -0.2 or -0.1 win more often?
+# 4. Analyze is_vs_oos_comparison.csv for overfitting:
+#    - Large IS/OOS gap = overfitting
+#    - Consistent IS/OOS gap = robust strategy
+# 5. Review oos_performance.csv by market regime:
+#    - Bull markets (2010-2019): Performance maintained vs v2.6?
+#    - Bear markets (2020, 2022): Better drawdown control with SQQQ?
+#    - Recovery (2021, 2023): Exposure scaling effectiveness?
+# 6. Examine critical windows:
+#    - COVID crash (March 2020): Did SQQQ allocation help?
+#    - 2022 bear market: SQQQ effectiveness during sustained downtrend?
+#    - Flash crashes: Did two-parameter system provide better protection?
+# 7. VALIDATE v2.8 IMPROVEMENTS:
+#    - SQQQ allocation frequency: >0% (v2.7 baseline: 0%)
+#    - OOS max drawdown: Better than v2.7?
+#    - E_anchor defensive behavior: Stable DD floor?
+#    - E_short short positioning: Controlled and effective?
+# 8. COMPARE TO v2.7 and v2.6:
+#    - Does v2.8 enable SQQQ? (v2.7: NO, v2.6: YES)
+#    - Better OOS Sortino ratio? (v2.8 target: ≥ v2.6)
+#    - Two-parameter system clearer than v2.7 single E_min?
+
+# Walk-Forward Windows
+# --------------------
+# 29 total windows with 0.5y slide:
+#
+# Window 01: IS 2010-03 to 2012-09, OOS 2012-09 to 2013-03
+# Window 02: IS 2010-09 to 2013-03, OOS 2013-03 to 2013-09
+# Window 03: IS 2011-03 to 2013-09, OOS 2013-09 to 2014-03
+# ... (continue sliding forward 6 months)
+# Window 29: IS 2022-09 to 2025-03, OOS 2024-09 to 2025-03
+#
+# Key Windows to Review (v2.8 Validation):
+# - Window 20 (OOS includes March 2020 COVID crash): SQQQ allocation critical test
+# - Window 27 (OOS includes 2022 bear market): Two-parameter system effectiveness
+# - Early windows (2010-2013): Post-crisis recovery, bull market baseline
+# - Late windows (2023-2025): Current market regime, v2.8 adaptability
+
+# Performance Expectations (v2.8 vs v2.7 vs v2.6)
+# ------------------------------------------------
+# v2.8 IMPROVEMENTS EXPECTED OVER v2.7:
+#
+# SQQQ Allocation Frequency:
+# - v2.7: 0% (unreachable due to k_short = 0.7 bug)
+# - v2.8: 5-15% of bars (k_short ∈ [0.9, 1.1] enables negative E_trend)
+# - Expected improvement: FUNCTIONAL SHORT POSITIONING
+#
+# Max Drawdown (OOS):
+# - v2.7: -18% to -22% (no SQQQ, weak defensive)
+# - v2.8: -15% to -18% (SQQQ + E_anchor defensive floor)
+# - Expected improvement: 3-4% better worst-case drawdown
+#
+# Sortino Ratio (OOS):
+# - v2.7: 1.5 - 1.8 (similar to v2.6)
+# - v2.8: 1.6 - 2.0 (SQQQ improves downside protection)
+# - Expected improvement: +0.1 to +0.2
+#
+# Two-Parameter System Benefits:
+# - v2.7: Single E_min (conflated DD anchor + short clip)
+# - v2.8: E_anchor (DD) + E_short (short) decoupled
+# - Expected improvement: Clearer interpretability, independent tuning
+#
+# Defensive Positioning:
+# - v2.7: E_min conflation caused confusion in defensive behavior
+# - v2.8: E_anchor provides clear DD-driven defensive floor (60-70% QQQ)
+# - Expected improvement: More predictable risk management
+#
+# Short Positioning:
+# - v2.7: E_min as short clip, but SQQQ unreachable (k_short bug)
+# - v2.8: E_short as dedicated short clip, SQQQ reachable (k_short fix)
+# - Expected improvement: Functional short capability, bear market protection
+#
+# v2.8 vs v2.6 Comparison:
+# - v2.8 should match v2.6 performance (both enable SQQQ)
+# - v2.8 two-parameter system may provide tuning benefits
+# - v2.8 w_SQQQ_max cap adds risk management (v2.6 unlimited)
+# - v2.8 stronger k_short may enable more SQQQ allocation than v2.6
+#
+# IS vs OOS Performance:
+# - Average OOS Sortino ≥70% of average IS Sortino (acceptable degradation)
+# - Max individual window OOS Sortino <50% of IS → investigate that period
+# - Consistent degradation pattern (not random) = healthy strategy
+#
+# OOS Performance Targets:
+# - OOS Sortino Ratio: >1.5 (vs IS >1.8)
+# - OOS Max Drawdown: <25% (vs IS <20%)
+# - OOS Win Rate: >50% (vs IS >55%)
+# - OOS Calmar Ratio: >1.0 (vs IS >1.2)
+# - OOS SQQQ Allocation: 5-15% of bars (vs v2.7: 0%)
+#
+# Market Regime Performance (v2.8 Expectations):
+# - Bull market windows (2010-2019): OOS Sortino >2.0 (match v2.6)
+# - Bear market windows (2020, 2022): OOS Max DD <25% (better than v2.7)
+# - Recovery windows (2021, 2023): OOS returns competitive with buy-hold
+# - Choppy periods: OOS drawdown control (modulators + SQQQ effective)
+
+# Analysis Checklist
+# -------------------
+# After WFO completes:
+#
+# PARAMETER STABILITY ANALYSIS (v2.8):
+# - [ ] k_short: Does 0.9 or 1.1 win more often?
+# - [ ] E_anchor: Does 0.6 or 0.7 win more often?
+# - [ ] E_short: Does -0.1 or -0.2 win more often?
+# - [ ] Winning params cluster or vary by regime?
+# - [ ] Early windows vs late windows preference differences?
+#
+# TWO-PARAMETER SYSTEM VALIDATION:
+# - [ ] E_anchor provides stable DD defensive floor across windows?
+# - [ ] E_short enables short positioning without excessive risk?
+# - [ ] Two-parameter separation clearer than v2.7 single E_min?
+# - [ ] Independent tuning of DD anchor vs short clip beneficial?
+#
+# SQQQ REACHABILITY VALIDATION (v2.8 vs v2.7):
+# - [ ] v2.8 allocates to SQQQ during bear markets? (v2.7: 0%)
+# - [ ] SQQQ allocation frequency: 5-15% of bars vs v2.7: 0%?
+# - [ ] k_short = 1.1 enables more SQQQ than k_short = 0.9?
+# - [ ] SQQQ weights respect w_SQQQ_max = 0.25 cap?
+# - [ ] Net short exposure reached (E_final < 0)?
+#
+# IS vs OOS DEGRADATION:
+# - [ ] Average IS/OOS performance gap (should be 20-30%)
+# - [ ] Outlier windows with large gaps (investigate these periods)
+# - [ ] Consistent degradation pattern across windows?
+# - [ ] Any windows where OOS > IS? (lucky or genuine edge?)
+#
+# OOS PERFORMANCE BY REGIME (v2.8 Specific):
+# - [ ] COVID crash (March 2020): SQQQ allocation protected capital?
+# - [ ] 2022 bear market: E_anchor + E_short + SQQQ effective?
+# - [ ] 2023 recovery: Exposure scaling captured upside?
+# - [ ] Low volatility periods: Strategy stayed invested appropriately?
+#
+# TRADE QUALITY (OOS):
+# - [ ] Average win rate across windows
+# - [ ] Profit factor consistency
+# - [ ] Trade frequency (rebalancing threshold appropriate?)
+# - [ ] Position sizing (QQQ/TQQQ/SQQQ allocation sensible?)
+# - [ ] SQQQ allocation timing (during downtrends?)
+#
+# v2.8 vs v2.7 vs v2.6 COMPARISON:
+# - [ ] v2.8 enables SQQQ? (v2.7: NO, v2.6: YES)
+# - [ ] v2.8 better max drawdown in crisis windows? (vs v2.7)
+# - [ ] v2.8 same or better OOS Sortino? (vs v2.6)
+# - [ ] v2.8 two-parameter system clearer than v2.7?
+# - [ ] v2.8 w_SQQQ_max cap improves risk control? (vs v2.6 unlimited)
+#
+# ROBUSTNESS VALIDATION:
+# - [ ] Strategy works across all market regimes?
+# - [ ] Parameter sensitivity reasonable? (small changes = small impact)
+# - [ ] No extreme outlier windows that dominate results?
+# - [ ] OOS results support production deployment?
+#
+# DECISION CRITERIA:
+# ✅ PROCEED TO PRODUCTION: Stable params, consistent OOS, <30% degradation, v2.8 > v2.7, SQQQ functional
+# ⚠️  OPTIMIZE FURTHER: Unstable params or >40% IS/OOS gap → refine grid-search
+# ❌ REDESIGN STRATEGY: Poor OOS, v2.8 ≤ v2.7, or SQQQ still unreachable
+
+# Research Suggestions
+# --------------------
+# POST-WFO ANALYSIS (v2.8 Specific):
+#
+# 1. Two-Parameter Sensitivity Study:
+#    - Take most stable v2.8 params from WFO
+#    - Test E_anchor and E_short independently
+#    - Measure impact on defensive behavior (E_anchor) vs short aggression (E_short)
+#    - Validate decoupling benefit
+#
+# 2. k_short Symmetry Analysis:
+#    - Compare k_short = 0.9 vs 1.1 across bull/bear regimes
+#    - Does symmetric k_trend (k_short = k_long = 0.7) work better?
+#    - Or does asymmetric (k_short > k_long) improve bear market performance?
+#
+# 3. SQQQ Allocation Deep Dive:
+#    - Analyze SQQQ allocation frequency by market regime
+#    - Validate SQQQ timing (during downtrends?)
+#    - Compare v2.8 SQQQ usage to v2.6 (both enable SQQQ)
+#    - Check w_SQQQ_max cap effectiveness (20% vs 25%)
+#
+# 4. Regime-Specific Analysis (v2.8):
+#    - Group windows by market regime (bull/bear/chop)
+#    - Compare param preferences by regime
+#    - Does two-parameter system adapt better to regime changes?
+#
+# 5. v2.8 vs v2.7 vs v2.6 Deep Dive:
+#    - Compare exposure distributions (E_anchor vs E_min behavior)
+#    - Analyze SQQQ allocation patterns (v2.8 vs v2.6)
+#    - Review crisis period behavior (COVID, 2022 bear)
+#    - Validate two-parameter system improvements
+#
+# 6. Monte Carlo Validation (v2.8):
+#    - Use WFO winning params
+#    - Run 1000 Monte Carlo simulations with randomized returns
+#    - Validate Sortino/Drawdown statistics hold up
+#    - Test SQQQ allocation robustness
+
+# Next Steps
+# ----------
+# After WFO validation:
+#
+# IF v2.8 RESULTS ARE STRONG:
+# 1. Select final v2.8 parameter set (most stable from WFO)
+# 2. Run full-period backtest with winning params
+# 3. Compare directly to v2.7 and v2.6 best performers
+# 4. Validate SQQQ reachability and effectiveness
+# 5. Generate production deployment plan
+# 6. Consider paper trading validation
+#
+# IF v2.8 RESULTS ARE MIXED:
+# 1. Investigate why two-parameter system didn't improve results
+# 2. Run refined grid-search on E_anchor + E_short ranges
+# 3. Test alternative k_short values (0.8, 1.0, 1.2)
+# 4. Consider hybrid v2.8/v2.6 approach
+#
+# IF v2.8 RESULTS ARE WORSE THAN v2.7:
+# 1. Revert to v2.6 (best SQQQ-enabled version)
+# 2. Document why two-parameter system underperformed
+# 3. Revisit v2.8 design assumptions
+# 4. Consider keeping v2.7 single E_min (if v2.7 > v2.8)
+#
+# IF SQQQ STILL UNREACHABLE IN v2.8:
+# 1. CRITICAL BUG: Review k_short implementation
+# 2. Validate mathematical proof (k_short ≥ 0.8 should enable E < 0)
+# 3. Check E_final calculation in code
+# 4. Review position mapping logic for SQQQ allocation

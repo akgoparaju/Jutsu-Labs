@@ -223,6 +223,73 @@ def _cache_bars(self, bars: List[MarketDataEvent]) -> None:
     """
 ```
 
+**`get_bars()`** - Bulk bar retrieval with optional warmup
+```python
+def get_bars(
+    self,
+    symbol: str,
+    start_date: datetime,
+    end_date: datetime,
+    limit: Optional[int] = None,
+    warmup_bars: int = 0
+) -> List[MarketDataEvent]:
+    """
+    Get bars for a date range, optionally including warmup period.
+
+    Args:
+        symbol: Stock ticker symbol
+        start_date: Start of TRADING period
+        end_date: End of trading period
+        limit: Optional max number of bars to return
+        warmup_bars: Number of bars to fetch BEFORE start_date for indicator warmup
+
+    Returns:
+        List of MarketDataEvent objects in chronological order
+
+    Notes:
+        - If warmup_bars > 0, fetches data from approximately (start_date - warmup_bars trading days)
+        - Warmup bars are included in the returned data
+        - Actual warmup start is calculated using _calculate_warmup_start_date()
+
+    Example:
+        # Get bars for January 2024 with 50-bar warmup for SMA(50)
+        bars = handler.get_bars(
+            'AAPL',
+            datetime(2024, 1, 1),
+            datetime(2024, 1, 31),
+            warmup_bars=50
+        )
+        # Returns bars from ~Nov 2023 through Jan 2024
+    """
+```
+
+**`_calculate_warmup_start_date()`** - Helper for warmup date calculation
+```python
+def _calculate_warmup_start_date(self, start_date: datetime, warmup_bars: int) -> datetime:
+    """
+    Calculate approximate start date to fetch warmup bars.
+
+    Args:
+        start_date: Requested trading start date
+        warmup_bars: Number of warmup bars needed
+
+    Returns:
+        datetime: Approximate start date to begin fetching
+
+    Notes:
+        - Assumes ~252 trading days per year for daily data
+        - Adds 40% buffer to account for weekends/holidays
+        - Example: 147 bars ≈ 147 * 1.4 = 206 calendar days
+
+    Example:
+        # For 147-bar RSI warmup on 2024-01-01 start
+        warmup_start = _calculate_warmup_start_date(
+            datetime(2024, 1, 1), 147
+        )
+        # Returns approximately 2023-06-09
+    """
+```
+
 ### Performance Requirements
 ```python
 PERFORMANCE_TARGETS = {

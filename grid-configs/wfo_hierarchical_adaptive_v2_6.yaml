@@ -1,0 +1,348 @@
+# Walk-Forward Optimization for Hierarchical Adaptive v2.6
+# =========================================================
+# Validates robustness of v2.6 (SQQQ Capability) across time periods
+#
+# v2.6 Changes from v2.5:
+# -----------------------
+# - SQQQ capability: 4-weight position mapping (QQQ, TQQQ, SQQQ, cash)
+# - Extended E_min: Can now be negative (net short exposure via long SQQQ)
+# - Added leveraged_short_symbol parameter
+# - All v2.5 features preserved (asymmetric DD governor, 5-tier engine)
+#
+# Walk-Forward Methodology:
+# -------------------------
+# - Total Period: 2010-03-01 to 2025-03-01 (15 years)
+# - Window Size: 3.0 years (2.5y IS + 0.5y OOS)
+# - Slide: 0.5 years (6 months forward each iteration)
+# - Windows: 29 total walk-forward windows
+# - Selection Metric: Sortino Ratio (downside risk focus)
+#
+# Process:
+# 1. In-Sample (IS): Optimize parameters on 2.5y training data
+# 2. Out-of-Sample (OOS): Test winning params on next 0.5y validation data
+# 3. Slide forward 0.5y and repeat
+# 4. Aggregate OOS results to measure true predictive performance
+#
+# Parameter Set: Reduced for faster WFO validation
+# - Focus on E_min values (test SQQQ capability)
+# - Use v2.5 defaults for other parameters
+# - 16 runs per window (2^4)
+#
+# Total Backtests: 29 windows × 16 combinations = 464 total backtests
+# Estimated Runtime: 30-45 minutes
+
+# Strategy to optimize
+strategy: "Hierarchical_Adaptive_v2_6"
+
+# Symbol Sets
+# -----------
+# v2.6 requires 4 symbols (v2.5 + SQQQ)
+symbol_sets:
+  - name: "QQQ_TQQQ_SQQQ_VIX"
+    signal_symbol: "QQQ"                # Kalman filter calculations
+    core_long_symbol: "QQQ"             # 1x base allocation
+    leveraged_long_symbol: "TQQQ"       # 3x leveraged overlay
+    leveraged_short_symbol: "SQQQ"      # 3x inverse (NEW in v2.6)
+    vix_symbol: "VIX"                   # Volatility compression modulator
+
+# Base Configuration
+# ------------------
+base_config:
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 100000  # $100,000 starting capital
+  commission: 0.0          # $0.00 per trade
+  slippage: 0.0005         # 0.05% per trade
+
+# Walk-Forward Configuration
+# --------------------------
+walk_forward:
+  # Total period to analyze
+  total_start_date: "2010-03-01"
+  total_end_date: "2025-03-01"
+
+  # Window sizing
+  window_size_years: 3.0      # Total window size (IS + OOS)
+  in_sample_years: 2.5        # Training period
+  out_of_sample_years: 0.5    # Validation period
+
+  # Iteration control
+  slide_years: 0.5            # Slide forward 6 months each iteration
+
+  # Selection criteria
+  selection_metric: "sortino_ratio"  # Optimize for downside risk
+
+  # Performance requirements (filters before OOS testing)
+  min_sharpe_ratio: 1.0      # Minimum Sharpe in IS period
+  max_drawdown: 0.30         # Maximum 30% drawdown in IS period
+
+# Parameters to Optimize
+# ----------------------
+# Reduced parameter set for faster WFO
+# Focus on validating SQQQ capability through E_min variations
+#
+# Total combinations: 2^4 = 16 runs per window
+
+parameters:
+  # ===========================================================================
+  # TIER 1: KALMAN FILTER PARAMETERS (Fixed at v2.5 defaults)
+  # ===========================================================================
+
+  measurement_noise: [2000.0]  # Fixed
+  osc_smoothness: [15]         # Fixed
+  strength_smoothness: [15]    # Fixed
+  process_noise_1: [0.01]      # Fixed
+  process_noise_2: [0.01]      # Fixed
+
+  # ===========================================================================
+  # TIER 2: BASELINE EXPOSURE PARAMETERS
+  # ===========================================================================
+
+  # Trend normalization max (test 2 values)
+  T_max: [50, 60]  # 2 values
+
+  # Baseline exposure slope (test 2 values)
+  k_trend: [0.3, 0.5]  # 2 values
+
+  # Exposure bounds
+  # v2.6 CRITICAL: E_min testing (validate SQQQ capability)
+  # Test negative (short), neutral, and positive minimum exposure
+  E_min: [-0.5, 0.0]  # 2 values: short capability vs neutral
+  E_max: [1.5]        # Fixed
+
+  # ===========================================================================
+  # TIER 3-6: MODULATORS Fixed at v2.5 defaults
+  # ===========================================================================
+
+  # Volatility modulator
+  sigma_target_multiplier: [0.8]
+  realized_vol_lookback: [20]
+  S_vol_min: [0.5]
+  S_vol_max: [1.5]
+
+  # VIX compression
+  vix_ema_period: [50]
+  alpha_VIX: [2.0]
+
+  # Drawdown governor (v2.5 asymmetric formula)
+  DD_soft: [0.10]
+  DD_hard: [0.20]
+  p_min: [0.0]
+
+  # Rebalancing
+  rebalance_threshold: [0.025]
+
+# Expected Output
+# ---------------
+# output/wfo_Hierarchical_Adaptive_v2_6_YYYYMMDD_HHMMSS/
+# ├── wfo_summary.csv           # Overall WFO results across all windows
+# ├── parameter_stability.csv   # How often each parameter value wins
+# ├── oos_performance.csv       # Out-of-sample performance metrics
+# ├── is_vs_oos_comparison.csv  # IS vs OOS performance degradation
+# ├── sqqq_utilization.csv      # SQQQ allocation frequency and effectiveness (NEW)
+# ├── parameters.yaml           # Copy of this config file
+# ├── README.txt               # Summary and analysis
+# │
+# ├── window_001/              # First window (2010-03 to 2013-03)
+# │   ├── is_period/          # In-sample optimization results
+# │   │   ├── summary_comparison.csv  # All 16 combinations tested
+# │   │   └── best_params.yaml        # Winning parameters
+# │   ├── oos_period/         # Out-of-sample validation
+# │   │   ├── portfolio_daily.csv
+# │   │   ├── trades.csv
+# │   │   └── summary.csv
+# │   └── window_summary.csv  # IS + OOS metrics
+# │
+# └── ... (28 more windows)
+
+# Usage
+# -----
+# jutsu wfo --config grid-configs/wfo_hierarchical_adaptive_v2_6.yaml
+#
+# After completion:
+# 1. Review wfo_summary.csv for overall OOS performance
+# 2. Check sqqq_utilization.csv:
+#    - How often is SQQQ allocated? (should be >0% in bear periods)
+#    - SQQQ weight distribution (Region 1 vs Region 2)
+#    - Net short exposure frequency (E_t < 0)
+# 3. Compare E_min = -0.5 vs E_min = 0.0:
+#    - Does negative E_min improve bear market performance?
+#    - What is the trade-off in bull markets?
+# 4. Analyze OOS performance in crisis periods:
+#    - COVID crash (March 2020): Did SQQQ provide protection?
+#    - 2022 bear market: Better drawdown control vs v2.5?
+# 5. COMPARE TO v2.5 WFO RESULTS:
+#    - Same parameter settings (T_max, k_trend)
+#    - Does v2.6 improve OOS Sortino ratio?
+#    - Better max drawdown in crisis windows?
+#    - Is SQQQ capability worth the added complexity?
+#
+# Walk-Forward Windows
+# --------------------
+# 29 total windows with 0.5y slide:
+#
+# Window 01: IS 2010-03 to 2012-09, OOS 2012-09 to 2013-03
+# Window 02: IS 2010-09 to 2013-03, OOS 2013-03 to 2013-09
+# ... (continue sliding forward 6 months)
+# Window 29: IS 2022-09 to 2025-03, OOS 2024-09 to 2025-03
+#
+# Key Windows to Review:
+# - Window 20 (OOS includes March 2020 COVID crash): SQQQ critical stress test
+# - Window 27 (OOS includes 2022 bear market): Drawdown control validation
+# - Bear market windows: SQQQ should activate (E_t < 0)
+# - Bull market windows: SQQQ should be zero (E_t > 0)
+
+# Performance Expectations (v2.6 vs v2.5)
+# ----------------------------------------
+# v2.6 IMPROVEMENTS EXPECTED:
+#
+# Max Drawdown:
+# - v2.5: -15% to -18% (can reduce to E_min = 0.4)
+# - v2.6: -12% to -15% (can go net short via SQQQ)
+# - Expected improvement: 2-3% better worst-case drawdown
+#
+# Bear Market Performance:
+# - v2.5: Can only reduce to ~40% QQQ (E_min = 0.4)
+# - v2.6: Can go net short up to -50% QQQ (E_min = -0.5)
+# - Expected improvement: Better returns in prolonged bear markets
+#
+# Sortino Ratio (OOS):
+# - v2.5: 1.6 - 2.0
+# - v2.6: 1.7 - 2.1 (better downside protection with SQQQ)
+# - Expected improvement: +0.1 to +0.2
+#
+# SQQQ Utilization:
+# - Frequency: 5-15% of time (in bearish + DD conditions)
+# - Average weight: 10-30% when allocated
+# - Regions: Primarily Region 2 (-1.0 < E < 0), rarely Region 1
+#
+# IS vs OOS Performance:
+# - Average OOS Sortino ≥70% of average IS Sortino (same as v2.5)
+# - SQQQ effectiveness may vary by window (more useful in bear periods)
+# - Bull market windows: v2.6 should match v2.5 (no SQQQ allocation)
+#
+# OOS Performance Targets:
+# - OOS Sortino Ratio: >1.6 (vs v2.5 >1.5)
+# - OOS Max Drawdown: <22% (vs v2.5 <25%)
+# - OOS Win Rate: >50% (same as v2.5)
+# - OOS Calmar Ratio: >1.1 (vs v2.5 >1.0)
+#
+# Market Regime Performance:
+# - Bull market windows: OOS Sortino comparable to v2.5 (SQQQ unused)
+# - Bear market windows: OOS Max DD 2-3% better than v2.5 (SQQQ active)
+# - Recovery windows: OOS returns comparable to v2.5
+# - Choppy periods: SQQQ may help or hurt (whipsaw risk)
+
+# Analysis Checklist
+# -------------------
+# After WFO completes:
+#
+# SQQQ CAPABILITY VALIDATION:
+# - [ ] Does v2.6 actually use SQQQ? (Check trade logs across windows)
+# - [ ] SQQQ allocation frequency (>0% in bear windows?)
+# - [ ] Net short exposure reached (E_t < 0 during bearish + DD?)
+# - [ ] SQQQ weight correctness (matches 4-region formula?)
+# - [ ] Position mapping validation (4 weights sum to 1.0?)
+#
+# E_MIN SENSITIVITY ANALYSIS:
+# - [ ] E_min = -0.5: Performance vs risk trade-off?
+# - [ ] E_min = 0.0: Neutral baseline comparison?
+# - [ ] Optimal E_min: Which value wins more windows?
+# - [ ] Regime-dependent preference (bull prefers 0.0, bear prefers -0.5?)
+#
+# PARAMETER STABILITY:
+# - [ ] Which T_max wins most often? (50 vs 60)
+# - [ ] Which k_trend wins most often? (0.3 vs 0.5)
+# - [ ] Which E_min wins most often? (-0.5 vs 0.0)
+# - [ ] Parameter stability across regimes (bull vs bear)
+#
+# IS vs OOS DEGRADATION:
+# - [ ] Average IS/OOS performance gap (should be 20-30%)
+# - [ ] Outlier windows with large gaps
+# - [ ] SQQQ windows: Larger IS/OOS gap due to overfitting?
+# - [ ] Bull windows: IS/OOS gap same as v2.5?
+#
+# OOS PERFORMANCE BY REGIME:
+# - [ ] COVID crash (March 2020): Did SQQQ help vs v2.5?
+# - [ ] 2022 bear market: Better drawdown control?
+# - [ ] 2023 recovery: Comparable upside capture?
+# - [ ] Bull markets (2010-2019): No degradation vs v2.5?
+#
+# v2.6 vs v2.5 COMPARISON:
+# - [ ] OOS max drawdown: 2-3% improvement in bear windows?
+# - [ ] OOS Sortino ratio: +0.1 to +0.2 improvement overall?
+# - [ ] Bear market returns: Better with SQQQ capability?
+# - [ ] Bull market returns: No degradation (SQQQ unused)?
+# - [ ] Crisis performance: Superior risk management?
+#
+# TRADE QUALITY:
+# - [ ] Rebalancing frequency: Increased with 4 weights?
+# - [ ] Transaction costs: Material impact from more trading?
+# - [ ] SQQQ tracking error: Performance vs -3x QQQ?
+# - [ ] Whipsaw risk: Excessive SQQQ allocation changes?
+#
+# ROBUSTNESS VALIDATION:
+# - [ ] Strategy works across all market regimes?
+# - [ ] SQQQ adds value consistently or only in specific periods?
+# - [ ] Parameter sensitivity reasonable?
+# - [ ] OOS results support production deployment?
+#
+# DECISION CRITERIA:
+# ✅ ADOPT v2.6: Stable params, better OOS drawdown, SQQQ adds value
+# ⚠️  CONDITIONAL: Good in bear markets but complexity cost-benefit unclear
+# ❌ REVERT TO v2.5: No improvement or degraded performance, SQQQ ineffective
+
+# Research Suggestions
+# --------------------
+# POST-WFO ANALYSIS:
+#
+# 1. SQQQ Effectiveness Study:
+#    - Isolate windows where SQQQ was allocated
+#    - Compare performance to v2.5 in same windows
+#    - Measure SQQQ contribution to risk-adjusted returns
+#
+# 2. Regime-Conditional Analysis:
+#    - Group windows by market regime (bull/bear/chop)
+#    - Compare E_min preferences by regime
+#    - Consider regime-adaptive E_min if beneficial
+#
+# 3. Whipsaw Risk Assessment:
+#    - Count SQQQ entry/exit transitions
+#    - Measure transaction cost impact
+#    - Evaluate if wider rebalancing threshold helps
+#
+# 4. Position Mapping Validation:
+#    - Verify 4-region formulas with actual trade data
+#    - Check net exposure calculations
+#    - Validate SQQQ weight constraints
+#
+# 5. v2.6 vs v2.5 Crisis Comparison:
+#    - Focus on COVID crash (March 2020)
+#    - Focus on 2022 bear market
+#    - Direct head-to-head comparison
+#    - Document SQQQ's specific contribution
+
+# Next Steps
+# ----------
+# After WFO validation:
+#
+# IF v2.6 RESULTS ARE STRONG:
+# 1. Select final parameter set (most stable E_min from WFO)
+# 2. Run full-period backtest with winning params
+# 3. Compare directly to v2.5 best performer
+# 4. Generate production deployment plan with SQQQ capability
+# 5. Consider paper trading validation
+#
+# IF v2.6 RESULTS ARE MIXED:
+# 1. Investigate when SQQQ helps vs hurts
+# 2. Consider hybrid approach (SQQQ only in high-conviction bear signals)
+# 3. Test alternative E_min values
+# 4. Evaluate wider rebalancing threshold to reduce whipsaw
+#
+# IF v2.6 RESULTS ARE WORSE THAN v2.5:
+# 1. Revert to v2.5 (keep v2.6 code for analysis)
+# 2. Document why SQQQ capability underperformed
+# 3. Analyze if complexity cost > benefit
+# 4. Consider simpler defensive alternatives

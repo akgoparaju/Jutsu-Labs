@@ -1,0 +1,406 @@
+# Walk-Forward Optimization for Hierarchical Adaptive v4.0
+# =========================================================
+# Validates robustness of v4.0 (Macro + Correlation + Crisis Alpha) across time periods
+#
+# v4.0 Changes from v3.5b:
+# ------------------------
+# 1. MACRO TREND FILTER:
+#    - v3.5b: Cell 3 (Sideways/Low) → 50% TQQQ + 50% SafeHaven
+#    - v4.0: Cell 3 → Macro bias gated (Bull: 50% TQQQ + 50% SafeHaven, Bear: 100% Cash)
+#
+# 2. CORRELATION GUARD (INFLATION DETECTOR):
+#    - v3.5b: Static SafeHaven (TMF/TMV) based on TLT trend
+#    - v4.0: Correlation guard → SPY vs TLT correlation > threshold → Cash override
+#
+# 3. SAFE HAVEN SELECTION WITH GUARD:
+#    - v3.5b: SafeHaven = TMF or TMV (always bonds)
+#    - v4.0: Guard-aware → Normal regime = TMF/TMV, Inflation regime = Cash
+#
+# 4. CELL 6 CRISIS ALPHA:
+#    - v3.5b: Cell 6 (Bear/High) → 100% Cash or 50% PSQ + 50% Cash
+#    - v4.0: Cell 6 → 40% SafeHaven + 20% SQQQ + 40% Cash (crisis alpha)
+#
+# 5. SMART REBALANCING:
+#    - v3.5b: Fixed 2.5% rebalance threshold
+#    - v4.0: Vol-adaptive → Low vol = 3% drift, High vol = 6% drift
+#
+# 6. INSTRUMENT ADDITIONS:
+#    - v3.5b: QQQ/TQQQ/PSQ/TLT/TMF/TMV
+#    - v4.0: QQQ/TQQQ/TLT/TMF/TMV/SPY/SQQQ
+#
+# Walk-Forward Methodology:
+# -------------------------
+# - Total Period: 2010-03-01 to 2025-03-01 (15 years)
+# - Window Size: 3.0 years (2.5y IS + 0.5y OOS)
+# - Slide: 0.5 years (6 months forward each iteration)
+# - Windows: 29 total walk-forward windows
+# - Selection Metric: Sharpe Ratio (risk-adjusted returns)
+#
+# Process:
+# 1. In-Sample (IS): Optimize v4.0 parameters on 2.5y training data
+# 2. Out-of-Sample (OOS): Test winning params on next 0.5y validation data
+# 3. Slide forward 0.5y and repeat
+# 4. Aggregate OOS results to measure true predictive performance
+#
+# v4.0 WFO Parameter Set: Focused on v4.0 Features (8 runs per window)
+# --------------------------------------------------------------------
+# Fix ALL v3.5b parameters at winners:
+#   - Kalman: measurement_noise=3000.0, T_max=50.0
+#   - SMA structure: sma_fast=40, sma_slow=140
+#   - Z-score: upper_thresh_z=1.0, lower_thresh_z=0.2
+#   - Vol-crush: vol_crush_threshold=-0.15
+#   - Treasury: allow_treasury=true, max_bond_weight=0.4
+#
+# Optimize ONLY v4.0 feature parameters (2^3 = 8 runs):
+#   - macro_trend_lookback ∈ {180, 220} (2 values: responsive/conservative)
+#   - corr_threshold ∈ {0.1, 0.3} (2 values: sensitive/conservative)
+#   - crisis_alpha_weight ∈ {0.1, 0.3} (2 values: conservative/aggressive)
+#
+# Fixed v4.0 parameters for WFO:
+#   - corr_lookback: 60 (balanced correlation window)
+#   - drift_low_vol: 0.03 (balanced low vol rebalancing)
+#   - drift_high_vol: 0.06 (balanced high vol rebalancing)
+#
+# Total Backtests: 29 windows × 8 combinations = 232 total backtests
+# Estimated Runtime: 30-45 minutes
+
+# Strategy to optimize
+strategy: "Hierarchical_Adaptive_v4_0"
+
+# Symbol Sets
+# -----------
+# v4.0 with Correlation Guard and Crisis Alpha requires 7 symbols
+symbol_sets:
+  - name: "QQQ_TQQQ_Bonds_SPY_SQQQ"
+    signal_symbol: "QQQ"                # Kalman + SMA + vol calculations
+    core_long_symbol: "QQQ"             # 1x base allocation
+    leveraged_long_symbol: "TQQQ"       # 3x leveraged overlay
+    treasury_trend_symbol: "TLT"        # 20+ Year Treasury (bond trend signal)
+    bull_bond_symbol: "TMF"             # 3x Bull Bonds (deflation/safety)
+    bear_bond_symbol: "TMV"             # 3x Bear Bonds (inflation/rate shock)
+    correlation_equity_symbol: "SPY"    # S&P 500 for correlation signal
+    crisis_alpha_symbol: "SQQQ"         # -3x QQQ for crisis alpha
+
+# Base Configuration
+# ------------------
+base_config:
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 100000  # $100,000 starting capital
+  commission: 0.0          # $0.00 per trade
+  slippage: 0.0005         # 0.05% per trade
+
+# Walk-Forward Configuration
+# --------------------------
+walk_forward:
+  # Total period to analyze
+  total_start_date: "2010-02-01"
+  total_end_date: "2025-11-21"
+
+  # Window sizing (same as v3.5b WFO)
+  window_size_years: 3.0      # Total window size (IS + OOS)
+  in_sample_years: 2.5        # Training period
+  out_of_sample_years: 0.5    # Validation period
+
+  # Iteration control
+  slide_years: 0.5            # Slide forward 6 months each iteration
+
+  # Selection criteria
+  selection_metric: "sharpe_ratio"  # Optimize for risk-adjusted returns
+
+  # Performance requirements (filters before OOS testing)
+  min_sharpe_ratio: 1.0      # Minimum Sharpe in IS period
+  max_drawdown: 0.35         # Maximum 35% drawdown in IS period
+
+# Parameters to Optimize
+# ----------------------
+# v4.0 Focused WFO: Test ONLY v4.0 feature parameters
+# All v3.5b parameters fixed at winners for fast iteration
+#
+# Total combinations: 2^3 = 8 runs per window
+
+parameters:
+  # ===========================================================================
+  # VERSION IDENTIFIER (v4.0 - Macro + Correlation + Crisis Alpha)
+  # ===========================================================================
+  version: ["4.0"]
+
+  # ===========================================================================
+  # KALMAN TREND PARAMETERS (Fixed at v3.5b winners)
+  # ===========================================================================
+
+  # Measurement noise (Fixed at v3.5b winner)
+  measurement_noise: [2000.0, 3000.0]  # Fixed: Proven value from v3.5b
+
+  # Process noise (Fixed at defaults)
+  process_noise_1: [0.01]      # Fixed
+  process_noise_2: [0.01]      # Fixed
+
+  # Smoothness (Fixed at defaults)
+  osc_smoothness: [15]         # Fixed
+  strength_smoothness: [15]    # Fixed
+
+  # Trend normalization max (Fixed at v3.5b winner)
+  T_max: [50.0]                # Fixed: Aggressive normalization
+
+  # ===========================================================================
+  # SMA STRUCTURE PARAMETERS (Fixed at v3.5b winners)
+  # ===========================================================================
+
+  # Fast SMA period (Fixed at v3.5b winner)
+  sma_fast: [40]               # Fixed: Responsive trend
+
+  # Slow SMA period (Fixed at v3.5b winner)
+  sma_slow: [140]              # Fixed: Long-term structure
+
+  # ===========================================================================
+  # TREND CLASSIFICATION THRESHOLDS (Fixed at spec defaults)
+  # ===========================================================================
+
+  # Bull threshold (Fixed at spec)
+  t_norm_bull_thresh: [0.2]    # Fixed
+
+  # Bear threshold (Fixed at spec)
+  t_norm_bear_thresh: [-0.3]   # Fixed
+
+  # ===========================================================================
+  # VOLATILITY Z-SCORE PARAMETERS (Fixed at v3.5b winners)
+  # ===========================================================================
+
+  # Realized volatility window (Fixed at spec)
+  realized_vol_window: [21]    # Fixed
+
+  # Volatility baseline window (Fixed at spec)
+  vol_baseline_window: [126]   # Fixed
+
+  # Upper hysteresis threshold (Fixed at v3.5b winner)
+  upper_thresh_z: [1]          # Fixed: Balanced vol spike detection
+
+  # Lower hysteresis threshold (Fixed at v3.5b winner)
+  lower_thresh_z: [0.2]        # Fixed: Slow exit from High vol
+
+  # ===========================================================================
+  # VOL-CRUSH OVERRIDE PARAMETERS (Fixed at v3.5b winner)
+  # ===========================================================================
+
+  # Vol-crush threshold (Fixed at v3.5b winner)
+  vol_crush_threshold: [-0.15]  # Fixed: Sensitive V-recovery detection
+
+  # Vol-crush lookback window (Fixed at spec)
+  vol_crush_lookback: [5]      # Fixed
+
+  # ===========================================================================
+  # MACRO TREND FILTER PARAMETERS (v4.0 WFO - 2 values)
+  # ===========================================================================
+
+  # MACRO TREND LOOKBACK (v4.0 WFO - 2 values)
+  # Test boundary values:
+  #   180: Responsive (9-month macro trend)
+  #   220: Conservative (11-month macro trend)
+  # Expected: 220 more stable, 180 more responsive
+  macro_trend_lookback: [180, 220]  # 2 values - WFO TEST
+
+  # ===========================================================================
+  # CORRELATION GUARD PARAMETERS (v4.0 WFO - 2 values)
+  # ===========================================================================
+
+  # Correlation lookback (Fixed at balanced default)
+  corr_lookback: [60]          # Fixed: 3-month correlation window
+
+  # CORRELATION THRESHOLD (v4.0 WFO - 2 values)
+  # Test boundary values:
+  #   0.1: Sensitive (10% positive correlation triggers guard)
+  #   0.3: Conservative (30% positive correlation triggers guard)
+  # Expected: 0.3 fewer false positives, 0.1 better inflation detection
+  corr_threshold: [0.1, 0.3]   # 2 values - WFO TEST
+
+  # ===========================================================================
+  # CRISIS ALPHA PARAMETERS (v4.0 WFO - 2 values)
+  # ===========================================================================
+
+  # CRISIS ALPHA WEIGHT (v4.0 WFO - 2 values)
+  # Test boundary values:
+  #   0.1: Conservative (10% SQQQ in Cell 6)
+  #   0.3: Aggressive (30% SQQQ in Cell 6)
+  # Expected: 0.3 better crisis profit, 0.1 less decay risk
+  crisis_alpha_weight: [0.1, 0.3]  # 2 values - WFO TEST
+
+  # ===========================================================================
+  # SMART REBALANCING PARAMETERS (Fixed at balanced defaults)
+  # ===========================================================================
+
+  # Drift thresholds (Fixed at balanced defaults)
+  drift_low_vol: [0.03]        # Fixed: 3% drift in low vol
+  drift_high_vol: [0.06]       # Fixed: 6% drift in high vol
+
+  # ===========================================================================
+  # ALLOCATION PARAMETERS (Fixed at spec defaults)
+  # ===========================================================================
+
+  # Leverage scalar (Fixed at default)
+  leverage_scalar: [1]       # Fixed: No scaling
+
+  # ===========================================================================
+  # TREASURY OVERLAY PARAMETERS (Fixed at v3.5b winners)
+  # ===========================================================================
+
+  # Treasury Overlay toggle (Fixed at enabled)
+  allow_treasury: [true]       # Fixed: Enable Treasury Overlay
+
+  # Bond SMA periods (Fixed at spec defaults)
+  bond_sma_fast: [20]          # Fixed: 20-day bond trend
+  bond_sma_slow: [60]          # Fixed: 60-day bond structure
+
+  # Maximum bond allocation (Fixed at spec default)
+  max_bond_weight: [0.4]       # Fixed: 40% global cap
+
+  # Bond symbols (Fixed at spec defaults)
+  treasury_trend_symbol: ["TLT"]   # Fixed
+  bull_bond_symbol: ["TMF"]        # Fixed
+  bear_bond_symbol: ["TMV"]        # Fixed
+
+  # ===========================================================================
+  # CORRELATION SYMBOLS (Fixed at spec defaults)
+  # ===========================================================================
+
+  correlation_equity_symbol: ["SPY"]   # Fixed: S&P 500 for correlation
+  crisis_alpha_symbol: ["SQQQ"]        # Fixed: -3x QQQ for crisis alpha
+
+# Expected Output
+# ---------------
+# output/wfo_Hierarchical_Adaptive_v4_0_YYYYMMDD_HHMMSS/
+# ├── wfo_summary.csv           # Overall WFO results across all windows
+# ├── parameter_stability.csv   # How often each parameter value wins
+# ├── oos_performance.csv       # Out-of-sample performance metrics
+# ├── is_vs_oos_comparison.csv  # IS vs OOS performance degradation
+# ├── parameters.yaml           # Copy of this config file
+# ├── README.txt               # Summary and analysis
+# │
+# ├── window_001/              # First window (2010-03 to 2013-03)
+# │   ├── is_period/          # In-sample optimization results
+# │   │   ├── summary_comparison.csv  # All 8 combinations tested
+# │   │   └── best_params.yaml        # Winning parameters
+# │   ├── oos_period/         # Out-of-sample validation
+# │   │   ├── portfolio_daily.csv
+# │   │   ├── trades.csv
+# │   │   └── summary.csv
+# │   └── window_summary.csv  # IS + OOS metrics
+# │
+# ├── window_002/              # Second window (2010-09 to 2013-09)
+# │   └── ... (same structure)
+# │
+# └── ... (27 more windows)
+
+# Usage
+# -----
+# jutsu wfo --config grid-configs/examples/wfo_hierarchical_adaptive_v4_0.yaml
+#
+# After completion:
+# 1. Review wfo_summary.csv for overall OOS performance
+# 2. Compare to v3.5b WFO results (same windows)
+# 3. Check parameter_stability.csv:
+#    - Does macro_trend_lookback = 180 or 220 win more often?
+#    - Does corr_threshold = 0.1 or 0.3 win more often?
+#    - Does crisis_alpha_weight = 0.1 or 0.3 win more often?
+# 4. Analyze is_vs_oos_comparison.csv for overfitting:
+#    - Large IS/OOS gap = overfitting
+#    - Consistent IS/OOS gap = robust strategy
+# 5. Review oos_performance.csv by market regime:
+#    - Inflation periods (2022): Correlation guard effectiveness?
+#    - Crisis periods (COVID 2020): Crisis alpha profitability?
+#    - Sideways markets (2015-2016): Macro filter effectiveness?
+# 6. Examine critical windows:
+#    - COVID crash (March 2020): Cell 6 SQQQ profit capture?
+#    - 2022 inflation: Correlation guard Cash override protection?
+#    - Sideways chop: Cell 3 macro filter avoid losses?
+# 7. VALIDATE v4.0 IMPROVEMENTS:
+#    - Macro filter: Cell 3 Bull/Bear bias distribution?
+#    - Correlation guard: SPY-TLT correlation trigger frequency?
+#    - Crisis alpha: SQQQ profitability vs decay?
+#    - Smart rebalancing: Reduced whipsaw in High vol?
+# 8. COMPARE TO v3.5b:
+#    - OOS max drawdown: v4.0 ≤ v3.5b?
+#    - OOS Sharpe ratio: v4.0 ≥ v3.5b?
+#    - Crisis performance: v4.0 better in COVID/2022/inflation?
+
+# Walk-Forward Windows
+# --------------------
+# 29 total windows with 0.5y slide (same as v3.5b):
+#
+# Window 01: IS 2010-03 to 2012-09, OOS 2012-09 to 2013-03
+# Window 02: IS 2010-09 to 2013-03, OOS 2013-03 to 2013-09
+# ... (continue sliding forward 6 months)
+# Window 29: IS 2022-09 to 2025-03, OOS 2024-09 to 2025-03
+#
+# Key Windows to Review (v4.0 Validation):
+# - Window 20 (OOS includes March 2020 COVID crash): Cell 6 SQQQ profit?
+# - Window 27 (OOS includes 2022 inflation): Correlation guard triggered?
+# - Window 12 (OOS includes 2015-2016 sideways): Macro filter effectiveness?
+
+# Performance Expectations (v4.0 vs v3.5b)
+# ----------------------------------------
+# v4.0 IMPROVEMENTS EXPECTED OVER v3.5b:
+#
+# Macro Filter:
+# - v3.5b: Cell 3 always 50% TQQQ + 50% SafeHaven
+# - v4.0: Cell 3 gated by macro bias (Bull: allocate, Bear: Cash)
+# - Expected improvement: AVOID SIDEWAYS LOSSES
+#
+# Correlation Guard:
+# - v3.5b: Always allocate to TMF/TMV in defensive cells
+# - v4.0: Cash override when SPY-TLT correlation > threshold
+# - Expected improvement: INFLATION PROTECTION
+#
+# Crisis Alpha:
+# - v3.5b: Cell 6 = 100% Cash (no crisis profit)
+# - v4.0: Cell 6 = 20% SQQQ + 40% SafeHaven + 40% Cash
+# - Expected improvement: CRISIS PROFIT CAPTURE
+#
+# Smart Rebalancing:
+# - v3.5b: Fixed 2.5% drift threshold
+# - v4.0: Vol-adaptive (Low: 3%, High: 6%)
+# - Expected improvement: REDUCED WHIPSAW
+#
+# OOS Performance Targets:
+# - OOS Sharpe Ratio: >1.5 (vs v3.5b >1.5)
+# - OOS Max Drawdown: <25% (vs v3.5b <25%)
+# - OOS Win Rate: >50% (vs v3.5b >50%)
+# - OOS Calmar Ratio: >1.0 (vs v3.5b >1.0)
+
+# Analysis Checklist
+# -------------------
+# After WFO completes:
+#
+# PARAMETER STABILITY ANALYSIS (v4.0):
+# - [ ] macro_trend_lookback: Does 180 or 220 win more often?
+# - [ ] corr_threshold: Does 0.1 or 0.3 win more often?
+# - [ ] crisis_alpha_weight: Does 0.1 or 0.3 win more often?
+# - [ ] Winning params cluster or vary by regime?
+#
+# v4.0 FEATURE VALIDATION:
+# - [ ] Macro filter: Cell 3 Bull/Bear bias reasonable distribution?
+# - [ ] Correlation guard: Triggered in 2022 inflation?
+# - [ ] Crisis alpha: SQQQ profitable in COVID crash?
+# - [ ] Smart rebalancing: Reduced rebalancing in High vol?
+#
+# IS vs OOS DEGRADATION:
+# - [ ] Average IS/OOS performance gap (should be 20-30%)
+# - [ ] Outlier windows with large gaps (investigate these periods)
+# - [ ] Consistent degradation pattern across windows?
+#
+# OOS PERFORMANCE BY REGIME (v4.0 Specific):
+# - [ ] COVID crash (March 2020): Cell 6 SQQQ profit?
+# - [ ] 2022 inflation: Correlation guard Cash override?
+# - [ ] Sideways markets: Cell 3 macro filter avoided losses?
+#
+# v4.0 vs v3.5b COMPARISON:
+# - [ ] v4.0 better or equal max drawdown in crisis windows?
+# - [ ] v4.0 same or better OOS Sharpe ratio?
+# - [ ] v4.0 features add measurable value?
+#
+# DECISION CRITERIA:
+# ✅ PROCEED TO PRODUCTION: Stable params, consistent OOS, v4.0 ≥ v3.5b, features validated
+# ⚠️  OPTIMIZE FURTHER: Unstable params or features not adding value
+# ❌ REDESIGN STRATEGY: Poor OOS, v4.0 < v3.5b, features ineffective

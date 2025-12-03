@@ -38,6 +38,23 @@ from jutsu_engine.utils.logging_config import get_data_logger
 logger = get_data_logger('SYNC')
 
 
+def _is_weekend(timestamp: datetime) -> bool:
+    """
+    Check if timestamp falls on a weekend (Saturday=5, Sunday=6).
+
+    Market data should only exist on weekdays. Weekend dates from external
+    data sources indicate data quality issues that should be filtered out
+    before storing in the database.
+
+    Args:
+        timestamp: datetime to check
+
+    Returns:
+        True if Saturday or Sunday, False otherwise
+    """
+    return timestamp.weekday() in (5, 6)  # Saturday=5, Sunday=6
+
+
 class DataSync:
     """
     Manages incremental data synchronization to database.
@@ -111,6 +128,20 @@ class DataSync:
 
         if end_date is None:
             end_date = datetime.now(timezone.utc)
+            
+            # For daily bars, only fetch complete bars (market must be closed)
+            # This prevents fetching partial data during market hours
+            if timeframe == '1D' and not force_refresh:
+                from jutsu_engine.live.market_calendar import is_daily_bar_complete
+                today = datetime.now(timezone.utc).date()
+                if not is_daily_bar_complete(today):
+                    # Market is still open, cap at yesterday
+                    yesterday = today - timedelta(days=1)
+                    end_date = datetime.combine(yesterday, datetime.min.time()).replace(tzinfo=timezone.utc)
+                    logger.info(
+                        f"⏳ Market hours: Capping end_date to {yesterday} for daily bars "
+                        f"(today's bar is incomplete)"
+                    )
         elif end_date.tzinfo is None:
             end_date = end_date.replace(tzinfo=timezone.utc)
 
@@ -157,9 +188,38 @@ class DataSync:
 
                     # Determine fetch strategy based on start_date vs existing data range
                     if start_date.date() >= last_bar.date():
-                        # Incremental update: fetch from last_bar + 1 day
-                        actual_start_date = last_bar + timedelta(days=1)
+                        # Incremental update: fetch from last_bar + 1 day (normalized to start of day)
+                        # Normalize to midnight to prevent start_date > end_date errors when
+                        # last_bar has a time component (e.g., market close at 20:45)
+                        actual_start_date = (last_bar + timedelta(days=1)).replace(
+                            hour=0, minute=0, second=0, microsecond=0
+                        )
                         actual_end_date = end_date
+
+                        # Check if calculated start_date is in the future
+                        # If yes, data is already up to date (no new bars available yet)
+                        # Debug: Log the comparison values
+                        today = datetime.now(timezone.utc).date()
+                        next_fetch_date = actual_start_date.date()
+                        logger.info(
+                            f"Future date check: next_fetch_date={next_fetch_date}, "
+                            f"today={today}, is_future_or_today={next_fetch_date >= today}"
+                        )
+                        
+                        if actual_start_date.date() >= datetime.now(timezone.utc).date():
+                            logger.info(
+                                f"Already up to date: last bar is {last_bar.date()}, "
+                                f"next bar would be {actual_start_date.date()} (future)"
+                            )
+                            return {
+                                'bars_fetched': 0,
+                                'bars_stored': 0,
+                                'bars_updated': 0,
+                                'start_date': start_date,
+                                'end_date': end_date,
+                                'duration_seconds': 0,
+                            }
+
                         logger.info(
                             f"Incremental update: fetching from {actual_start_date.date()}"
                         )
@@ -196,12 +256,28 @@ class DataSync:
         bars_fetched = len(bars)
         logger.info(f"Fetched {bars_fetched} bars from external source")
 
+        # Filter out weekend dates (data quality issue - external sources may include weekends)
+        # Weekend data is invalid for market data and should not be stored
+        original_count = len(bars)
+        bars = [
+            bar for bar in bars
+            if not _is_weekend(bar['timestamp'])
+        ]
+        weekend_filtered = original_count - len(bars)
+        if weekend_filtered > 0:
+            logger.warning(
+                f"Filtered {weekend_filtered} weekend bars from {symbol} "
+                f"(data quality issue - weekend dates from external source)"
+            )
+        bars_fetched = len(bars)  # Update count after filtering
+
         if bars_fetched == 0:
-            logger.info("No new data to sync")
+            logger.info("No new data to sync (after weekend filtering)")
             return {
                 'bars_fetched': 0,
                 'bars_stored': 0,
                 'bars_updated': 0,
+                'weekend_filtered': weekend_filtered,
                 'start_date': actual_start_date,
                 'end_date': end_date,
                 'duration_seconds': (datetime.now(timezone.utc) - start_time).total_seconds(),
@@ -265,8 +341,9 @@ class DataSync:
             bars_affected=bars_stored + bars_updated,
         )
 
+        weekend_msg = f", {weekend_filtered} weekend filtered" if weekend_filtered > 0 else ""
         logger.info(
-            f"Sync complete: {bars_stored} stored, {bars_updated} updated "
+            f"Sync complete: {bars_stored} stored, {bars_updated} updated{weekend_msg} "
             f"in {duration:.2f}s"
         )
 
@@ -274,6 +351,7 @@ class DataSync:
             'bars_fetched': bars_fetched,
             'bars_stored': bars_stored,
             'bars_updated': bars_updated,
+            'weekend_filtered': weekend_filtered,
             'start_date': actual_start_date,
             'end_date': end_date,
             'duration_seconds': duration,
@@ -296,6 +374,14 @@ class DataSync:
         Returns:
             Tuple of (stored, updated) booleans
         """
+        # Ensure timestamp is timezone-aware (UTC) before database operations
+        # Schwab API may return offset-naive datetime
+        bar_timestamp = bar_data['timestamp']
+        if bar_timestamp.tzinfo is None:
+            bar_timestamp = bar_timestamp.replace(tzinfo=timezone.utc)
+
+        logger.debug(f"Storing bar: {symbol} {timeframe} {bar_timestamp} (tzinfo={bar_timestamp.tzinfo})")
+
         # Check if bar already exists
         existing_bar = (
             self.session.query(MarketData)
@@ -303,7 +389,7 @@ class DataSync:
                 and_(
                     MarketData.symbol == symbol,
                     MarketData.timeframe == timeframe,
-                    MarketData.timestamp == bar_data['timestamp'],
+                    MarketData.timestamp == bar_timestamp,
                 )
             )
             .first()
@@ -311,6 +397,7 @@ class DataSync:
 
         if existing_bar:
             # Update existing bar
+            logger.debug(f"Found existing bar at {existing_bar.timestamp}, updating")
             existing_bar.open = bar_data['open']
             existing_bar.high = bar_data['high']
             existing_bar.low = bar_data['low']
@@ -320,10 +407,11 @@ class DataSync:
             return (False, True)
         else:
             # Create new bar
+            logger.debug(f"No existing bar found, creating new bar at {bar_timestamp}")
             new_bar = MarketData(
                 symbol=symbol,
                 timeframe=timeframe,
-                timestamp=bar_data['timestamp'],
+                timestamp=bar_timestamp,
                 open=bar_data['open'],
                 high=bar_data['high'],
                 low=bar_data['low'],
@@ -333,6 +421,7 @@ class DataSync:
                 is_valid=True,
             )
             self.session.add(new_bar)
+            logger.debug(f"Added new bar to session: {new_bar}")
             return (True, False)
 
     def _get_metadata(self, symbol: str, timeframe: str) -> Optional[DataMetadata]:
@@ -591,3 +680,417 @@ class DataSync:
             'invalid_bars': invalid_bars,
             'issues': issues,
         }
+
+    def sync_all_symbols(
+        self,
+        fetcher: DataFetcher,
+        end_date: Optional[datetime] = None,
+        force: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Synchronize all existing symbols to latest date (today).
+
+        Queries DataMetadata for all (symbol, timeframe) combinations and syncs
+        each from last_bar_timestamp + 1 day to end_date (default: today).
+        Retries failed symbols once before continuing.
+
+        Args:
+            fetcher: DataFetcher implementation (e.g., SchwabDataFetcher)
+            end_date: End date for sync (default: today)
+            force: If True, ignore market hours check and fetch all data
+                   (may result in partial bars for current day)
+
+        Returns:
+            Dictionary with sync results:
+            - total_symbols: Total number of symbols found
+            - successful_syncs: Number of successful syncs
+            - failed_syncs: Number of failed syncs
+            - results: Dict mapping symbol to sync result
+              - For each symbol: {start_date, end_date, bars_added, status, error}
+
+        Example:
+            result = sync.sync_all_symbols(fetcher=schwab_fetcher)
+            print(f"Synced {result['successful_syncs']} symbols")
+            for symbol, info in result['results'].items():
+                print(f"{symbol}: {info['bars_added']} bars added")
+        """
+        start_time = datetime.now(timezone.utc)
+
+        # Defensive: Ensure end_date is timezone-aware (UTC)
+        if end_date is None:
+            end_date = datetime.now(timezone.utc)
+        elif end_date.tzinfo is None:
+            end_date = end_date.replace(tzinfo=timezone.utc)
+
+        logger.info(f"Starting sync_all_symbols to {end_date.date()}")
+
+        # Query all (symbol, timeframe) combinations from metadata
+        metadata_entries = self.session.query(DataMetadata).all()
+
+        if not metadata_entries:
+            logger.warning("No symbols found in metadata table")
+            return {
+                'total_symbols': 0,
+                'successful_syncs': 0,
+                'failed_syncs': 0,
+                'results': {},
+            }
+
+        total_symbols = len(metadata_entries)
+        successful_syncs = 0
+        failed_syncs = 0
+        results = {}
+
+        logger.info(f"Found {total_symbols} symbol/timeframe combinations")
+
+        for metadata in metadata_entries:
+            symbol = metadata.symbol
+            timeframe = metadata.timeframe
+            symbol_key = f"{symbol}:{timeframe}"
+
+            # Defensive: Ensure last_bar_timestamp is timezone-aware (UTC)
+            last_bar = metadata.last_bar_timestamp
+            if last_bar.tzinfo is None:
+                last_bar = last_bar.replace(tzinfo=timezone.utc)
+
+            # Determine start_date based on force mode
+            if force:
+                # FORCE MODE: Full refresh - start from the FIRST bar in database
+                # This allows re-fetching and updating all historical data
+                first_bar_query = (
+                    self.session.query(func.min(MarketData.timestamp))
+                    .filter(MarketData.symbol == symbol)
+                    .filter(MarketData.timeframe == timeframe)
+                    .scalar()
+                )
+                if first_bar_query:
+                    first_bar = first_bar_query
+                    if first_bar.tzinfo is None:
+                        first_bar = first_bar.replace(tzinfo=timezone.utc)
+                    start_date = first_bar.replace(hour=0, minute=0, second=0, microsecond=0)
+                    logger.info(
+                        f"🔄 {symbol_key}: Force mode - full refresh from {start_date.date()}"
+                    )
+                else:
+                    # No data in database, start from a reasonable default
+                    start_date = (last_bar + timedelta(days=1)).replace(
+                        hour=0, minute=0, second=0, microsecond=0
+                    )
+            else:
+                # INCREMENTAL MODE: Start from day after last bar
+                start_date = (last_bar + timedelta(days=1)).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                )
+
+            # For daily bars, only fetch complete bars (market must be closed)
+            # unless force=True is specified
+            actual_end_date = end_date
+            if timeframe == '1D' and not force:
+                from jutsu_engine.live.market_calendar import is_daily_bar_complete
+                today = datetime.now(timezone.utc).date()
+                if not is_daily_bar_complete(today):
+                    # Market is open, cap at yesterday to avoid partial bars
+                    yesterday = today - timedelta(days=1)
+                    max_end_date = datetime.combine(yesterday, datetime.min.time()).replace(tzinfo=timezone.utc)
+                    if end_date > max_end_date:
+                        actual_end_date = max_end_date
+                        logger.info(
+                            f"⏳ {symbol_key}: Market hours - capping end_date to {yesterday} "
+                            f"(today's bar incomplete)"
+                        )
+            
+            # Check if already up-to-date (only in non-force mode)
+            # In force mode, we always sync even if start_date > actual_end_date
+            if not force and start_date > actual_end_date:
+                logger.info(
+                    f"✅ {symbol_key}: Already up to date through {last_bar.date()}"
+                )
+                results[symbol_key] = {
+                    'start_date': None,
+                    'end_date': actual_end_date,
+                    'bars_added': 0,
+                    'status': 'up_to_date',
+                    'error': None,
+                }
+                successful_syncs += 1
+                continue
+            
+            logger.info(
+                f"Syncing {symbol_key}: "
+                f"{start_date.date()} to {actual_end_date.date()}"
+            )
+
+            # First attempt
+            try:
+                sync_result = self.sync_symbol(
+                    fetcher=fetcher,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    start_date=start_date,
+                    end_date=actual_end_date,
+                    force_refresh=force,
+                )
+
+                results[symbol_key] = {
+                    'start_date': start_date,
+                    'end_date': actual_end_date,
+                    'bars_added': sync_result['bars_stored'],
+                    'status': 'success',
+                    'error': None,
+                }
+                successful_syncs += 1
+                logger.info(
+                    f"{symbol_key}: Success - {sync_result['bars_stored']} bars added"
+                )
+
+            except Exception as e:
+                logger.warning(f"{symbol_key}: First attempt failed - {e}")
+
+                # Retry once
+                try:
+                    logger.info(f"{symbol_key}: Retrying...")
+                    sync_result = self.sync_symbol(
+                        fetcher=fetcher,
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        start_date=start_date,
+                        end_date=actual_end_date,
+                        force_refresh=force,
+                    )
+
+                    results[symbol_key] = {
+                        'start_date': start_date,
+                        'end_date': actual_end_date,
+                        'bars_added': sync_result['bars_stored'],
+                        'status': 'success_after_retry',
+                        'error': None,
+                    }
+                    successful_syncs += 1
+                    logger.info(
+                        f"{symbol_key}: Retry successful - "
+                        f"{sync_result['bars_stored']} bars added"
+                    )
+
+                except Exception as retry_error:
+                    logger.error(f"{symbol_key}: Retry failed - {retry_error}")
+                    results[symbol_key] = {
+                        'start_date': start_date,
+                        'end_date': end_date,
+                        'bars_added': 0,
+                        'status': 'failed',
+                        'error': str(retry_error),
+                    }
+                    failed_syncs += 1
+
+        duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+        logger.info(
+            f"Sync all complete: {successful_syncs} successful, "
+            f"{failed_syncs} failed in {duration:.2f}s"
+        )
+
+        return {
+            'total_symbols': total_symbols,
+            'successful_syncs': successful_syncs,
+            'failed_syncs': failed_syncs,
+            'results': results,
+        }
+
+    def get_all_symbols_metadata(self) -> List[Dict[str, Any]]:
+        """
+        Get metadata for all symbols with date ranges.
+
+        Queries DataMetadata and MarketData tables to retrieve:
+        - Symbol and timeframe
+        - First bar timestamp (MIN)
+        - Last bar timestamp (MAX)
+        - Total bars count
+
+        Returns:
+            List of dictionaries with symbol metadata:
+            - symbol: Stock ticker symbol
+            - timeframe: Bar timeframe
+            - first_bar: Timestamp of earliest bar
+            - last_bar: Timestamp of latest bar
+            - total_bars: Number of bars in database
+
+        Example:
+            metadata_list = sync.get_all_symbols_metadata()
+            for item in metadata_list:
+                print(f"{item['symbol']} ({item['timeframe']}): "
+                      f"{item['first_bar'].date()} to {item['last_bar'].date()}")
+        """
+        logger.info("Querying all symbols metadata")
+
+        # Get all metadata entries
+        metadata_entries = self.session.query(DataMetadata).all()
+
+        if not metadata_entries:
+            logger.warning("No symbols found in metadata table")
+            return []
+
+        results = []
+
+        for metadata in metadata_entries:
+            symbol = metadata.symbol
+            timeframe = metadata.timeframe
+
+            # Get first bar timestamp
+            first_bar_result = (
+                self.session.query(MarketData.timestamp)
+                .filter(
+                    and_(
+                        MarketData.symbol == symbol,
+                        MarketData.timeframe == timeframe,
+                        MarketData.is_valid == True,  # noqa: E712
+                    )
+                )
+                .order_by(MarketData.timestamp.asc())
+                .first()
+            )
+
+            # Get last bar timestamp (use metadata for consistency)
+            last_bar = metadata.last_bar_timestamp
+
+            # Defensive: Ensure timestamps are timezone-aware (UTC)
+            if first_bar_result:
+                first_bar = first_bar_result[0]
+                if first_bar.tzinfo is None:
+                    first_bar = first_bar.replace(tzinfo=timezone.utc)
+            else:
+                first_bar = None
+
+            if last_bar and last_bar.tzinfo is None:
+                last_bar = last_bar.replace(tzinfo=timezone.utc)
+
+            results.append({
+                'symbol': symbol,
+                'timeframe': timeframe,
+                'first_bar': first_bar,
+                'last_bar': last_bar,
+                'total_bars': metadata.total_bars,
+            })
+
+        logger.info(f"Retrieved metadata for {len(results)} symbol/timeframe combinations")
+
+        return results
+
+    def delete_symbol_data(
+        self,
+        symbol: str,
+        force: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Delete all market data for a symbol.
+
+        Removes all market_data and data_metadata entries for the specified symbol
+        across all timeframes. This operation is irreversible.
+
+        Args:
+            symbol: Stock ticker symbol to delete
+            force: Skip existence check if True (for scripting)
+
+        Returns:
+            Dictionary with deletion results:
+            - success: bool - Whether deletion succeeded
+            - symbol: str - Symbol that was deleted
+            - rows_deleted: int - Number of market_data rows deleted
+            - metadata_deleted: bool - Whether metadata was deleted
+            - message: str - Human-readable result message
+
+        Raises:
+            ValueError: If symbol is empty or invalid format
+            DatabaseError: If deletion transaction fails
+
+        Example:
+            result = sync.delete_symbol_data(symbol='TQQQ')
+            if result['success']:
+                print(f"Deleted {result['rows_deleted']} bars for {result['symbol']}")
+        """
+        # Validate symbol format
+        if not symbol or not symbol.strip():
+            raise ValueError("Symbol cannot be empty")
+
+        symbol = symbol.strip().upper()
+
+        # Basic format validation (alphanumeric + $ for indexes)
+        if not all(c.isalnum() or c == '$' for c in symbol):
+            raise ValueError(f"Invalid symbol format: {symbol}")
+
+        logger.info(f"Delete request for symbol: {symbol}")
+
+        # Check if symbol has data (unless force mode)
+        if not force:
+            row_count = (
+                self.session.query(MarketData)
+                .filter(MarketData.symbol == symbol)
+                .count()
+            )
+
+            if row_count == 0:
+                logger.warning(f"No data found for {symbol}")
+                return {
+                    'success': True,
+                    'symbol': symbol,
+                    'rows_deleted': 0,
+                    'metadata_deleted': False,
+                    'message': f"No data to delete for {symbol}",
+                }
+
+        # Delete data in transaction (atomic operation)
+        try:
+            # Delete market_data rows
+            deleted_rows = (
+                self.session.query(MarketData)
+                .filter(MarketData.symbol == symbol)
+                .delete(synchronize_session='fetch')
+            )
+
+            # Delete metadata entries
+            deleted_metadata = (
+                self.session.query(DataMetadata)
+                .filter(DataMetadata.symbol == symbol)
+                .delete(synchronize_session='fetch')
+            )
+
+            # Commit transaction
+            self.session.commit()
+
+            # Create audit log
+            self._create_audit_log(
+                symbol=symbol,
+                timeframe='all',
+                operation='delete',
+                status='success',
+                message=f"Deleted {deleted_rows} market_data rows, {deleted_metadata} metadata entries",
+                bars_affected=deleted_rows,
+            )
+
+            logger.info(
+                f"Successfully deleted {deleted_rows} rows and {deleted_metadata} metadata entries for {symbol}"
+            )
+
+            return {
+                'success': True,
+                'symbol': symbol,
+                'rows_deleted': deleted_rows,
+                'metadata_deleted': deleted_metadata > 0,
+                'message': f"Successfully deleted {deleted_rows} bars for {symbol}",
+            }
+
+        except Exception as e:
+            # Rollback on error
+            self.session.rollback()
+
+            logger.error(f"Failed to delete data for {symbol}: {e}")
+
+            # Create error audit log
+            self._create_audit_log(
+                symbol=symbol,
+                timeframe='all',
+                operation='delete',
+                status='error',
+                message=f"Delete failed: {str(e)}",
+                bars_affected=0,
+            )
+
+            raise

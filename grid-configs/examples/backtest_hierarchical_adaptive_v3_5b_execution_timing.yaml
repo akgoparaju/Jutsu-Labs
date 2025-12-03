@@ -1,0 +1,129 @@
+# Hierarchical Adaptive v3.5b - Execution Timing Analysis
+# ========================================================
+# Purpose: Test different execution times (open, 15min after open, 15min before close, close)
+#
+# Strategy Configuration:
+# - Tests execution_time parameter with 4 values
+# - Uses v3.5b default parameters (proven winners from grid search)
+# - Single backtest per execution time for comparison
+#
+# Execution Time Options:
+# - "open": Execute trades at market open (9:30 AM ET)
+# - "15min_after_open": Execute 15 minutes after open (9:45 AM ET)
+# - "15min_before_close": Execute 15 minutes before close (3:45 PM ET)
+# - "close": Execute trades at market close (4:00 PM ET) [DEFAULT]
+
+# Strategy to backtest
+strategy: "Hierarchical_Adaptive_v3_5b"
+
+# Symbol configuration
+symbol_sets:
+  - name: "QQQ_TQQQ_PSQ_Bonds"
+    signal_symbol: "QQQ"                # Kalman + SMA + vol calculations
+    core_long_symbol: "QQQ"             # 1x base allocation
+    leveraged_long_symbol: "TQQQ"       # 3x leveraged overlay
+    inverse_hedge_symbol: "PSQ"         # -1x inverse (optional, disabled by default)
+    treasury_trend_symbol: "TLT"        # 20+ Year Treasury (bond trend signal)
+    bull_bond_symbol: "TMF"             # 3x Bull Bonds (deflation/safety)
+    bear_bond_symbol: "TMV"             # 3x Bear Bonds (inflation/rate shock)
+
+# Base Configuration
+base_config:
+  # Date range - 2 years for execution timing comparison
+  start_date: "2023-01-01"
+  end_date: "2024-12-31"
+
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 10000   # $10,000 starting capital
+  commission: 0.0          # $0.00 per trade
+  slippage: 0.001          # 0.1% per trade (execution timing may affect slippage)
+
+# Strategy Parameters
+# -------------------
+# Using v3.5b default/winning parameters from grid search
+# Only varying execution_time for comparison
+parameters:
+  # ============================================================================
+  # EXECUTION TIMING (NEW PARAMETER - Phase 3)
+  # ============================================================================
+  # When to execute trades on signal generation day
+  execution_time: "15min_after_open"  # Options: "open", "15min_after_open", "15min_before_close", "close"
+
+  # ============================================================================
+  # KALMAN TREND PARAMETERS (6 parameters)
+  # ============================================================================
+  # Controls T_norm calculation (Fast Signal)
+  measurement_noise: 2000.0        # Winner from v2.8 grid search
+  process_noise_1: 0.01            # Default (grid search showed low sensitivity)
+  process_noise_2: 0.01            # Default
+  osc_smoothness: 15               # Default
+  strength_smoothness: 15          # Default
+  T_max: 50.0                      # Max trend strength normalization
+
+  # ============================================================================
+  # STRUCTURAL TREND PARAMETERS (4 parameters)
+  # ============================================================================
+  # Controls SMA structure (Slow Signal gate)
+  sma_fast: 50                     # Default (grid search validated)
+  sma_slow: 200                    # Default
+  t_norm_bull_thresh: 0.2          # Bull gate threshold (Kalman + SMA alignment)
+  t_norm_bear_thresh: -0.3         # Bear gate threshold
+
+  # ============================================================================
+  # VOLATILITY Z-SCORE PARAMETERS (4 parameters)
+  # ============================================================================
+  # Controls vol regime classification (rolling z-score)
+  realized_vol_window: 21          # Default (21-day rolling vol)
+  vol_baseline_window: 126         # Default (126-day baseline mean/std)
+  upper_thresh_z: 1.0              # High vol threshold (z-score > 1.0)
+  lower_thresh_z: 0.0              # Low vol threshold (z-score < 0.0)
+
+  # ============================================================================
+  # VOL-CRUSH OVERRIDE (2 parameters)
+  # ============================================================================
+  # Detects rapid vol recovery (Bear → Sideways early)
+  vol_crush_threshold: -0.20       # Vol drop > 20% in lookback period
+  vol_crush_lookback: 5            # 5-day lookback
+
+  # ============================================================================
+  # ALLOCATION PARAMETERS (1 parameter)
+  # ============================================================================
+  # Scales all allocations uniformly
+  leverage_scalar: 1.0             # No scaling (use default allocations)
+
+  # ============================================================================
+  # INSTRUMENT TOGGLES (2 parameters)
+  # ============================================================================
+  # Enable/disable optional instruments
+  use_inverse_hedge: false         # Disable PSQ (Cell 6a: cash only)
+  w_PSQ_max: 0.5                   # Max PSQ weight (unused if PSQ disabled)
+
+  # ============================================================================
+  # REBALANCING (1 parameter)
+  # ============================================================================
+  # Threshold for triggering rebalance
+  rebalance_threshold: 0.025       # Rebalance when allocation drifts > 2.5%
+
+# Notes:
+# ------
+# 1. To test different execution times, modify execution_time parameter:
+#    - "open": Earliest execution (9:30 AM) - may get worse fills
+#    - "15min_after_open": Early execution (9:45 AM) - balanced approach
+#    - "15min_before_close": Late execution (3:45 PM) - near-close fills
+#    - "close": Latest execution (4:00 PM) - EOD fills [DEFAULT]
+#
+# 2. Run backtests for each execution_time to compare:
+#    - Total return
+#    - Sharpe ratio
+#    - Max drawdown
+#    - Fill quality (slippage impact)
+#
+# 3. Expected behavior:
+#    - On last day of backtest: Uses intraday bars for execution timing
+#    - All other days: Uses EOD data for regime calculation, executes at specified time
+#
+# 4. Example CLI usage:
+#    jutsu backtest -c grid-configs/examples/backtest_hierarchical_adaptive_v3_5b_execution_timing.yaml

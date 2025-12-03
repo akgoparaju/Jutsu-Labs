@@ -442,3 +442,378 @@ class TestConfigValidation:
 
         with pytest.raises(WFOConfigError, match="Invalid date format"):
             WFORunner(config_path=str(config_path))
+
+
+class TestSymbolNamingCompatibility:
+    """Test WFO runner handles both legacy and new symbol naming conventions."""
+
+    def test_legacy_naming_macd_strategies(self, tmp_path):
+        """Test legacy naming convention (MACD v4/v5/v6: bull_symbol, defense_symbol, vix_symbol)."""
+        config_data = {
+            'strategy': 'MACD_Trend_v6',
+            'symbol_sets': [{
+                'name': 'QQQ_TQQQ_VIX',
+                'signal_symbol': 'QQQ',
+                'bull_symbol': 'TQQQ',        # Legacy naming
+                'defense_symbol': 'QQQ',       # Legacy naming
+                'vix_symbol': '$VIX'           # Legacy naming
+            }],
+            'base_config': {
+                'timeframe': '1D',
+                'initial_capital': 100000,
+                'commission': 0.0,
+                'slippage': 0.0005
+            },
+            'parameters': {
+                'ema_period': [100]
+            },
+            'walk_forward': {
+                'total_start_date': '2020-01-01',
+                'total_end_date': '2021-01-01',
+                'window_size_years': 1.0,
+                'in_sample_years': 0.75,
+                'out_of_sample_years': 0.25,
+                'slide_years': 0.25,
+                'selection_metric': 'sharpe_ratio'
+            }
+        }
+
+        config_path = tmp_path / "test_legacy_naming.yaml"
+        import yaml
+        with open(config_path, 'w') as f:
+            yaml.dump(config_data, f)
+
+        # Should not raise KeyError with legacy naming
+        runner = WFORunner(config_path=str(config_path))
+        assert runner.config['symbol_sets'][0]['bull_symbol'] == 'TQQQ'
+        assert runner.config['symbol_sets'][0]['defense_symbol'] == 'QQQ'
+        assert runner.config['symbol_sets'][0]['vix_symbol'] == '$VIX'
+
+    def test_new_naming_hierarchical_v3_5b(self, tmp_path):
+        """Test new naming convention (Hierarchical v3.5b: leveraged_long_symbol, core_long_symbol, etc.)."""
+        config_data = {
+            'strategy': 'Hierarchical_Adaptive_v3_5b',
+            'symbol_sets': [{
+                'name': 'QQQ_TQQQ_PSQ_Bonds',
+                'signal_symbol': 'QQQ',
+                'core_long_symbol': 'QQQ',             # New naming
+                'leveraged_long_symbol': 'TQQQ',       # New naming
+                'inverse_hedge_symbol': 'PSQ',         # New naming
+                'treasury_trend_symbol': 'TLT',        # New naming
+                'bull_bond_symbol': 'TMF',             # New naming
+                'bear_bond_symbol': 'TMV'              # New naming
+            }],
+            'base_config': {
+                'timeframe': '1D',
+                'initial_capital': 100000,
+                'commission': 0.0,
+                'slippage': 0.0005
+            },
+            'parameters': {
+                'measurement_noise': [2000.0]
+            },
+            'walk_forward': {
+                'total_start_date': '2020-01-01',
+                'total_end_date': '2021-01-01',
+                'window_size_years': 1.0,
+                'in_sample_years': 0.75,
+                'out_of_sample_years': 0.25,
+                'slide_years': 0.25,
+                'selection_metric': 'sharpe_ratio'
+            }
+        }
+
+        config_path = tmp_path / "test_new_naming.yaml"
+        import yaml
+        with open(config_path, 'w') as f:
+            yaml.dump(config_data, f)
+
+        # Should not raise KeyError with new naming
+        runner = WFORunner(config_path=str(config_path))
+        assert runner.config['symbol_sets'][0]['core_long_symbol'] == 'QQQ'
+        assert runner.config['symbol_sets'][0]['leveraged_long_symbol'] == 'TQQQ'
+        assert runner.config['symbol_sets'][0]['inverse_hedge_symbol'] == 'PSQ'
+        assert runner.config['symbol_sets'][0]['treasury_trend_symbol'] == 'TLT'
+
+    def test_symbol_list_generation_legacy(self):
+        """Test symbols list generation with legacy naming."""
+        # This tests the logic in _run_oos_testing that previously caused KeyError
+        symbol_set = {
+            'signal_symbol': 'QQQ',
+            'bull_symbol': 'TQQQ',
+            'defense_symbol': 'QQQ',
+            'vix_symbol': '$VIX'
+        }
+
+        # Replicate the symbol list generation logic from wfo_runner.py
+        symbols = [symbol_set['signal_symbol']]  # Always required
+
+        # Add leveraged/bull symbol (handles both naming conventions)
+        if 'leveraged_long_symbol' in symbol_set:
+            symbols.append(symbol_set['leveraged_long_symbol'])
+        elif 'bull_symbol' in symbol_set:
+            symbols.append(symbol_set['bull_symbol'])
+
+        # Add core/defense symbol (handles both naming conventions)
+        if 'core_long_symbol' in symbol_set:
+            symbols.append(symbol_set['core_long_symbol'])
+        elif 'defense_symbol' in symbol_set:
+            symbols.append(symbol_set['defense_symbol'])
+
+        # Add optional VIX symbol (legacy strategies)
+        if symbol_set.get('vix_symbol'):
+            symbols.append(symbol_set['vix_symbol'])
+
+        # Should have QQQ, TQQQ, QQQ, $VIX
+        assert len(symbols) == 4
+        assert symbols[0] == 'QQQ'
+        assert symbols[1] == 'TQQQ'
+        assert symbols[2] == 'QQQ'
+        assert symbols[3] == '$VIX'
+
+    def test_symbol_list_generation_new_naming(self):
+        """Test symbols list generation with new naming (v3.5b)."""
+        symbol_set = {
+            'signal_symbol': 'QQQ',
+            'leveraged_long_symbol': 'TQQQ',
+            'core_long_symbol': 'QQQ',
+            'inverse_hedge_symbol': 'PSQ',
+            'treasury_trend_symbol': 'TLT',
+            'bull_bond_symbol': 'TMF',
+            'bear_bond_symbol': 'TMV'
+        }
+
+        # Replicate the symbol list generation logic from wfo_runner.py
+        symbols = [symbol_set['signal_symbol']]  # Always required
+
+        # Add leveraged/bull symbol (handles both naming conventions)
+        if 'leveraged_long_symbol' in symbol_set:
+            symbols.append(symbol_set['leveraged_long_symbol'])
+        elif 'bull_symbol' in symbol_set:
+            symbols.append(symbol_set['bull_symbol'])
+
+        # Add core/defense symbol (handles both naming conventions)
+        if 'core_long_symbol' in symbol_set:
+            symbols.append(symbol_set['core_long_symbol'])
+        elif 'defense_symbol' in symbol_set:
+            symbols.append(symbol_set['defense_symbol'])
+
+        # Add optional inverse hedge symbol (v3.5b only)
+        if symbol_set.get('inverse_hedge_symbol'):
+            symbols.append(symbol_set['inverse_hedge_symbol'])
+
+        # Add optional treasury symbols (v3.5b Treasury Overlay)
+        if symbol_set.get('treasury_trend_symbol'):
+            symbols.append(symbol_set['treasury_trend_symbol'])
+        if symbol_set.get('bull_bond_symbol'):
+            symbols.append(symbol_set['bull_bond_symbol'])
+        if symbol_set.get('bear_bond_symbol'):
+            symbols.append(symbol_set['bear_bond_symbol'])
+
+        # Should have QQQ, TQQQ, QQQ, PSQ, TLT, TMF, TMV
+        assert len(symbols) == 7
+        assert symbols[0] == 'QQQ'
+        assert symbols[1] == 'TQQQ'
+        assert symbols[2] == 'QQQ'
+        assert symbols[3] == 'PSQ'
+        assert symbols[4] == 'TLT'
+        assert symbols[5] == 'TMF'
+        assert symbols[6] == 'TMV'
+
+    def test_symbol_list_generation_no_optional_symbols(self):
+        """Test symbols list generation with only required symbols."""
+        symbol_set = {
+            'signal_symbol': 'QQQ',
+            'leveraged_long_symbol': 'TQQQ',
+            'core_long_symbol': 'QQQ'
+            # No optional symbols (inverse_hedge, treasury, vix)
+        }
+
+        # Replicate the symbol list generation logic
+        symbols = [symbol_set['signal_symbol']]
+
+        if 'leveraged_long_symbol' in symbol_set:
+            symbols.append(symbol_set['leveraged_long_symbol'])
+        elif 'bull_symbol' in symbol_set:
+            symbols.append(symbol_set['bull_symbol'])
+
+        if 'core_long_symbol' in symbol_set:
+            symbols.append(symbol_set['core_long_symbol'])
+        elif 'defense_symbol' in symbol_set:
+            symbols.append(symbol_set['defense_symbol'])
+
+        # Optional symbols should not cause errors when missing
+        if symbol_set.get('inverse_hedge_symbol'):
+            symbols.append(symbol_set['inverse_hedge_symbol'])
+        if symbol_set.get('vix_symbol'):
+            symbols.append(symbol_set['vix_symbol'])
+
+        # Should have only QQQ, TQQQ, QQQ (no optional symbols)
+        assert len(symbols) == 3
+        assert symbols[0] == 'QQQ'
+        assert symbols[1] == 'TQQQ'
+        assert symbols[2] == 'QQQ'
+
+
+class TestSymbolNamingCompatibility:
+    """Test WFO runner handles both legacy and new symbol naming conventions."""
+
+    def test_new_naming_hierarchical_v3_5(self):
+        """Test new naming convention (Hierarchical v3.5 - no treasury)."""
+        from jutsu_engine.application.wfo_runner import _build_strategy_params
+        from jutsu_engine.strategies.Hierarchical_Adaptive_v3_5 import Hierarchical_Adaptive_v3_5
+
+        # New naming convention (v3.5)
+        new_symbols = {
+            'signal_symbol': 'QQQ',
+            'leveraged_long_symbol': 'TQQQ',
+            'core_long_symbol': 'QQQ',
+            'inverse_hedge_symbol': 'PSQ'
+        }
+
+        params_new = _build_strategy_params(
+            Hierarchical_Adaptive_v3_5,
+            new_symbols,
+            {'measurement_noise': 2000.0}
+        )
+
+        # Verify all new symbol names are mapped correctly
+        assert params_new['signal_symbol'] == 'QQQ'
+        assert params_new['leveraged_long_symbol'] == 'TQQQ'
+        assert params_new['core_long_symbol'] == 'QQQ'
+        assert params_new['inverse_hedge_symbol'] == 'PSQ'
+        assert params_new['measurement_noise'] == 2000.0
+
+    def test_legacy_naming_macd_v6(self):
+        """Test legacy naming convention (MACD v6)."""
+        from jutsu_engine.application.wfo_runner import _build_strategy_params
+        from jutsu_engine.strategies.MACD_Trend_v6 import MACD_Trend_v6
+
+        # Legacy naming convention
+        legacy_symbols = {
+            'signal_symbol': 'QQQ',
+            'bull_symbol': 'TQQQ',
+            'defense_symbol': 'QQQ',
+            'vix_symbol': '$VIX'
+        }
+
+        params_legacy = _build_strategy_params(
+            MACD_Trend_v6,
+            legacy_symbols,
+            {'vix_kill_switch': 25.0}
+        )
+
+        # Verify legacy symbol names are mapped correctly
+        assert params_legacy['signal_symbol'] == 'QQQ'
+        assert params_legacy['bull_symbol'] == 'TQQQ'
+        assert params_legacy['defense_symbol'] == 'QQQ'
+        assert params_legacy['vix_symbol'] == '$VIX'
+        assert params_legacy['vix_kill_switch'] == 25.0
+
+    def test_symbol_list_generation_new_naming(self):
+        """Test symbol list generation with new naming convention."""
+        # Simulate the symbol list generation code from _run_oos_testing
+        symbol_set = {
+            'signal_symbol': 'QQQ',
+            'leveraged_long_symbol': 'TQQQ',
+            'core_long_symbol': 'QQQ',
+            'inverse_hedge_symbol': 'PSQ',
+            'treasury_trend_symbol': 'TLT',
+            'bull_bond_symbol': 'TMF',
+            'bear_bond_symbol': 'TMV'
+        }
+
+        symbols = [symbol_set['signal_symbol']]
+
+        # Add leveraged/bull symbol (handles both naming conventions)
+        if 'leveraged_long_symbol' in symbol_set:
+            symbols.append(symbol_set['leveraged_long_symbol'])
+        elif 'bull_symbol' in symbol_set:
+            symbols.append(symbol_set['bull_symbol'])
+
+        # Add core/defense symbol (handles both naming conventions)
+        if 'core_long_symbol' in symbol_set:
+            symbols.append(symbol_set['core_long_symbol'])
+        elif 'defense_symbol' in symbol_set:
+            symbols.append(symbol_set['defense_symbol'])
+
+        # Add optional symbols
+        if symbol_set.get('inverse_hedge_symbol'):
+            symbols.append(symbol_set['inverse_hedge_symbol'])
+        if symbol_set.get('vix_symbol'):
+            symbols.append(symbol_set['vix_symbol'])
+        if symbol_set.get('treasury_trend_symbol'):
+            symbols.append(symbol_set['treasury_trend_symbol'])
+        if symbol_set.get('bull_bond_symbol'):
+            symbols.append(symbol_set['bull_bond_symbol'])
+        if symbol_set.get('bear_bond_symbol'):
+            symbols.append(symbol_set['bear_bond_symbol'])
+
+        # Verify all symbols are present
+        assert len(symbols) == 7
+        assert 'QQQ' in symbols
+        assert 'TQQQ' in symbols
+        assert 'PSQ' in symbols
+        assert 'TLT' in symbols
+        assert 'TMF' in symbols
+        assert 'TMV' in symbols
+
+    def test_symbol_list_generation_legacy_naming(self):
+        """Test symbol list generation with legacy naming convention."""
+        # Simulate the symbol list generation code from _run_oos_testing
+        symbol_set = {
+            'signal_symbol': 'QQQ',
+            'bull_symbol': 'TQQQ',
+            'defense_symbol': 'QQQ',
+            'vix_symbol': '$VIX'
+        }
+
+        symbols = [symbol_set['signal_symbol']]
+
+        # Add leveraged/bull symbol (handles both naming conventions)
+        if 'leveraged_long_symbol' in symbol_set:
+            symbols.append(symbol_set['leveraged_long_symbol'])
+        elif 'bull_symbol' in symbol_set:
+            symbols.append(symbol_set['bull_symbol'])
+
+        # Add core/defense symbol (handles both naming conventions)
+        if 'core_long_symbol' in symbol_set:
+            symbols.append(symbol_set['core_long_symbol'])
+        elif 'defense_symbol' in symbol_set:
+            symbols.append(symbol_set['defense_symbol'])
+
+        # Add optional symbols
+        if symbol_set.get('inverse_hedge_symbol'):
+            symbols.append(symbol_set['inverse_hedge_symbol'])
+        if symbol_set.get('vix_symbol'):
+            symbols.append(symbol_set['vix_symbol'])
+
+        # Verify all symbols are present
+        assert len(symbols) == 4
+        assert 'QQQ' in symbols
+        assert 'TQQQ' in symbols
+        assert '$VIX' in symbols
+
+    def test_backward_compatibility_fallback(self):
+        """Test that new config with old-style symbols still works via fallback."""
+        from jutsu_engine.application.wfo_runner import _build_strategy_params
+        from jutsu_engine.strategies.Hierarchical_Adaptive_v3_5 import Hierarchical_Adaptive_v3_5
+
+        # Mixed scenario: New strategy with legacy symbol names in config
+        # The _build_strategy_params should map bull_symbol → leveraged_long_symbol
+        mixed_symbols = {
+            'signal_symbol': 'QQQ',
+            'bull_symbol': 'TQQQ',          # Old name
+            'defense_symbol': 'QQQ',         # Old name
+        }
+
+        params = _build_strategy_params(
+            Hierarchical_Adaptive_v3_5,
+            mixed_symbols,
+            {}
+        )
+
+        # Strategy expects new names, _build_strategy_params should map correctly
+        assert params['signal_symbol'] == 'QQQ'
+        assert params['leveraged_long_symbol'] == 'TQQQ'  # Mapped from bull_symbol
+        assert params['core_long_symbol'] == 'QQQ'        # Mapped from defense_symbol

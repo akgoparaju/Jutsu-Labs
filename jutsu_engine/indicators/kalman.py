@@ -90,7 +90,8 @@ class AdaptiveKalmanFilter:
         sigma_lookback: int = 500,
         trend_lookback: int = 10,
         osc_smoothness: int = 10,
-        strength_smoothness: int = 10
+        strength_smoothness: int = 10,
+        return_signed: bool = False
     ):
         """
         Initialize Adaptive Kalman Filter.
@@ -104,6 +105,9 @@ class AdaptiveKalmanFilter:
             trend_lookback: Oscillator buffer size (default: 10)
             osc_smoothness: Smoothing period for oscillator (default: 10)
             strength_smoothness: Smoothing period for trend strength (default: 10)
+            return_signed: Return signed trend_strength (default: False for backward compatibility)
+                          If True, returns signed trend_strength in [-100, +100] range
+                          If False, returns abs(trend_strength) in [0, 100] range (legacy)
 
         Raises:
             ValueError: If parameters are invalid
@@ -130,6 +134,7 @@ class AdaptiveKalmanFilter:
         self.trend_lookback = trend_lookback
         self.osc_smoothness = min(osc_smoothness, trend_lookback)
         self.strength_smoothness = min(strength_smoothness, sigma_lookback)
+        self.return_signed = return_signed
 
         # Initialize Kalman filter matrices (NumPy for efficiency)
         self.F = np.array([[1.0, 1.0], [0.0, 1.0]])  # State transition
@@ -175,6 +180,9 @@ class AdaptiveKalmanFilter:
 
         Returns:
             (filtered_price, trend_strength) as Decimals
+            - filtered_price: Kalman-filtered price (always positive)
+            - trend_strength: If return_signed=True, signed trend strength in [-100, +100]
+                            If return_signed=False, absolute trend strength in [0, 100]
 
         Raises:
             ValueError: If required parameters for model are missing
@@ -346,7 +354,11 @@ class AdaptiveKalmanFilter:
                     self.oscillator_buffer,
                     self.osc_smoothness
                 )
-                return abs(trend_strength)
+                # Return signed or unsigned based on configuration
+                if self.return_signed:
+                    return trend_strength  # Preserve sign for directional strategies
+                else:
+                    return abs(trend_strength)  # Legacy behavior (magnitude only)
 
         return 0.0
 

@@ -31,6 +31,7 @@ tqdm>=4.66.0  # Progress bars
 # Visualization
 matplotlib>=3.8.0
 seaborn>=0.13.0
+plotly>=5.18.0  # Interactive plots for backtest results
 
 # API Framework
 fastapi>=0.104.0

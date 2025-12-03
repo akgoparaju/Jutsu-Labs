@@ -1,0 +1,414 @@
+# Grid Search Configuration for Hierarchical Adaptive v4.0
+# =========================================================
+# Grid Search: ~972 runs (comprehensive optimization)
+# Validates v4.0 Macro + Correlation + Smart Rebalancing design
+#
+# v4.0 Changes from v3.5b:
+# ------------------------
+# 1. MACRO TREND FILTER:
+#    - v3.5b: Cell 3 (Sideways/Low) → 50% TQQQ + 50% SafeHaven
+#    - v4.0: Cell 3 → Macro bias gated (Bull: 50% TQQQ + 50% SafeHaven, Bear: 100% Cash)
+#    - SMA(200) macro trend: Close > SMA(200) = Bull, Close < SMA(200) = Bear
+#
+# 2. CORRELATION GUARD (INFLATION DETECTOR):
+#    - v3.5b: Static SafeHaven (TMF/TMV) based on TLT trend
+#    - v4.0: Correlation guard → SPY vs TLT correlation > threshold → Cash override
+#    - Detects inflation regimes when bonds and equities decline together
+#
+# 3. SAFE HAVEN SELECTION WITH GUARD:
+#    - v3.5b: SafeHaven = TMF or TMV (always bonds)
+#    - v4.0: Guard-aware → Normal regime = TMF/TMV, Inflation regime = Cash
+#
+# 4. CELL 6 CRISIS ALPHA:
+#    - v3.5b: Cell 6 (Bear/High) → 100% Cash or 50% PSQ + 50% Cash
+#    - v4.0: Cell 6 → 40% SafeHaven + 20% SQQQ + 40% Cash (crisis alpha)
+#    - Explicitly trades SQQQ for crisis profit, not PSQ
+#
+# 5. SMART REBALANCING:
+#    - v3.5b: Fixed 2.5% rebalance threshold
+#    - v4.0: Vol-adaptive → Low vol = 3% drift, High vol = 6% drift
+#    - Reduces whipsaw during volatility spikes
+#
+# 6. INSTRUMENT ADDITIONS:
+#    - v3.5b: QQQ/TQQQ/PSQ/TLT/TMF/TMV (6 symbols)
+#    - v4.0: QQQ/TQQQ/TLT/TMF/TMV/SPY/SQQQ (7 symbols, added SPY + SQQQ)
+#    - Removed PSQ (unused), added SPY (correlation), SQQQ (crisis alpha)
+#
+# Strategy Overview (v4.0 Regime Grid):
+# --------------------------------------
+# 6-Cell Allocation Matrix (with v4.0 enhancements):
+# | Cell | Trend     | Vol  | TQQQ | QQQ | SafeHaven | SQQQ | Net Beta |
+# |------|-----------|------|------|-----|-----------|------|----------|
+# | 1    | Bull      | Low  | 0.6  | 0.4 | 0.0       | 0.0  | 2.2      |
+# | 2    | Bull      | High | 0.0  | 1.0 | 0.0       | 0.0  | 1.0      |
+# | 3a   | Sideways  | Low  | 0.5  | 0.0 | 0.5       | 0.0  | ~1.5     | (Bull macro bias)
+# | 3b   | Sideways  | Low  | 0.0  | 0.0 | 0.0       | 0.0  | 0.0      | (Bear macro bias → Cash)
+# | 4    | Sideways  | High | 0.0  | 0.0 | 1.0       | 0.0  | ~0-1.0   | (SafeHaven)
+# | 5    | Bear      | Low  | 0.0  | 0.5 | 0.5       | 0.0  | ~0.5     |
+# | 6    | Bear      | High | 0.0  | 0.0 | 0.4       | 0.2  | ~-0.6    | (Crisis alpha with SQQQ)
+#
+# SafeHaven Allocation (v4.0 Guard Logic):
+# - Normal regime (SPY-TLT corr < 0.2): TMF or TMV (max 40%)
+# - Inflation regime (SPY-TLT corr > 0.2): Cash override
+#
+# Grid Search Strategy (Comprehensive):
+# --------------------------------------
+# Focus: Full parameter space optimization for v4.0 features
+# - Macro trend lookback (3 values)
+# - Correlation parameters (3×3 = 9 combinations)
+# - Crisis alpha weight (3 values)
+# - Smart rebalancing (3×3 = 9 combinations)
+# - Fixed: Kalman, SMA structure, z-score, vol-crush (from v3.5b winners)
+#
+# Parameter Groups:
+# 1. Macro Trend Lookback (3 values)
+#    - macro_trend_lookback: [180, 200, 220]
+#
+# 2. Correlation Guard (3×3 = 9 combinations)
+#    - corr_lookback: [40, 60, 80]
+#    - corr_threshold: [0.1, 0.2, 0.3]
+#
+# 3. Crisis Alpha Weight (3 values)
+#    - crisis_alpha_weight: [0.1, 0.2, 0.3]
+#
+# 4. Smart Rebalancing (3×3 = 9 combinations)
+#    - drift_low_vol: [0.02, 0.03, 0.04]
+#    - drift_high_vol: [0.05, 0.06, 0.07]
+#
+# 5. Fixed Parameters (from v3.5b winners)
+#    - Kalman: measurement_noise=3000.0, T_max=50.0
+#    - SMA structure: sma_fast=40, sma_slow=140
+#    - Z-score: upper_thresh_z=1.0, lower_thresh_z=0.2
+#    - Vol-crush: vol_crush_threshold=-0.15
+#    - Treasury: allow_treasury=true, max_bond_weight=0.4
+#
+# Total Combinations: 3 (macro) × 9 (corr) × 3 (crisis) × 9 (rebal) = 729 runs
+# Estimated Runtime: 3-4 hours
+
+# Strategy to optimize
+strategy: "Hierarchical_Adaptive_v4_0"
+
+# Symbol Sets
+# -----------
+# v4.0 with Correlation Guard and Crisis Alpha requires 7 symbols:
+# - QQQ/TQQQ for equity allocation
+# - TLT/TMF/TMV for bond overlay
+# - SPY for correlation signal
+# - SQQQ for crisis alpha
+symbol_sets:
+  - name: "QQQ_TQQQ_Bonds_SPY_SQQQ"
+    signal_symbol: "QQQ"                # Kalman + SMA + vol calculations
+    core_long_symbol: "QQQ"             # 1x base allocation
+    leveraged_long_symbol: "TQQQ"       # 3x leveraged overlay
+    treasury_trend_symbol: "TLT"        # 20+ Year Treasury (bond trend signal)
+    bull_bond_symbol: "TMF"             # 3x Bull Bonds (deflation/safety)
+    bear_bond_symbol: "TMV"             # 3x Bear Bonds (inflation/rate shock)
+    defense_symbol: "SPY"         # ✅ ADD: For correlation calculation
+    leveraged_short_symbol: "SQQQ"  # ✅ ADD: For crisis alpha (Cell 6)
+
+# Base Configuration
+# ------------------
+# Fixed settings applied to ALL backtests
+base_config:
+  # Date range - Full history (2010-2024)
+  # Includes: Financial crisis recovery, bull market, COVID crash, 2022 bear, recovery
+  start_date: "2010-01-01"
+  end_date: "2015-11-28"
+
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 10000   # $10,000 starting capital
+  commission: 0.0          # $0.00 per trade
+  slippage: 0.0005         # 0.05% per trade
+
+  # Optional: Baseline symbol for buy-and-hold comparison (defaults to QQQ if not specified)
+  # baseline_symbol: "QQQ"
+
+# Parameters to Optimize
+# ----------------------
+# Grid Search: v4.0 Feature Parameters + Fixed v3.5b Winners
+# Total combinations: 3 × 9 × 3 × 9 = 729 runs
+
+parameters:
+  # ===========================================================================
+  # KALMAN TREND PARAMETERS (Fixed at v3.5b winners)
+  # ===========================================================================
+
+  # Measurement noise (Fixed at v3.5b winner)
+  measurement_noise: [3000]  # Fixed: Proven value from v3.5b
+
+  # Process noise (Fixed at defaults)
+  process_noise_1: [0.01]      # Fixed
+  process_noise_2: [0.01]      # Fixed
+
+  # Smoothness (Fixed at defaults)
+  osc_smoothness: [15]         # Fixed
+  strength_smoothness: [15]    # Fixed
+
+  # Trend normalization max (Fixed at v3.5b winner)
+  T_max: [50.0]                # Fixed: Aggressive normalization
+
+  # ===========================================================================
+  # SMA STRUCTURE PARAMETERS (Fixed at v3.5b winners)
+  # ===========================================================================
+
+  # Fast SMA period (Fixed at v3.5b winner)
+  sma_fast: [40]               # Fixed: Responsive trend
+
+  # Slow SMA period (Fixed at v3.5b winner)
+  sma_slow: [140]              # Fixed: Long-term structure
+
+  # ===========================================================================
+  # TREND CLASSIFICATION THRESHOLDS (Fixed at spec defaults)
+  # ===========================================================================
+
+  # Bull threshold (Fixed at spec)
+  t_norm_bull_thresh: [0.2]    # Fixed
+
+  # Bear threshold (Fixed at spec)
+  t_norm_bear_thresh: [-0.3]   # Fixed
+
+  # ===========================================================================
+  # VOLATILITY Z-SCORE PARAMETERS (Fixed at v3.5b winners)
+  # ===========================================================================
+
+  # Realized volatility window (Fixed at spec)
+  realized_vol_window: [21]    # Fixed: 1-month realized vol
+
+  # Volatility baseline window (Fixed at spec)
+  vol_baseline_window: [126]   # Fixed: 6-month rolling baseline
+
+  # Upper hysteresis threshold (Fixed at v3.5b winner)
+  upper_thresh_z: [1]          # Fixed: Balanced vol spike detection
+
+  # Lower hysteresis threshold (Fixed at v3.5b winner)
+  lower_thresh_z: [0.2]        # Fixed: Slow exit from High vol
+
+  # ===========================================================================
+  # VOL-CRUSH OVERRIDE PARAMETERS (Fixed at v3.5b winner)
+  # ===========================================================================
+
+  # Vol-crush threshold (Fixed at v3.5b winner)
+  vol_crush_threshold: [-0.15]  # Fixed: Sensitive V-recovery detection
+
+  # Vol-crush lookback window (Fixed at spec)
+  vol_crush_lookback: [5]      # Fixed: 5-day window
+
+  # ===========================================================================
+  # MACRO TREND FILTER PARAMETERS (v4.0 GRID-SEARCH - 3 values)
+  # ===========================================================================
+
+  # MACRO TREND LOOKBACK (v4.0 - 3 values)
+  # Default: 200-day (10-month macro structure)
+  # Range: [180, 200, 220] - test sensitivity to macro trend window
+  macro_trend_lookback: [200]  # 3 values - OPTIMIZE
+
+  # ===========================================================================
+  # CORRELATION GUARD PARAMETERS (v4.0 GRID-SEARCH - 9 combinations)
+  # ===========================================================================
+
+  # CORRELATION LOOKBACK (v4.0 - 3 values)
+  # Default: 60-day (3-month correlation window)
+  # Range: [40, 60, 80] - test sensitivity to correlation measurement period
+  corr_lookback: [60]  # 3 values - OPTIMIZE
+
+  # CORRELATION THRESHOLD (v4.0 - 3 values)
+  # Default: 0.2 (20% positive correlation triggers inflation regime)
+  # Range: [0.1, 0.2, 0.3] - test sensitivity to inflation detection
+  # Lower = more sensitive (more frequent Cash override)
+  corr_threshold: [0.35]  # 3 values - OPTIMIZE
+
+  # ===========================================================================
+  # CRISIS ALPHA PARAMETERS (v4.0 GRID-SEARCH - 3 values)
+  # ===========================================================================
+
+  # CRISIS ALPHA WEIGHT (v4.0 - 3 values)
+  # Default: 0.2 (20% SQQQ allocation in Cell 6)
+  # Range: [0.1, 0.2, 0.3] - test optimal SQQQ exposure in crisis
+  # Higher = more aggressive crisis profit-taking
+  crisis_alpha_weight: [0.2]  # 3 values - OPTIMIZE
+
+  # ===========================================================================
+  # SMART REBALANCING PARAMETERS (v4.0 GRID-SEARCH - 9 combinations)
+  # ===========================================================================
+
+  # DRIFT THRESHOLD - LOW VOL (v4.0 - 3 values)
+  # Default: 0.03 (3% drift triggers rebalance in Low vol regime)
+  # Range: [0.02, 0.03, 0.04] - test low vol rebalancing sensitivity
+  drift_low_vol: [0.03]  # 3 values - OPTIMIZE
+
+  # DRIFT THRESHOLD - HIGH VOL (v4.0 - 3 values)
+  # Default: 0.06 (6% drift triggers rebalance in High vol regime)
+  # Range: [0.05, 0.06, 0.07] - test high vol rebalancing sensitivity
+  drift_high_vol: [0.06]  # 3 values - OPTIMIZE
+
+  # ===========================================================================
+  # ALLOCATION PARAMETERS (Fixed at spec defaults)
+  # ===========================================================================
+
+  # Leverage scalar (Fixed at default)
+  leverage_scalar: [1]       # Fixed: No scaling
+
+  # ===========================================================================
+  # TREASURY OVERLAY PARAMETERS (Fixed at v3.5b winners)
+  # ===========================================================================
+
+  # Treasury Overlay toggle (Fixed at enabled)
+  allow_treasury: [true]       # Fixed: Enable Treasury Overlay
+
+  # Bond SMA periods (Fixed at spec defaults)
+  bond_sma_fast: [20]          # Fixed: 20-day bond trend
+  bond_sma_slow: [60]          # Fixed: 60-day bond structure
+
+  # Maximum bond allocation (Fixed at spec default)
+  max_bond_weight: [0.4]       # Fixed: 40% global cap
+
+  # Bond symbols (Fixed at spec defaults)
+  treasury_trend_symbol: ["TLT"]   # Fixed
+  bull_bond_symbol: ["TMF"]        # Fixed
+  bear_bond_symbol: ["TMV"]        # Fixed
+
+  # ===========================================================================
+  # v4.0 STRATEGY-SPECIFIC PARAMETERS (Fixed at spec defaults)
+  # ===========================================================================
+  # These are strategy __init__ parameters, NOT SymbolSet fields
+
+  # Correlation calculation symbols (v4.0)
+  corr_symbol_1: ["SPY"]       # Fixed: S&P 500 for correlation
+  corr_symbol_2: ["TLT"]       # Fixed: 20+ Year Treasury for correlation
+
+  # Crisis alpha symbol (v4.0)
+  crisis_short_symbol: ["SQQQ"]  # Fixed: -3x QQQ for crisis alpha
+
+# Optional Constraints
+# --------------------
+
+# Maximum total combinations to run
+# Current combinations: 3 × 9 × 3 × 9 = 729
+max_combinations: 750
+
+# Checkpoint interval (save progress every N runs)
+checkpoint_interval: 50
+
+# Expected Output
+# ---------------
+# output/grid_search_Hierarchical_Adaptive_v4_0_YYYYMMDD_HHMMSS/
+# ├── summary_comparison.csv   # Metrics for all 729 runs
+# ├── run_config.csv          # Parameter mapping
+# ├── parameters.yaml         # Copy of this config
+# ├── README.txt             # Summary statistics
+# └── run_XXXX/              # Individual runs
+#     ├── portfolio_daily.csv
+#     ├── trades.csv
+#     └── summary.csv
+
+# Usage
+# -----
+# jutsu grid-search --config grid-configs/examples/grid_search_hierarchical_adaptive_v4_0.yaml
+#
+# After completion:
+# 1. Review summary_comparison.csv for top performers
+# 2. Analyze parameter sensitivity:
+#    - Which macro_trend_lookback wins? (180/200/220)
+#    - Which corr_lookback × corr_threshold combination wins?
+#    - Which crisis_alpha_weight wins? (0.1/0.2/0.3)
+#    - Which drift_low_vol × drift_high_vol combination wins?
+# 3. Compare to v3.5b baseline (same date range)
+# 4. Validate v4.0 features:
+#    - Macro filter effectiveness: Does Cell 3 Bear bias avoid sideways losses?
+#    - Correlation guard accuracy: Does Cash override protect in inflation?
+#    - Crisis alpha performance: Does SQQQ profit in Cell 6 (Bear/High)?
+#    - Smart rebalancing: Does vol-adaptive drift reduce whipsaw?
+# 5. Review performance in key periods:
+#    - 2022 inflation (SPY-TLT correlation spike): Did guard trigger Cash?
+#    - COVID crash (March 2020): Did Cell 6 SQQQ capture crisis alpha?
+#    - Sideways markets (2015-2016): Did Cell 3 macro filter avoid chop?
+# 6. Check allocation effectiveness:
+#    - Cell 3a (Bull macro): Profitable TQQQ + SafeHaven mix?
+#    - Cell 3b (Bear macro): Did Cash avoid sideways losses?
+#    - Cell 6 (Crisis): Did SQQQ + SafeHaven outperform v3.5b Cash?
+# 7. Decide on Phase 2 optimization:
+#    - Fix winning v4.0 params
+#    - Optimize allocation ratios if needed
+
+# v4.0 SPECIFIC ANALYSIS:
+# -----------------------
+# MACRO FILTER VALIDATION:
+# - [ ] Cell 3 splits: Bull bias vs Bear bias distribution?
+# - [ ] Bull bias Cell 3 performance: TQQQ + SafeHaven profitable?
+# - [ ] Bear bias Cell 3 performance: Cash avoided losses?
+# - [ ] Macro trend accuracy: False positives/negatives?
+#
+# CORRELATION GUARD VALIDATION:
+# - [ ] Inflation detection: SPY-TLT corr > threshold frequency?
+# - [ ] Cash override effectiveness: Protected in 2022 inflation?
+# - [ ] Normal regime bonds: TMF/TMV performance when guard inactive?
+# - [ ] Guard sensitivity: Corr_threshold=0.1 vs 0.2 vs 0.3?
+#
+# CRISIS ALPHA VALIDATION:
+# - [ ] Cell 6 SQQQ performance: Profitable in crashes?
+# - [ ] Crisis alpha weight: 10% vs 20% vs 30% SQQQ optimal?
+# - [ ] SQQQ vs PSQ: Did crisis alpha outperform v3.5b PSQ?
+# - [ ] COVID crash (March 2020): SQQQ capture downside profit?
+#
+# SMART REBALANCING VALIDATION:
+# - [ ] Vol-adaptive drift: Reduced whipsaw in High vol?
+# - [ ] Low vol drift: 2% vs 3% vs 4% optimal?
+# - [ ] High vol drift: 5% vs 6% vs 7% optimal?
+# - [ ] Rebalancing frequency: v4.0 vs v3.5b comparison?
+#
+# PERFORMANCE COMPARISON (v4.0 vs v3.5b):
+# - [ ] Max drawdown: v4.0 ≤ v3.5b? (crisis alpha improvement?)
+# - [ ] Sharpe ratio: v4.0 ≥ v3.5b? (macro filter + guard improvement?)
+# - [ ] Win rate: v4.0 maintained vs v3.5b?
+# - [ ] Calmar ratio: v4.0 improvement with crisis alpha?
+# - [ ] Crisis performance: v4.0 better in COVID/2022/inflation?
+#
+# PARAMETER SENSITIVITY ANALYSIS:
+# - [ ] macro_trend_lookback: 180 vs 200 vs 220 days
+# - [ ] corr_lookback: 40 vs 60 vs 80 days
+# - [ ] corr_threshold: 0.1 vs 0.2 vs 0.3
+# - [ ] crisis_alpha_weight: 0.1 vs 0.2 vs 0.3
+# - [ ] drift_low_vol: 2% vs 3% vs 4%
+# - [ ] drift_high_vol: 5% vs 6% vs 7%
+#
+# ARCHITECTURE VALIDATION:
+# - [ ] Macro filter clarity: Cell 3 logic interpretable?
+# - [ ] Correlation guard robustness: False positives/negatives?
+# - [ ] Crisis alpha effectiveness: SQQQ toxic or profitable?
+# - [ ] Smart rebalancing impact: Transaction cost reduction?
+#
+# RISK ANALYSIS:
+# - [ ] SQQQ decay risk: Long-term Cell 6 exposure management?
+# - [ ] Correlation guard false positives: Unnecessary Cash override?
+# - [ ] Macro filter lag: Late entry/exit from Cell 3?
+# - [ ] Rebalancing frequency: Vol-adaptive vs fixed comparison?
+#
+# DECISION CRITERIA:
+# ✅ SUCCESS: v4.0 features add value, ≤ v3.5b drawdown, ≥ v3.5b Sharpe
+# ⚠️  INVESTIGATE: Mixed results, parameter sensitivity high
+# ❌ ROLLBACK: v4.0 worse than v3.5b, stick with v3.5b approach
+
+# v4.0 Testing Notes
+# ------------------
+# This grid search validates the v4.0 feature set:
+# 1. Macro Trend Filter: Cell 3 Bull/Bear bias gating
+# 2. Correlation Guard: SPY-TLT correlation → Cash override
+# 3. Crisis Alpha: SQQQ allocation in Cell 6 (Bear/High)
+# 4. Smart Rebalancing: Vol-adaptive drift thresholds
+#
+# Key validation points:
+# - v3.5b: Static SafeHaven, fixed rebalance, no macro filter
+# - v4.0: Macro filter, correlation guard, crisis alpha, smart rebalancing
+# - Expected: Better crisis performance, inflation protection, reduced whipsaw
+# - Risk: SQQQ decay, correlation false positives, macro filter lag
+#
+# Comparison workflow:
+# 1. Run this v4.0 grid search (729 runs)
+# 2. Compare best v4.0 to best v3.5b (same date range)
+# 3. Analyze macro filter effectiveness (Cell 3 Bull/Bear performance)
+# 4. Check correlation guard accuracy (2022 inflation protection)
+# 5. Validate crisis alpha profitability (COVID crash SQQQ performance)
+# 6. Make go/no-go decision for v4.0 adoption

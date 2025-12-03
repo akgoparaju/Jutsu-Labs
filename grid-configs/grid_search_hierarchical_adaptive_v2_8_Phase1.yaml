@@ -1,0 +1,391 @@
+# Grid Search Configuration for Hierarchical Adaptive v2.8
+# ========================================================================
+# Grid Search: 24 runs (focused 2×2×3×2 parameter exploration)
+# Validates v2.8 two-parameter floor system (E_anchor + E_short)
+#
+# v2.8 Changes from v2.7:
+# ----------------------
+# 1. TWO-PARAMETER FLOOR SYSTEM (Major Architecture Change):
+#    - v2.7: Single E_min (conflated defensive anchor + short clip floor)
+#    - v2.8: E_anchor (positive DD anchor) + E_short (negative clip floor)
+#    - Mathematical proof: Enables SQQQ reachability for ALL k_short ≥ 0.7
+#
+# 2. STRONGER k_short (Bug Fix):
+#    - v2.7: k_short fixed at 0.7 (weak, prevented negative E_trend)
+#    - v2.8: k_short ∈ [0.8, 1.2], default 1.0 (enables negative E_trend)
+#    - Impact: Enables full short positioning through stronger downtrends
+#
+# 3. SQQQ CAP (Risk Management):
+#    - v2.7: Unlimited SQQQ allocation (risky in extreme shorts)
+#    - v2.8: w_SQQQ_max parameter caps SQQQ at 20-25% portfolio
+#    - Impact: Prevents over-leveraged short positions, controls tail risk
+#
+# 4. v2.6 SQQQ CAPABILITY PRESERVED:
+#    - All v2.6 features maintained (4-weight position mapping)
+#    - Asymmetric DD governor still works correctly for negative E
+#    - All modulators unchanged from v2.6
+#
+# Parameter Comparison (v2.7 vs v2.8):
+# -------------------------------------
+# | Parameter  | v2.7 Range    | v2.8 Range      | v2.8 Change       |
+# |------------|---------------|-----------------|-------------------|
+# | E_min      | [-0.5, 0.0]   | REMOVED         | Conflated param   |
+# | E_anchor   | N/A           | [0.6, 0.8]      | NEW (DD anchor)   |
+# | E_short    | N/A           | [-0.3, 0.0]     | NEW (clip floor)  |
+# | k_short    | 0.7 (fixed)   | [0.8, 1.2]      | Stronger, tunable |
+# | k_long     | [0.5, 0.7]    | [0.7]           | Fixed at best     |
+# | w_SQQQ_max | N/A           | [0.2, 0.25]     | NEW (risk cap)    |
+# | E_max      | [1.5]         | [1.5]           | No change         |
+#
+# v2.8 Mathematical Validation:
+# ------------------------------
+# SQQQ Reachability Proof (from v2.8 memory):
+#
+# For SQQQ allocation (w_SQQQ > 0), need: E_final < 0
+#
+# v2.7 (BROKEN):
+#   E_final = clip(E_trend, E_min, E_max) * P_DD * P_VIX * S_vol
+#   where: E_trend = 1.0 + k_trend * T_norm
+#          k_trend = k_long (if T_norm ≥ 0) OR k_short (if T_norm < 0)
+#
+#   Problem: With k_short = 0.7, max negative E_trend = 1.0 + 0.7*(-1) = 0.3 (positive!)
+#   → Can NEVER reach negative E_final for ANY modulator values < 1.0
+#   → SQQQ unreachable even with E_min = -0.5
+#
+# v2.8 (FIXED):
+#   E_final = clip(E_trend * P_DD * P_VIX * S_vol, E_short, E_max) + E_anchor * (1 - P_DD)
+#
+#   With k_short = 1.0:
+#     E_trend = 1.0 + 1.0*(-1) = 0.0 (neutral, not negative)
+#
+#   With k_short = 1.1:
+#     E_trend = 1.0 + 1.1*(-1) = -0.1 (negative!)
+#     If P_DD = P_VIX = S_vol = 1.0:
+#       E_final = clip(-0.1, -0.2, 1.5) + 0.7*(1 - 1.0)
+#               = -0.1 + 0.0 = -0.1 (SQQQ reachable!)
+#
+#   ∴ v2.8 enables SQQQ for k_short ∈ [0.8, 1.2] during strong downtrends
+#
+# Expected Improvements over v2.7:
+# ---------------------------------
+# 1. SQQQ Access: Actually allocates to SQQQ during bear markets
+#    - v2.7: 0% SQQQ allocation (unreachable)
+#    - v2.8: 5-15% SQQQ allocation during bear markets
+#
+# 2. Defensive DD Behavior: E_anchor provides stable defensive floor
+#    - v2.7: DD compression could push E below practical safety (E_min = -0.5)
+#    - v2.8: E_anchor = 0.7 guarantees 70% QQQ minimum during max DD
+#
+# 3. Short Flexibility: E_short enables controlled short positioning
+#    - v2.7: E_min was both DD anchor AND short clip (conflated roles)
+#    - v2.8: E_short = -0.2 allows shorts, E_anchor = 0.7 ensures safety
+#
+# 4. Risk Control: w_SQQQ_max caps SQQQ exposure
+#    - v2.7: No SQQQ cap (theoretical risk in extreme shorts)
+#    - v2.8: w_SQQQ_max = 0.25 limits SQQQ to 25% portfolio max
+#
+# Grid Search Strategy (v2.8):
+# -----------------------------
+# FOCUSED EXPLORATION (from v2.8 memory "Next Steps"):
+#
+# Fix best v2.6 long-only config:
+#   - k_long: 0.7 (v2.6 winner)
+#   - E_max: 1.5 (v2.6 standard)
+#   - measurement_noise: 2000.0 (v2.6 winner)
+#   - sigma_target_multiplier: 0.8 (v2.6 winner)
+#   - alpha_VIX: 2.0 (v2.6 winner)
+#   - All other modulators at v2.6 best values
+#
+# Sweep ONLY new v2.8 parameters:
+#   - k_short ∈ {0.9, 1.1} (2 values: below/above symmetry)
+#   - E_anchor ∈ {0.6, 0.7} (2 values: aggressive/conservative DD anchor)
+#   - E_short ∈ {-0.1, -0.2, -0.3} (3 values: light/moderate/aggressive short clip)
+#   - w_SQQQ_max ∈ {0.20, 0.25} (2 values: conservative/standard SQQQ cap)
+#
+# Total combinations: 2 × 2 × 3 × 2 = 24 runs (fast, focused grid)
+#
+# Rationale:
+#   - Small grid (24 vs 243 in v2.6) enables rapid iteration
+#   - Isolates v2.8 parameter effects (all v2.6 params fixed)
+#   - Tests k_short symmetry (0.9 vs 1.1 around k_long = 0.7 + margin)
+#   - Validates E_anchor defensive behavior (0.6 vs 0.7)
+#   - Explores E_short short aggressiveness (-0.1 vs -0.2 vs -0.3)
+#   - Compares SQQQ risk caps (20% vs 25%)
+#
+# Estimated runtime: 8-12 minutes (24 runs)
+
+# Strategy to optimize
+strategy: "Hierarchical_Adaptive_v2_8"
+
+# Symbol Sets
+# -----------
+# v2.8 requires 4 symbols (same as v2.6):
+# - QQQ: 1x base allocation
+# - TQQQ: 3x leveraged long overlay
+# - SQQQ: 3x inverse (v2.8 enables actual allocation!)
+# - VIX: Volatility compression modulator
+symbol_sets:
+  - name: "QQQ_TQQQ_SQQQ_VIX"
+    signal_symbol: "QQQ"                # Kalman filter calculations
+    core_long_symbol: "QQQ"             # 1x base allocation
+    leveraged_long_symbol: "TQQQ"       # 3x leveraged overlay (when E_final > 1.0)
+    leveraged_short_symbol: "SQQQ"      # 3x inverse (when E_final < 0) - v2.8 FIXED ACCESS
+    vix_symbol: "VIX"                   # Volatility compression modulator
+
+# Base Configuration
+# ------------------
+# Fixed settings applied to ALL backtests
+base_config:
+  # Date range - Same as v2.6 (full 15-year history)
+  # Includes: Financial crisis recovery, bull markets, COVID crash, 2022 bear, recovery
+  start_date: "2010-03-01"
+  end_date: "2025-11-01"
+
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 10000  # $10,000 starting capital
+  commission: 0.0          # $0.00 per trade
+  slippage: 0.0005         # 0.05% per trade
+
+# Parameters to Optimize
+# ----------------------
+# v2.8 Focused Grid: Test new 2-parameter system with v2.6 proven values
+
+parameters:
+  # ===========================================================================
+  # TIER 1: KALMAN FILTER PARAMETERS (Fixed at v2.6 winners)
+  # ===========================================================================
+  # Controls trend calculation and normalization
+  # v2.6 winner: measurement_noise = 2000.0
+
+  measurement_noise: [2000.0, 3000]  # Fixed: v2.6 winner
+  osc_smoothness: [15]         # Fixed: v2.6 default
+  strength_smoothness: [15]    # Fixed: v2.6 default
+  process_noise_1: [0.01]      # Fixed: v2.6 default
+  process_noise_2: [0.01]      # Fixed: v2.6 default
+
+  # ===========================================================================
+  # TIER 2: BASELINE EXPOSURE PARAMETERS (v2.8 TWO-PARAMETER SYSTEM)
+  # ===========================================================================
+  # Controls E_trend = 1.0 + k_trend * T_norm
+  #          E_final = clip(E_trend * modulators, E_short, E_max) + E_anchor * (1 - P_DD)
+
+  # Trend normalization max (Fixed at v2.6 winner)
+  T_max: [50, 60]  # Fixed: v2.6 winner (more aggressive trend normalization)
+
+  # LONG-SIDE SLOPE (Fixed at v2.6 winner)
+  # k_long applies when T_norm ≥ 0 (bullish trends)
+  k_long: [0.6, 0.7, 0.8]  # Fixed: v2.6 winner (strong long-side responsiveness)
+
+  # SHORT-SIDE SLOPE (NEW v2.8 - OPTIMIZE THIS!)
+  # k_short applies when T_norm < 0 (bearish trends)
+  # v2.7: Fixed at 0.7 (too weak → prevented negative E_trend → no SQQQ)
+  # v2.8: [0.8, 1.2] (stronger → enables negative E_trend → SQQQ reachable!)
+  #
+  # Test values:
+  #   0.9: Below symmetry (asymmetric long/short response)
+  #   1.1: Above k_long (symmetric/aggressive short response)
+  #
+  # Expected: k_short = 1.1 enables SQQQ, k_short = 0.9 marginal
+  k_short: [0.9, 1.0, 1.1]  # 2 values - TEST SHORT-SIDE STRENGTH
+
+  # DRAWDOWN DEFENSIVE ANCHOR (NEW v2.8 - OPTIMIZE THIS!)
+  # E_anchor: Positive value providing DD-driven defensive floor
+  # Formula: E_final += E_anchor * (1 - P_DD)
+  #
+  # When P_DD = 0.0 (max DD = DD_hard):
+  #   E_final += E_anchor * 1.0 = E_anchor
+  # When P_DD = 1.0 (no DD):
+  #   E_final += 0.0 (no DD anchor contribution)
+  #
+  # Test values:
+  #   0.6: Aggressive DD anchor (60% QQQ floor at max DD)
+  #   0.7: Conservative DD anchor (70% QQQ floor at max DD)
+  #
+  # Expected: E_anchor = 0.7 better for risk control, 0.6 for returns
+  E_anchor: [0.6, 0.7, 0.8]  # 2 values - TEST DD DEFENSIVE BEHAVIOR
+
+  # SHORT CLIP FLOOR (NEW v2.8 - OPTIMIZE THIS!)
+  # E_short: Negative value setting minimum allowed net short exposure
+  # Formula: E_final = clip(E_trend * modulators, E_short, E_max) + E_anchor * (1 - P_DD)
+  #
+  # Test values:
+  #   -0.1: Light short clip (10% max short exposure)
+  #   -0.2: Moderate short clip (20% max short exposure)
+  #   -0.3: Aggressive short clip (30% max short exposure)
+  #
+  # Expected: -0.2 balances opportunity vs risk, -0.3 too aggressive
+  E_short: [-0.2]  # 3 values - TEST SHORT AGGRESSIVENESS
+
+  # Maximum exposure (Fixed at v2.6 standard)
+  E_max: [1.5]  # Fixed: 1.5x leverage cap (consistent with v2.6)
+
+  # SQQQ RISK CAP (NEW v2.8 - OPTIMIZE THIS!)
+  # w_SQQQ_max: Maximum portfolio weight allocated to SQQQ (3x inverse ETF)
+  #
+  # Test values:
+  #   0.20: Conservative SQQQ cap (20% max, 60% max short exposure)
+  #   0.25: Standard SQQQ cap (25% max, 75% max short exposure)
+  #
+  # Expected: 0.25 provides more flexibility, 0.20 better risk control
+  w_SQQQ_max: [0.20]  # 2 values - TEST SQQQ RISK MANAGEMENT
+
+  # ===========================================================================
+  # TIER 3: VOLATILITY MODULATOR (Fixed at v2.6 winners)
+  # ===========================================================================
+  # v2.6 winner: sigma_target_multiplier = 0.8
+
+  sigma_target_multiplier: [0.8, 0.9, 1]  # Fixed: v2.6 winner
+  realized_vol_lookback: [20]     # Fixed: v2.6 default
+  S_vol_min: [0.5]                # Fixed: v2.6 default
+  S_vol_max: [1.5]                # Fixed: v2.6 default
+
+  # ===========================================================================
+  # TIER 4: VIX COMPRESSION MODULATOR (Fixed at v2.6 winners)
+  # ===========================================================================
+  # v2.6 winner: alpha_VIX = 2.0
+
+  vix_ema_period: [50]   # Fixed: v2.6 default
+  alpha_VIX: [2.0, 2.5, 3]       # Fixed: v2.6 winner (strong VIX compression)
+
+  # ===========================================================================
+  # TIER 5: DRAWDOWN GOVERNOR (Fixed at v2.5/v2.6 values)
+  # ===========================================================================
+  # v2.5's asymmetric formula works correctly for v2.8 two-parameter system!
+  # No changes needed - DD governor compatible with E_anchor + E_short
+
+  DD_soft: [0.10]   # Fixed: 10% DD starts compression
+  DD_hard: [0.20, 0.25]   # Fixed: 20% DD full compression
+  p_min: [0.0]      # Fixed: Minimum exposure multiplier at DD_hard
+
+  # ===========================================================================
+  # TIER 6: REBALANCING (Fixed at v2.6 default)
+  # ===========================================================================
+
+  rebalance_threshold: [0.025]  # Fixed: 2.5% drift triggers rebalance
+
+# Optional Constraints
+# --------------------
+
+# Maximum total combinations to run
+# Current combinations: 2 × 2 × 3 × 2 = 24
+max_combinations: 50
+
+# Checkpoint interval
+checkpoint_interval: 10
+
+# Expected Output
+# ---------------
+# output/grid_search_Hierarchical_Adaptive_v2_8_YYYYMMDD_HHMMSS/
+# ├── summary_comparison.csv   # Metrics for all 24 runs
+# ├── run_config.csv          # Parameter mapping
+# ├── parameters.yaml         # Copy of this config
+# ├── README.txt             # Summary statistics
+# └── run_XXXX/              # Individual runs
+
+# Usage
+# -----
+# jutsu grid-search --config grid-configs/examples/grid_search_hierarchical_adaptive_v2_8.yaml
+#
+# After completion:
+# 1. Compare to v2.6 and v2.7 baselines (same date range, fixed v2.6 params)
+# 2. Validate SQQQ allocation frequency and effectiveness
+# 3. Review bear market performance (2020 COVID, 2022 bear market)
+# 4. Analyze two-parameter system effectiveness:
+#    - Does E_anchor provide stable DD defensive floor?
+#    - Does E_short enable controlled short positioning?
+#    - Do k_short values [0.9, 1.1] enable negative E_trend?
+# 5. Check SQQQ reachability:
+#    - Does v2.8 actually allocate to SQQQ? (v2.7 didn't)
+#    - Frequency of SQQQ allocation vs v2.7
+#    - SQQQ cap effectiveness (20% vs 25%)
+# 6. Validate position mapping correctness (same 4-region logic as v2.6)
+# 7. Decide on final v2.8 parameter values for production
+
+# v2.8 SPECIFIC ANALYSIS CHECKLIST:
+# ----------------------------------
+# TWO-PARAMETER SYSTEM VALIDATION:
+# - [ ] E_anchor provides consistent DD defensive behavior?
+# - [ ] E_short enables short positioning without excessive risk?
+# - [ ] Two-parameter separation improves on v2.7 single E_min?
+# - [ ] DD-driven defensive floor (E_anchor) vs trend-driven short clip (E_short) decoupled?
+#
+# SQQQ REACHABILITY VALIDATION (vs v2.7):
+# - [ ] v2.8 allocates to SQQQ during bear markets? (v2.7: NO)
+# - [ ] k_short = 1.1 enables negative E_trend? (k_short = 0.7 in v2.7: NO)
+# - [ ] SQQQ allocation frequency: 5-15% of bars vs v2.7: 0%?
+# - [ ] SQQQ weights respect w_SQQQ_max cap (20% or 25%)?
+# - [ ] Net short exposure reached (E_final < 0)?
+#
+# PARAMETER SENSITIVITY ANALYSIS:
+# - [ ] k_short effect: 0.9 vs 1.1 impact on SQQQ access?
+# - [ ] E_anchor effect: 0.6 vs 0.7 impact on DD defensive behavior?
+# - [ ] E_short effect: -0.1 vs -0.2 vs -0.3 impact on short aggressiveness?
+# - [ ] w_SQQQ_max effect: 20% vs 25% impact on tail risk?
+# - [ ] Optimal combination: Which param set dominates top performers?
+#
+# BEAR MARKET PERFORMANCE (v2.8 vs v2.7):
+# - [ ] COVID crash (Feb-Mar 2020): Did SQQQ allocation protect capital?
+# - [ ] 2022 bear market: SQQQ effectiveness during sustained downtrend?
+# - [ ] Max drawdown: v2.8 improvement over v2.7?
+# - [ ] Recovery speed: v2.8 vs v2.7 comparison?
+#
+# POSITION MAPPING VALIDATION (same as v2.6):
+# - [ ] Region 1 (E ≤ -1.0): QQQ + SQQQ weights sum to 1.0?
+# - [ ] Region 2 (-1.0 < E < 0): SQQQ + cash weights sum to 1.0?
+# - [ ] Region 3 (0 ≤ E ≤ 1.0): QQQ + cash = v2.6 behavior?
+# - [ ] Region 4 (E > 1.0): QQQ + TQQQ = v2.6 behavior?
+# - [ ] Net exposure math: Verify E_net = w_QQQ + 3*w_TQQQ - 3*w_SQQQ
+#
+# PERFORMANCE COMPARISON (v2.8 vs v2.7 vs v2.6):
+# - [ ] Max drawdown: v2.8 < v2.7 < v2.6?
+# - [ ] Sortino ratio: v2.8 > v2.7 ≈ v2.6?
+# - [ ] Win rate: Maintained or improved?
+# - [ ] Bear market returns: v2.8 > v2.7 (SQQQ access)?
+# - [ ] Bull market returns: v2.8 ≈ v2.6 (no degradation)?
+#
+# RISK ANALYSIS:
+# - [ ] SQQQ cap effective at limiting tail risk?
+# - [ ] E_anchor provides stable defensive floor during DD?
+# - [ ] E_short prevents excessive short positioning?
+# - [ ] Whipsaw risk: Smooth SQQQ transitions?
+# - [ ] Rebalancing frequency: Reasonable vs v2.7?
+#
+# DECISION CRITERIA:
+# ✅ SUCCESS: v2.8 enables SQQQ, improves bear markets, maintains bull markets, two-parameter system superior
+# ⚠️  INVESTIGATE: SQQQ enabled but mixed results, parameter sensitivity high
+# ❌ ROLLBACK: v2.8 doesn't enable SQQQ OR worse than v2.7, revert to v2.7
+
+# v2.8 vs v2.7 Key Differences Summary:
+# --------------------------------------
+# | Aspect          | v2.7                      | v2.8                              | Impact                |
+# |-----------------|---------------------------|-----------------------------------|------------------------|
+# | Floor System    | Single E_min              | E_anchor + E_short (two-param)    | Decoupled DD/short     |
+# | k_short         | 0.7 (fixed, weak)         | [0.8, 1.2] (tunable, stronger)    | Enables negative E     |
+# | SQQQ Access     | Unreachable (k_short=0.7) | Reachable (k_short≥0.8)           | Functional shorts      |
+# | SQQQ Cap        | None                      | w_SQQQ_max [20%, 25%]             | Tail risk control      |
+# | DD Defensive    | E_min (conflated)         | E_anchor (dedicated)              | Clearer DD behavior    |
+# | Short Clip      | E_min (conflated)         | E_short (dedicated)               | Controlled shorts      |
+# | Math Validation | No proof                  | Proven SQQQ reachability          | Confidence in design   |
+#
+# Expected v2.8 Improvements:
+# - SQQQ allocation: v2.7 (0%) → v2.8 (5-15%)
+# - Bear market DD: v2.7 (-18%) → v2.8 (-15%)
+# - Defensive clarity: v2.7 (conflated) → v2.8 (decoupled)
+# - Risk control: v2.7 (unlimited SQQQ) → v2.8 (capped 20-25%)
+#
+# Testing Strategy:
+# 1. Run this v2.8 grid (24 runs, ~10 minutes)
+# 2. Compare to v2.7 results (check SQQQ allocation frequency)
+# 3. Validate mathematical proof (k_short ≥ 0.8 enables negative E_trend)
+# 4. Select best v2.8 parameter set
+# 5. Run full comparison: v2.8 best vs v2.7 best vs v2.6 best
+# 6. Make go/no-go decision for v2.8 adoption
+#
+# Success Metrics:
+# - SQQQ allocation >0% (v2.7 baseline: 0%)
+# - Bear market max DD <-15% (v2.7 baseline: -18%)
+# - Sortino ratio ≥ v2.7 best
+# - Two-parameter system provides clearer interpretability

@@ -356,3 +356,240 @@ def test_eventloop_get_results():
     assert results['final_value'] == Decimal('100000')
     assert results['total_return'] == Decimal('0')
     assert results['cash'] == Decimal('100000')
+
+
+# === Warmup Phase Tests ===
+
+def test_in_warmup_phase_no_warmup():
+    """Test _in_warmup_phase returns False when warmup_end_date is None."""
+    data_handler = MockDataHandler([])
+    strategy = MockStrategy()
+    portfolio = PortfolioSimulator(initial_capital=Decimal('100000'))
+
+    event_loop = EventLoop(
+        data_handler=data_handler,
+        strategy=strategy,
+        portfolio=portfolio,
+        warmup_end_date=None
+    )
+
+    # Any date should return False when warmup_end_date is None
+    test_date = datetime(2024, 1, 1, 9, 30, tzinfo=timezone.utc)
+    assert event_loop._in_warmup_phase(test_date) is False
+
+
+def test_in_warmup_phase_before_end():
+    """Test _in_warmup_phase returns True for dates before warmup_end_date."""
+    data_handler = MockDataHandler([])
+    strategy = MockStrategy()
+    portfolio = PortfolioSimulator(initial_capital=Decimal('100000'))
+
+    warmup_end = datetime(2024, 1, 10, 9, 30, tzinfo=timezone.utc)
+    event_loop = EventLoop(
+        data_handler=data_handler,
+        strategy=strategy,
+        portfolio=portfolio,
+        warmup_end_date=warmup_end
+    )
+
+    # Date before warmup_end should return True
+    before_date = datetime(2024, 1, 5, 9, 30, tzinfo=timezone.utc)
+    assert event_loop._in_warmup_phase(before_date) is True
+
+
+def test_in_warmup_phase_after_end():
+    """Test _in_warmup_phase returns False for dates on or after warmup_end_date."""
+    data_handler = MockDataHandler([])
+    strategy = MockStrategy()
+    portfolio = PortfolioSimulator(initial_capital=Decimal('100000'))
+
+    warmup_end = datetime(2024, 1, 10, 9, 30, tzinfo=timezone.utc)
+    event_loop = EventLoop(
+        data_handler=data_handler,
+        strategy=strategy,
+        portfolio=portfolio,
+        warmup_end_date=warmup_end
+    )
+
+    # Date equal to warmup_end should return False (trading starts)
+    assert event_loop._in_warmup_phase(warmup_end) is False
+
+    # Date after warmup_end should return False
+    after_date = datetime(2024, 1, 15, 9, 30, tzinfo=timezone.utc)
+    assert event_loop._in_warmup_phase(after_date) is False
+
+
+class SignalGeneratingStrategy(Strategy):
+    """Mock strategy that generates signals for testing."""
+
+    def __init__(self, buy_dates=None):
+        super().__init__()
+        self.buy_dates = buy_dates or []
+        self.bars_processed = []
+
+    def init(self):
+        pass
+
+    def on_bar(self, bar: MarketDataEvent):
+        """Generate BUY signal on specific dates."""
+        self.bars_processed.append(bar)
+
+        # Check if this bar's date matches a buy_date
+        if bar.timestamp.date() in [d.date() for d in self.buy_dates]:
+            self.buy(bar.symbol, portfolio_percent=Decimal('0.1'))
+
+
+def test_warmup_signals_ignored():
+    """Test that signals generated during warmup phase are NOT executed."""
+    # Create bars spanning warmup and trading periods
+    warmup_date = datetime(2024, 1, 5, 9, 30, tzinfo=timezone.utc)
+    trading_date = datetime(2024, 1, 15, 9, 30, tzinfo=timezone.utc)
+
+    bars = [
+        MarketDataEvent(
+            symbol='QQQ', timestamp=warmup_date,
+            open=Decimal('400'), high=Decimal('402'),
+            low=Decimal('399'), close=Decimal('401'), volume=1000000
+        ),
+        MarketDataEvent(
+            symbol='QQQ', timestamp=trading_date,
+            open=Decimal('405'), high=Decimal('407'),
+            low=Decimal('404'), close=Decimal('406'), volume=1100000
+        ),
+    ]
+
+    # Strategy generates BUY signal on warmup_date
+    strategy = SignalGeneratingStrategy(buy_dates=[warmup_date])
+
+    data_handler = MockDataHandler(bars)
+    portfolio = PortfolioSimulator(initial_capital=Decimal('100000'))
+
+    warmup_end = datetime(2024, 1, 10, 9, 30, tzinfo=timezone.utc)
+    event_loop = EventLoop(
+        data_handler=data_handler,
+        strategy=strategy,
+        portfolio=portfolio,
+        warmup_end_date=warmup_end
+    )
+
+    event_loop.run()
+
+    # Verify signal was generated but NOT executed
+    assert len(event_loop.all_signals) == 1  # Signal collected
+    assert len(event_loop.all_fills) == 0   # No fills (warmup)
+    assert portfolio.cash == Decimal('100000')  # Cash unchanged
+    assert len(portfolio.positions) == 0  # No positions
+
+
+def test_warmup_trading_phase_signals_executed():
+    """Test that signals generated after warmup_end_date ARE executed."""
+    # Create bars spanning warmup and trading periods
+    warmup_date = datetime(2024, 1, 5, 9, 30, tzinfo=timezone.utc)
+    trading_date = datetime(2024, 1, 15, 9, 30, tzinfo=timezone.utc)
+
+    bars = [
+        MarketDataEvent(
+            symbol='QQQ', timestamp=warmup_date,
+            open=Decimal('400'), high=Decimal('402'),
+            low=Decimal('399'), close=Decimal('401'), volume=1000000
+        ),
+        MarketDataEvent(
+            symbol='QQQ', timestamp=trading_date,
+            open=Decimal('405'), high=Decimal('407'),
+            low=Decimal('404'), close=Decimal('406'), volume=1100000
+        ),
+    ]
+
+    # Strategy generates BUY signal on trading_date
+    strategy = SignalGeneratingStrategy(buy_dates=[trading_date])
+
+    data_handler = MockDataHandler(bars)
+    portfolio = PortfolioSimulator(initial_capital=Decimal('100000'))
+
+    warmup_end = datetime(2024, 1, 10, 9, 30, tzinfo=timezone.utc)
+    event_loop = EventLoop(
+        data_handler=data_handler,
+        strategy=strategy,
+        portfolio=portfolio,
+        warmup_end_date=warmup_end
+    )
+
+    event_loop.run()
+
+    # Verify signal was generated AND executed
+    assert len(event_loop.all_signals) == 1  # Signal collected
+    assert len(event_loop.all_fills) == 1   # Fill executed
+    assert portfolio.cash < Decimal('100000')  # Cash used
+    assert 'QQQ' in portfolio.positions  # Position acquired
+
+
+def test_warmup_no_warmup_backwards_compatible():
+    """Test that warmup_end_date=None behaves like original (no warmup)."""
+    date1 = datetime(2024, 1, 5, 9, 30, tzinfo=timezone.utc)
+
+    bars = [
+        MarketDataEvent(
+            symbol='QQQ', timestamp=date1,
+            open=Decimal('400'), high=Decimal('402'),
+            low=Decimal('399'), close=Decimal('401'), volume=1000000
+        ),
+    ]
+
+    # Strategy generates BUY signal
+    strategy = SignalGeneratingStrategy(buy_dates=[date1])
+
+    data_handler = MockDataHandler(bars)
+    portfolio = PortfolioSimulator(initial_capital=Decimal('100000'))
+
+    # No warmup_end_date (original behavior)
+    event_loop = EventLoop(
+        data_handler=data_handler,
+        strategy=strategy,
+        portfolio=portfolio,
+        warmup_end_date=None
+    )
+
+    event_loop.run()
+
+    # Verify signal executed (no warmup blocking)
+    assert len(event_loop.all_signals) == 1
+    assert len(event_loop.all_fills) == 1
+    assert portfolio.cash < Decimal('100000')
+
+
+def test_warmup_strategy_on_bar_still_called():
+    """Test that Strategy.on_bar() is called during warmup (for indicator warmup)."""
+    warmup_date = datetime(2024, 1, 5, 9, 30, tzinfo=timezone.utc)
+    trading_date = datetime(2024, 1, 15, 9, 30, tzinfo=timezone.utc)
+
+    bars = [
+        MarketDataEvent(
+            symbol='QQQ', timestamp=warmup_date,
+            open=Decimal('400'), high=Decimal('402'),
+            low=Decimal('399'), close=Decimal('401'), volume=1000000
+        ),
+        MarketDataEvent(
+            symbol='QQQ', timestamp=trading_date,
+            open=Decimal('405'), high=Decimal('407'),
+            low=Decimal('404'), close=Decimal('406'), volume=1100000
+        ),
+    ]
+
+    strategy = MockStrategy()
+    data_handler = MockDataHandler(bars)
+    portfolio = PortfolioSimulator(initial_capital=Decimal('100000'))
+
+    warmup_end = datetime(2024, 1, 10, 9, 30, tzinfo=timezone.utc)
+    event_loop = EventLoop(
+        data_handler=data_handler,
+        strategy=strategy,
+        portfolio=portfolio,
+        warmup_end_date=warmup_end
+    )
+
+    event_loop.run()
+
+    # Verify strategy.on_bar() was called for BOTH warmup and trading bars
+    assert len(strategy.bars_processed) == 2
+    assert strategy.bars_processed[0].timestamp == warmup_date
+    assert strategy.bars_processed[1].timestamp == trading_date

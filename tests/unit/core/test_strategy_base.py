@@ -278,3 +278,53 @@ class TestSignalBuffer:
 
         signals = self.strategy.get_signals()
         assert len(signals) == 2
+
+
+class TestWarmupPeriod:
+    """Test warmup period functionality."""
+
+    def test_default_warmup_returns_zero(self):
+        """Base strategy returns 0 warmup bars by default."""
+        strategy = ConcreteStrategy()
+        warmup_bars = strategy.get_required_warmup_bars()
+        assert warmup_bars == 0
+
+    def test_strategy_can_override_warmup(self):
+        """Strategy subclass can override warmup period."""
+        class WarmupStrategy(Strategy):
+            """Test strategy with warmup period."""
+
+            def init(self):
+                self.sma_period = 50
+
+            def on_bar(self, bar: MarketDataEvent):
+                pass
+
+            def get_required_warmup_bars(self) -> int:
+                return 100
+
+        strategy = WarmupStrategy()
+        warmup_bars = strategy.get_required_warmup_bars()
+        assert warmup_bars == 100
+
+    def test_warmup_calculation_with_parameters(self):
+        """Warmup period calculated from strategy parameters."""
+        class ParameterizedWarmupStrategy(Strategy):
+            """Test strategy with parameter-based warmup."""
+
+            def init(self):
+                self.short_period = 20
+                self.long_period = 50
+                self.buffer = 10
+
+            def on_bar(self, bar: MarketDataEvent):
+                pass
+
+            def get_required_warmup_bars(self) -> int:
+                # Need longest period + buffer
+                return self.long_period + self.buffer
+
+        strategy = ParameterizedWarmupStrategy()
+        strategy.init()  # Initialize parameters
+        warmup_bars = strategy.get_required_warmup_bars()
+        assert warmup_bars == 60  # 50 + 10

@@ -1,0 +1,518 @@
+# Walk-Forward Optimization for Hierarchical Adaptive v3.5b
+# =========================================================
+# Validates robustness of v3.5b (Binarized Regime Allocator) across time periods
+#
+# v3.5b Changes from v2.8:
+# -----------------------
+# 1. BINARIZED REGIME GRID (3×2 = 6 cells):
+#    - v2.8: Continuous exposure pipeline (6 tiers → single E_t)
+#    - v3.5b: Discrete regime cells (Trend×Vol → 6 allocations)
+#    - Eliminates "Medium Volatility" - binary High/Low only
+#
+# 2. HIERARCHICAL TREND DETECTION:
+#    - v2.8: Kalman trend only (T_norm)
+#    - v3.5b: Fast (Kalman) gated by Slow (SMA 50/200 structure)
+#    - Rules: Bull (T_norm>0.3 AND SMA_fast>SMA_slow), Bear, Sideways
+#
+# 3. ROLLING Z-SCORE VOLATILITY:
+#    - v2.8: Fixed percentile thresholds
+#    - v3.5b: Adaptive z-score (σ_t - μ_vol) / σ_vol
+#    - Baseline: 126-day rolling mean/std
+#
+# 4. HYSTERESIS STATE MACHINE:
+#    - v2.8: No vol regime persistence
+#    - v3.5b: Deadband (upper_thresh=+1.0, lower_thresh=0.0)
+#    - Prevents flickering when vol hovers near threshold
+#
+# 5. VOL-CRUSH OVERRIDE:
+#    - v2.8: No V-recovery detection
+#    - v3.5b: Override Bear→Sideways when vol drops >20% in 5 days
+#    - Captures rapid recovery before SMA confirms
+#
+# 6. INSTRUMENT CHANGES:
+#    - v2.8: QQQ/TQQQ/SQQQ/VIX
+#    - v3.5b: QQQ/TQQQ/PSQ/Cash (optional PSQ, no VIX)
+#
+# Walk-Forward Methodology:
+# -------------------------
+# - Total Period: 2010-03-01 to 2025-03-01 (15 years)
+# - Window Size: 3.0 years (2.5y IS + 0.5y OOS)
+# - Slide: 0.5 years (6 months forward each iteration)
+# - Windows: 29 total walk-forward windows
+# - Selection Metric: Sortino Ratio (downside risk focus)
+#
+# Process:
+# 1. In-Sample (IS): Optimize v3.5b parameters on 2.5y training data
+# 2. Out-of-Sample (OOS): Test winning params on next 0.5y validation data
+# 3. Slide forward 0.5y and repeat
+# 4. Aggregate OOS results to measure true predictive performance
+#
+# v3.5b WFO Parameter Set: Focused on Regime Boundaries (8 runs per window)
+# ------------------------------------------------------------------------
+# Fix ALL Kalman and allocation parameters at spec defaults:
+#   - Kalman: measurement_noise=2000.0, T_max=50.0 (v2.8 winners)
+#   - Allocation: leverage_scalar=1.0, use_inverse_hedge=false
+#   - Trend thresholds: t_norm_bull_thresh=0.3, t_norm_bear_thresh=-0.3
+#   - Vol windows: realized_vol_window=21, vol_baseline_window=126
+#   - Vol-crush: vol_crush_lookback=5
+#   - Rebalancing: rebalance_threshold=0.025
+#
+# Optimize ONLY regime boundary parameters (2^3 = 8 runs):
+#   - upper_thresh_z ∈ {0.8, 1.2} (2 values: aggressive/conservative vol detection)
+#   - lower_thresh_z ∈ {-0.2, 0.2} (2 values: fast/slow vol exit)
+#   - vol_crush_threshold ∈ {-0.15, -0.25} (2 values: sensitive/conservative override)
+#
+# SMA structure fixed at defaults for WFO:
+#   - sma_fast: 50 (balanced responsiveness)
+#   - sma_slow: 200 (standard long-term structure)
+#
+# Total Backtests: 29 windows × 8 combinations = 232 total backtests
+# Estimated Runtime: 30-45 minutes
+
+# Strategy to optimize
+strategy: "Hierarchical_Adaptive_v3_5b"
+
+# Symbol Sets
+# -----------
+# v3.5b with Treasury Overlay requires 6 symbols
+symbol_sets:
+  - name: "QQQ_TQQQ_PSQ_Bonds"
+    signal_symbol: "QQQ"                # Kalman + SMA + vol calculations
+    core_long_symbol: "QQQ"             # 1x base allocation
+    leveraged_long_symbol: "TQQQ"       # 3x leveraged overlay
+    inverse_hedge_symbol: "PSQ"         # -1x inverse (optional, disabled by default)
+    treasury_trend_symbol: "TLT"        # 20+ Year Treasury (bond trend signal)
+    bull_bond_symbol: "TMF"             # 3x Bull Bonds (deflation/safety)
+    bear_bond_symbol: "TMV"             # 3x Bear Bonds (inflation/rate shock)
+
+# Base Configuration
+# ------------------
+base_config:
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 100000  # $100,000 starting capital
+  commission: 0.0          # $0.00 per trade
+  slippage: 0.0005         # 0.05% per trade
+
+# Walk-Forward Configuration
+# --------------------------
+walk_forward:
+  # Total period to analyze
+  total_start_date: "2010-02-01"
+  total_end_date: "2025-11-21"
+
+  # Window sizing (same as v2.8 WFO)
+  window_size_years: 3.0      # Total window size (IS + OOS)
+  in_sample_years: 2.5        # Training period
+  out_of_sample_years: 0.5    # Validation period
+
+  # Iteration control
+  slide_years: 0.5            # Slide forward 6 months each iteration
+
+  # Selection criteria
+  selection_metric: "sharpe_ratio"  # Optimize for downside risk
+
+  # Performance requirements (filters before OOS testing)
+  min_sharpe_ratio: 1.0      # Minimum Sharpe in IS period
+  max_drawdown: 0.35         # Maximum 30% drawdown in IS period
+
+# Parameters to Optimize
+# ----------------------
+# v3.5b Focused WFO: Test ONLY regime boundary parameters
+# All other parameters fixed at spec defaults for fast iteration
+#
+# Total combinations: 2^3 = 8 runs per window
+
+parameters:
+  # ===========================================================================
+  # VERSION IDENTIFIER (v3.5b - Binarized Regime Allocator)
+  # ===========================================================================
+  version: ["3.5"]
+
+  # ===========================================================================
+  # KALMAN TREND PARAMETERS (Fixed at v2.8 winners)
+  # ===========================================================================
+
+  # Measurement noise (Fixed at v2.8 winner)
+  measurement_noise: [2000.0, 3000.0]  # Fixed: Proven value from v2.8
+
+  # Process noise (Fixed at defaults)
+  process_noise_1: [0.01]      # Fixed
+  process_noise_2: [0.01]      # Fixed
+
+  # Smoothness (Fixed at defaults)
+  osc_smoothness: [15]         # Fixed
+  strength_smoothness: [15]    # Fixed
+
+  # Trend normalization max (Fixed at v2.8 winner)
+  T_max: [50.0]                # Fixed: Aggressive normalization
+
+  # ===========================================================================
+  # SMA STRUCTURE PARAMETERS (Fixed at spec defaults for WFO)
+  # ===========================================================================
+  # Grid-search will test variations, WFO validates at defaults
+
+  # Fast SMA period (Fixed at spec default)
+  sma_fast: [40]               # Fixed: Balanced responsiveness
+
+  # Slow SMA period (Fixed at spec default)
+  sma_slow: [140]              # Fixed: Standard long-term structure
+
+  # ===========================================================================
+  # TREND CLASSIFICATION THRESHOLDS (Fixed at spec defaults)
+  # ===========================================================================
+
+  # Bull threshold (Fixed at spec)
+  t_norm_bull_thresh: [0.2]    # Fixed
+
+  # Bear threshold (Fixed at spec)
+  t_norm_bear_thresh: [-0.3]   # Fixed
+
+  # ===========================================================================
+  # VOLATILITY Z-SCORE PARAMETERS (WFO - 4 combinations)
+  # ===========================================================================
+
+  # Realized volatility window (Fixed at spec)
+  realized_vol_window: [21]    # Fixed
+
+  # Volatility baseline window (Fixed at spec)
+  vol_baseline_window: [126]   # Fixed
+
+  # UPPER HYSTERESIS THRESHOLD (v3.5b WFO - 2 values)
+  # Test boundary values:
+  #   0.8: Aggressive (frequent High vol regime)
+  #   1.2: Conservative (infrequent High vol regime)
+  # Expected: 1.2 better risk control, 0.8 more responsive
+  upper_thresh_z: [1]   # 2 values - WFO TEST
+
+  # LOWER HYSTERESIS THRESHOLD (v3.5b WFO - 2 values)
+  # Test boundary values:
+  #   -0.2: Fast exit from High vol regime (vol drops below average)
+  #   0.2: Slow exit from High vol regime (vol drops well below average)
+  # Expected: 0.2 more stable, -0.2 more responsive
+  lower_thresh_z: [0.2]  # 2 values - WFO TEST
+
+  # ===========================================================================
+  # VOL-CRUSH OVERRIDE PARAMETERS (WFO - 2 values)
+  # ===========================================================================
+
+  # VOL-CRUSH THRESHOLD (v3.5b WFO - 2 values)
+  # Test boundary values:
+  #   -0.15: Sensitive (15% vol drop triggers override)
+  #   -0.25: Conservative (25% vol drop triggers override)
+  # Expected: -0.25 avoids false positives, -0.15 more responsive
+  vol_crush_threshold: [-0.15]  # 2 values - WFO TEST
+
+  # Vol-crush lookback window (Fixed at spec)
+  vol_crush_lookback: [5]      # Fixed
+
+  # ===========================================================================
+  # ALLOCATION PARAMETERS (Fixed at spec defaults)
+  # ===========================================================================
+
+  # Leverage scalar (Fixed at default)
+  leverage_scalar: [1]       # Fixed: No scaling
+
+  # ===========================================================================
+  # INSTRUMENT TOGGLES (Fixed at conservative defaults)
+  # ===========================================================================
+
+  # PSQ toggle (Fixed at disabled)
+  use_inverse_hedge: [false]   # Fixed: Disabled
+
+  # PSQ maximum weight (Fixed at spec default)
+  w_PSQ_max: [0.5]             # Fixed: Not applicable (PSQ disabled)
+
+  # ===========================================================================
+  # TREASURY OVERLAY PARAMETERS (Fixed at spec defaults)
+  # ===========================================================================
+  # v3.5b Treasury Overlay: Dynamic Safe Haven Selector
+  # Replaces static Cash allocation in defensive cells with bond logic
+
+  # Treasury Overlay toggle (Fixed at enabled)
+  allow_treasury: [true]       # Fixed: Enable Treasury Overlay
+
+  # Bond SMA periods (Fixed at spec defaults)
+  bond_sma_fast: [20]          # Fixed: 20-day bond trend
+  bond_sma_slow: [60]          # Fixed: 60-day bond structure
+
+  # Maximum bond allocation (Fixed at spec default)
+  max_bond_weight: [0.4]       # Fixed: 40% global cap
+
+  # Bond symbols (Fixed at spec defaults)
+  treasury_trend_symbol: ["TLT"]   # Fixed
+  bull_bond_symbol: ["TMF"]        # Fixed
+  bear_bond_symbol: ["TMV"]        # Fixed
+
+  # ===========================================================================
+  # REBALANCING (Fixed at default)
+  # ===========================================================================
+
+  rebalance_threshold: [0.025]  # Fixed: 2.5% drift
+
+# Expected Output
+# ---------------
+# output/wfo_Hierarchical_Adaptive_v3_5_YYYYMMDD_HHMMSS/
+# ├── wfo_summary.csv           # Overall WFO results across all windows
+# ├── parameter_stability.csv   # How often each parameter value wins
+# ├── oos_performance.csv       # Out-of-sample performance metrics
+# ├── is_vs_oos_comparison.csv  # IS vs OOS performance degradation
+# ├── parameters.yaml           # Copy of this config file
+# ├── README.txt               # Summary and analysis
+# │
+# ├── window_001/              # First window (2010-03 to 2013-03)
+# │   ├── is_period/          # In-sample optimization results
+# │   │   ├── summary_comparison.csv  # All 8 combinations tested
+# │   │   └── best_params.yaml        # Winning parameters
+# │   ├── oos_period/         # Out-of-sample validation
+# │   │   ├── portfolio_daily.csv
+# │   │   ├── trades.csv
+# │   │   └── summary.csv
+# │   └── window_summary.csv  # IS + OOS metrics
+# │
+# ├── window_002/              # Second window (2010-09 to 2013-09)
+# │   └── ... (same structure)
+# │
+# └── ... (27 more windows)
+
+# Usage
+# -----
+# jutsu wfo --config grid-configs/examples/wfo_hierarchical_adaptive_v3_5b.yaml
+#
+# After completion:
+# 1. Review wfo_summary.csv for overall OOS performance
+# 2. Compare to v2.8 WFO results (same windows)
+# 3. Check parameter_stability.csv:
+#    - Does upper_thresh_z = 0.8 or 1.2 win more often?
+#    - Does lower_thresh_z = -0.2 or 0.2 win more often?
+#    - Does vol_crush_threshold = -0.15 or -0.25 win more often?
+# 4. Analyze is_vs_oos_comparison.csv for overfitting:
+#    - Large IS/OOS gap = overfitting
+#    - Consistent IS/OOS gap = robust strategy
+# 5. Review oos_performance.csv by market regime:
+#    - Bull markets (2010-2019): Performance vs v2.8?
+#    - Bear markets (2020, 2022): Regime classification effectiveness?
+#    - Recovery (2021, 2023): Vol-crush override capture?
+# 6. Examine critical windows:
+#    - COVID crash (March 2020): Cell 6 (Bear/High) protection?
+#    - 2022 bear market: Hierarchical trend detection vs Kalman-only?
+#    - Flash crashes: Hysteresis prevents flickering?
+# 7. VALIDATE v3.5b IMPROVEMENTS:
+#    - Regime classification: Bull/Sideways/Bear distribution reasonable?
+#    - Vol regime: High/Low classification matches market cycles?
+#    - Hysteresis: Reduces rebalancing frequency vs v2.8?
+#    - Vol-crush: Triggers during V-recoveries?
+# 8. COMPARE TO v2.8:
+#    - OOS max drawdown: v3.5b ≤ v2.8?
+#    - OOS Sortino ratio: v3.5b ≥ v2.8?
+#    - Discrete regime grid vs continuous exposure: clearer/simpler?
+
+# Walk-Forward Windows
+# --------------------
+# 29 total windows with 0.5y slide (same as v2.8):
+#
+# Window 01: IS 2010-03 to 2012-09, OOS 2012-09 to 2013-03
+# Window 02: IS 2010-09 to 2013-03, OOS 2013-03 to 2013-09
+# Window 03: IS 2011-03 to 2013-09, OOS 2013-09 to 2014-03
+# ... (continue sliding forward 6 months)
+# Window 29: IS 2022-09 to 2025-03, OOS 2024-09 to 2025-03
+#
+# Key Windows to Review (v3.5b Validation):
+# - Window 20 (OOS includes March 2020 COVID crash): Cell 6 (Bear/High) cash protection?
+# - Window 27 (OOS includes 2022 bear market): Hierarchical trend vs Kalman-only?
+# - Early windows (2010-2013): Post-crisis recovery, bull market baseline
+# - Late windows (2023-2025): Current market regime, v3.5b adaptability
+
+# Performance Expectations (v3.5b vs v2.8)
+# ----------------------------------------
+# v3.5b IMPROVEMENTS EXPECTED OVER v2.8:
+#
+# Regime Classification Clarity:
+# - v2.8: Continuous exposure (hard to interpret "what regime are we in?")
+# - v3.5b: Discrete 6-cell grid (always know: Bull/Sideways/Bear × High/Low Vol)
+# - Expected improvement: CLEARER INTERPRETABILITY
+#
+# Volatility Regime Detection:
+# - v2.8: S_vol modulator (continuous scaling)
+# - v3.5b: Binarized High/Low with hysteresis (discrete states)
+# - Expected improvement: REDUCED FLICKERING
+#
+# Trend Detection:
+# - v2.8: Kalman T_norm only (unreliable bear detector)
+# - v3.5b: Hierarchical (Kalman + SMA structure)
+# - Expected improvement: BETTER BEAR MARKET DETECTION
+#
+# Max Drawdown (OOS):
+# - v2.8: -15% to -18% (SQQQ + E_anchor)
+# - v3.5b: -15% to -17% (discrete cells + hysteresis)
+# - Expected improvement: Comparable or slightly better
+#
+# Sortino Ratio (OOS):
+# - v2.8: 1.6 - 2.0 (strong downside protection)
+# - v3.5b: 1.6 - 2.0 (discrete regime grid should match)
+# - Expected improvement: Comparable, potentially clearer risk management
+#
+# Rebalancing Frequency:
+# - v2.8: Frequent (continuous exposure changes)
+# - v3.5b: Reduced (discrete cells + hysteresis deadband)
+# - Expected improvement: FEWER REBALANCES
+#
+# V-Shaped Recovery Capture:
+# - v2.8: No vol-crush override (relies on modulators)
+# - v3.5b: Vol-crush override (20% vol drop → force Sideways/Low)
+# - Expected improvement: FASTER RECOVERY CAPTURE
+#
+# IS vs OOS Performance:
+# - Average OOS Sortino ≥70% of average IS Sortino (acceptable degradation)
+# - Max individual window OOS Sortino <50% of IS → investigate that period
+# - Consistent degradation pattern (not random) = healthy strategy
+#
+# OOS Performance Targets:
+# - OOS Sortino Ratio: >1.5 (vs IS >1.8)
+# - OOS Max Drawdown: <25% (vs IS <20%)
+# - OOS Win Rate: >50% (vs IS >55%)
+# - OOS Calmar Ratio: >1.0 (vs IS >1.2)
+# - Regime classification accuracy: >80% (vs manual regime labeling)
+#
+# Market Regime Performance (v3.5b Expectations):
+# - Bull market windows (2010-2019): OOS Sortino >2.0 (match v2.8)
+# - Bear market windows (2020, 2022): OOS Max DD <25% (discrete cells protect)
+# - Recovery windows (2021, 2023): Vol-crush override accelerates entry
+# - Choppy periods: Cell 4 (Sideways/High) avoids whipsaw
+
+# Analysis Checklist
+# -------------------
+# After WFO completes:
+#
+# PARAMETER STABILITY ANALYSIS (v3.5b):
+# - [ ] upper_thresh_z: Does 0.8 or 1.2 win more often?
+# - [ ] lower_thresh_z: Does -0.2 or 0.2 win more often?
+# - [ ] vol_crush_threshold: Does -0.15 or -0.25 win more often?
+# - [ ] Winning params cluster or vary by regime?
+# - [ ] Early windows vs late windows preference differences?
+#
+# REGIME CLASSIFICATION VALIDATION:
+# - [ ] Bull/Sideways/Bear distribution matches market history?
+# - [ ] High/Low vol classification matches volatility cycles?
+# - [ ] Hierarchical trend (Kalman + SMA) better than Kalman-only?
+# - [ ] Vol-crush override triggers during V-recoveries?
+# - [ ] Hysteresis reduces regime flickering vs no deadband?
+#
+# CELL ALLOCATION EFFECTIVENESS:
+# - [ ] Cell 1 (Bull/Low): Most profitable in bull markets?
+# - [ ] Cell 2 (Bull/High): De-risks during vol spikes?
+# - [ ] Cell 3 (Sideways/Low): Captures drift/consolidation?
+# - [ ] Cell 4 (Sideways/High): Avoids whipsaw in chop?
+# - [ ] Cell 5 (Bear/Low): Defensive during corrections?
+# - [ ] Cell 6 (Bear/High): Maximum protection during crashes?
+#
+# IS vs OOS DEGRADATION:
+# - [ ] Average IS/OOS performance gap (should be 20-30%)
+# - [ ] Outlier windows with large gaps (investigate these periods)
+# - [ ] Consistent degradation pattern across windows?
+# - [ ] Any windows where OOS > IS? (lucky or genuine edge?)
+#
+# OOS PERFORMANCE BY REGIME (v3.5b Specific):
+# - [ ] COVID crash (March 2020): Cell 6 protected capital?
+# - [ ] 2022 bear market: Hierarchical trend detected bear regime?
+# - [ ] 2023 recovery: Vol-crush override captured V-recovery?
+# - [ ] Low volatility periods: Cells 1/3/5 stayed invested?
+#
+# TRADE QUALITY (OOS):
+# - [ ] Average win rate across windows
+# - [ ] Profit factor consistency
+# - [ ] Rebalancing frequency (reduced vs v2.8?)
+# - [ ] Cell transition frequency (stable or jumpy?)
+# - [ ] Transaction costs impact (rebalancing threshold appropriate?)
+#
+# v3.5b vs v2.8 COMPARISON:
+# - [ ] v3.5b clearer regime logic than v2.8 continuous pipeline?
+# - [ ] v3.5b better or equal max drawdown in crisis windows?
+# - [ ] v3.5b same or better OOS Sortino ratio?
+# - [ ] v3.5b discrete cells more interpretable?
+# - [ ] v3.5b hysteresis reduces rebalancing frequency?
+#
+# ROBUSTNESS VALIDATION:
+# - [ ] Strategy works across all market regimes?
+# - [ ] Parameter sensitivity reasonable? (small changes = small impact)
+# - [ ] No extreme outlier windows that dominate results?
+# - [ ] OOS results support production deployment?
+#
+# DECISION CRITERIA:
+# ✅ PROCEED TO PRODUCTION: Stable params, consistent OOS, <30% degradation, v3.5b ≥ v2.8, regime clarity
+# ⚠️  OPTIMIZE FURTHER: Unstable params or >40% IS/OOS gap → refine grid-search
+# ❌ REDESIGN STRATEGY: Poor OOS, v3.5b < v2.8, or regime logic flawed
+
+# Research Suggestions
+# --------------------
+# POST-WFO ANALYSIS (v3.5b Specific):
+#
+# 1. Regime Classification Deep Dive:
+#    - Take most stable v3.5b params from WFO
+#    - Validate regime classification accuracy vs manual labeling
+#    - Measure Bull/Sideways/Bear dwell times
+#    - Analyze High/Low vol regime durations
+#    - Compare to v3.0 (9-cell grid) regime distribution
+#
+# 2. Hysteresis Effectiveness Study:
+#    - Compare v3.5b (with hysteresis) to v3.5b_no_hysteresis
+#    - Measure regime flickering frequency (transitions/year)
+#    - Quantify rebalancing frequency reduction
+#    - Validate deadband width (upper=+1.0, lower=0.0) appropriateness
+#
+# 3. Vol-Crush Override Deep Dive:
+#    - Analyze vol-crush trigger frequency
+#    - Validate override timing (during V-recoveries?)
+#    - Compare to v3.5b_no_vol_crush (measure benefit)
+#    - Test alternative thresholds (-15%, -20%, -25%)
+#
+# 4. Hierarchical Trend Validation:
+#    - Compare v3.5b (Kalman + SMA) to v3.5b_kalman_only
+#    - Measure bear market detection accuracy
+#    - Analyze false positive/negative rates
+#    - Compare to v2.8 Kalman-only approach
+#
+# 5. v3.5b vs v2.8 Architecture Comparison:
+#    - Discrete (v3.5b) vs Continuous (v2.8) exposure
+#    - Regime clarity and interpretability
+#    - Crisis period behavior (COVID, 2022)
+#    - Rebalancing frequency and transaction costs
+#    - Parameter stability across regimes
+#
+# 6. Cell Allocation Optimization (Phase 2):
+#    - Fix winning regime boundary params
+#    - Optimize leverage_scalar (0.8, 1.0, 1.2)
+#    - Test PSQ toggle (use_inverse_hedge: true/false)
+#    - Refine cell-specific allocation ratios
+
+# Next Steps
+# ----------
+# After WFO validation:
+#
+# IF v3.5b RESULTS ARE STRONG:
+# 1. Select final v3.5b parameter set (most stable from WFO)
+# 2. Run full-period backtest with winning params
+# 3. Compare directly to v2.8 best performer
+# 4. Validate regime classification accuracy
+# 5. Generate production deployment plan
+# 6. Consider paper trading validation
+#
+# IF v3.5b RESULTS ARE MIXED:
+# 1. Investigate why discrete regime grid didn't improve results
+# 2. Run refined grid-search on z-score and SMA ranges
+# 3. Test alternative trend thresholds (t_norm_bull/bear_thresh)
+# 4. Consider hybrid v3.5b/v2.8 approach
+#
+# IF v3.5b RESULTS ARE WORSE THAN v2.8:
+# 1. Revert to v2.8 (best continuous exposure version)
+# 2. Document why discrete regime grid underperformed
+# 3. Revisit v3.5b design assumptions
+# 4. Consider keeping v2.8 continuous pipeline
+#
+# IF REGIME CLASSIFICATION IS POOR:
+# 1. CRITICAL ISSUE: Review hierarchical trend logic
+# 2. Validate SMA structure vs Kalman trend
+# 3. Test alternative trend classification thresholds
+# 4. Consider v3.0 (9-cell grid) with medium volatility

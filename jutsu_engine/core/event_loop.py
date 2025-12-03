@@ -20,7 +20,7 @@ Example:
 """
 from typing import List, Dict, Optional
 from decimal import Decimal
-from datetime import date
+from datetime import date, datetime, timezone
 
 from jutsu_engine.data.handlers.base import DataHandler
 from jutsu_engine.core.strategy_base import Strategy
@@ -62,6 +62,8 @@ class EventLoop:
         strategy: Strategy,
         portfolio: PortfolioSimulator,
         trade_logger: Optional['TradeLogger'] = None,
+        regime_analyzer: Optional['RegimePerformanceAnalyzer'] = None,
+        warmup_end_date: Optional[datetime] = None,
     ):
         """
         Initialize event loop.
@@ -71,18 +73,24 @@ class EventLoop:
             strategy: Strategy instance to execute
             portfolio: PortfolioSimulator for execution
             trade_logger: Optional TradeLogger for CSV export (default: None)
+            regime_analyzer: Optional RegimePerformanceAnalyzer for regime-specific analysis (default: None)
+            warmup_end_date: End of warmup period (start of trading period).
+                           If provided, bars before this date are warmup-only (no trades).
 
         Example:
             loop = EventLoop(
                 data_handler=DatabaseDataHandler(...),
                 strategy=SMA_Crossover(...),
-                portfolio=PortfolioSimulator(...)
+                portfolio=PortfolioSimulator(...),
+                warmup_end_date=datetime(2024, 1, 10, tzinfo=timezone.utc)
             )
         """
         self.data_handler = data_handler
         self.strategy = strategy
         self.portfolio = portfolio
         self.trade_logger = trade_logger
+        self.regime_analyzer = regime_analyzer
+        self.warmup_end_date = warmup_end_date
 
         # Inject TradeLogger into strategy for context logging
         if self.trade_logger:
@@ -99,10 +107,47 @@ class EventLoop:
 
         # Daily snapshot tracking (prevent duplicate snapshots per date)
         self._last_snapshot_date: Optional['date'] = None
+        self._previous_bar_timestamp: Optional[datetime] = None
+
+        # Regime recording tracking (prevent duplicate records per date)
+        # Records once per trading day when date changes (like Step 7 pattern)
+        self._last_regime_record_date: Optional['date'] = None
+        self._pending_regime_data: Optional[dict] = None
 
         logger.info(
             f"EventLoop initialized with strategy: {strategy.name}"
         )
+
+    def _in_warmup_phase(self, current_date: datetime) -> bool:
+        """
+        Check if current bar is in warmup phase.
+
+        Args:
+            current_date: Timestamp of current bar
+
+        Returns:
+            bool: True if in warmup phase, False if in trading phase
+
+        Notes:
+            - Warmup phase: current_date < warmup_end_date
+            - Trading phase: current_date >= warmup_end_date
+            - If warmup_end_date is None, always in trading phase
+            - Defensive timezone normalization ensures comparison compatibility
+        """
+        if self.warmup_end_date is None:
+            return False
+        
+        # Defensive timezone normalization (prevents offset-naive vs offset-aware comparison errors)
+        # Database timestamps may be offset-naive, warmup_end_date is timezone-aware
+        current_date_normalized = current_date
+        if current_date.tzinfo is None:
+            current_date_normalized = current_date.replace(tzinfo=timezone.utc)
+        
+        warmup_end_normalized = self.warmup_end_date
+        if self.warmup_end_date.tzinfo is None:
+            warmup_end_normalized = self.warmup_end_date.replace(tzinfo=timezone.utc)
+        
+        return current_date_normalized < warmup_end_normalized
 
     def run(self):
         """
@@ -113,8 +158,14 @@ class EventLoop:
         2. Update strategy state (bar history and portfolio state)
         3. Feed bar to strategy
         4. Collect and process signals
-        5. Execute orders
+        5. Execute orders (skipped during warmup phase)
         6. Record portfolio value
+
+        Warmup Phase Behavior:
+            - If warmup_end_date is set, bars before this date are warmup-only
+            - Strategy.on_bar() is still called (to compute indicators)
+            - SignalEvents are collected but NOT processed (no trades)
+            - Portfolio state is updated with market values only
 
         Example:
             loop = EventLoop(data_handler, strategy, portfolio)
@@ -125,7 +176,12 @@ class EventLoop:
         """
         logger.info("Starting event loop...")
 
+        if self.warmup_end_date:
+            logger.info(f"Warmup period enabled: bars before {self.warmup_end_date} will not execute trades")
+
         bar_count = 0
+        warmup_bar_count = 0
+        trading_bar_count = 0
 
         # Process each bar chronologically
         for bar in self.data_handler.get_next_bar():
@@ -156,22 +212,76 @@ class EventLoop:
             signals = self.strategy.get_signals()
             self.all_signals.extend(signals)
 
-            # Step 5: Process each signal
-            for signal in signals:
-                # NEW API: Execute signal directly (Portfolio handles position sizing)
-                # Portfolio.execute_signal() calculates actual shares from portfolio_percent
-                fill = self.portfolio.execute_signal(signal, bar)
-                if fill:
-                    self.all_fills.append(fill)
+            # Check if we're in warmup phase
+            in_warmup = self._in_warmup_phase(bar.timestamp)
 
-            # Step 6: Record portfolio value
-            self.portfolio.record_portfolio_value(bar.timestamp)
+            if in_warmup:
+                warmup_bar_count += 1
+                if signals:
+                    logger.debug(f"Warmup phase: {bar.timestamp}, ignoring {len(signals)} signal(s)")
+            else:
+                trading_bar_count += 1
+
+                # Log transition from warmup to trading (only once)
+                if self.warmup_end_date and warmup_bar_count > 0 and trading_bar_count == 1:
+                    logger.info(f"Warmup complete. Processed {warmup_bar_count} warmup bars. Starting trading period.")
+
+                # Step 5: Process each signal (only during trading phase)
+                for signal in signals:
+                    # NEW API: Execute signal directly (Portfolio handles position sizing)
+                    # Portfolio.execute_signal() calculates actual shares from portfolio_percent
+                    fill = self.portfolio.execute_signal(signal, bar)
+                    if fill:
+                        self.all_fills.append(fill)
+
+            # Step 6: Record portfolio value (only during trading phase to match baseline period)
+            if not in_warmup:
+                self.portfolio.record_portfolio_value(bar.timestamp)
+
+            # Step 6.5: Record regime performance (if analyzer available and strategy supports it)
+            # FIX: Record ONCE per trading day (on date change), not per bar
+            # This prevents duplicate rows when processing multiple symbols per day
+            if self.regime_analyzer and hasattr(self.strategy, 'get_current_regime'):
+                # Get current regime from strategy
+                trend_state, vol_state, cell_id = self.strategy.get_current_regime()
+
+                # Get QQQ close price (strategy's signal_symbol)
+                signal_symbol = getattr(self.strategy, 'signal_symbol', 'QQQ')
+                qqq_bar = self.current_bars.get(signal_symbol)
+
+                if qqq_bar:
+                    regime_date = bar.timestamp.date()
+
+                    # When date changes, record the PREVIOUS day's regime data
+                    # This ensures we capture final portfolio value after all trades
+                    if (self._last_regime_record_date is not None and
+                            regime_date != self._last_regime_record_date and
+                            self._pending_regime_data is not None):
+                        self.regime_analyzer.record_bar(**self._pending_regime_data)
+
+                    # Store current data as pending (will be recorded on next date change)
+                    self._pending_regime_data = {
+                        'timestamp': bar.timestamp,
+                        'regime_cell': cell_id,
+                        'trend_state': trend_state,
+                        'vol_state': vol_state,
+                        'qqq_close': qqq_bar.close,
+                        'portfolio_value': self.portfolio.get_portfolio_value()
+                    }
+                    self._last_regime_record_date = regime_date
 
             # Step 7: Record daily portfolio snapshot for CSV export (once per unique date)
+            # FIX: Record snapshot AFTER all bars for previous date are processed
             current_date = bar.timestamp.date()
-            if current_date != self._last_snapshot_date:
-                self.portfolio.record_daily_snapshot(bar.timestamp)
-                self._last_snapshot_date = current_date
+
+            # When date changes, record snapshot for PREVIOUS date (using its last bar timestamp)
+            if self._last_snapshot_date is not None and current_date != self._last_snapshot_date:
+                # All bars for previous date are now processed
+                # Use the last bar's timestamp from the previous date
+                self.portfolio.record_daily_snapshot(self._previous_bar_timestamp)
+
+            self._last_snapshot_date = current_date
+            self._previous_bar_timestamp = bar.timestamp  # Track for next date change
 
             # Periodic logging
             if bar_count % 100 == 0:
@@ -181,11 +291,28 @@ class EventLoop:
                     f"portfolio: ${value:,.2f}"
                 )
 
-        logger.info(
-            f"Event loop completed: {bar_count} bars processed, "
-            f"{len(self.all_signals)} signals, "
-            f"{len(self.all_fills)} fills"
-        )
+        # Record final daily snapshot (for the last date in the dataset)
+        if self._previous_bar_timestamp is not None:
+            self.portfolio.record_daily_snapshot(self._previous_bar_timestamp)
+
+        # Record final regime data (for the last date in the dataset)
+        if self.regime_analyzer and self._pending_regime_data is not None:
+            self.regime_analyzer.record_bar(**self._pending_regime_data)
+
+        # Log summary with warmup stats
+        if self.warmup_end_date:
+            logger.info(
+                f"Event loop completed: {bar_count} total bars processed "
+                f"({warmup_bar_count} warmup, {trading_bar_count} trading), "
+                f"{len(self.all_signals)} signals, "
+                f"{len(self.all_fills)} fills"
+            )
+        else:
+            logger.info(
+                f"Event loop completed: {bar_count} bars processed, "
+                f"{len(self.all_signals)} signals, "
+                f"{len(self.all_fills)} fills"
+            )
 
         # Log final results
         final_value = self.portfolio.get_portfolio_value()

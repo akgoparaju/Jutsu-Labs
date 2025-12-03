@@ -253,6 +253,46 @@ def init(self) -> None:
     pass
 ```
 
+**`get_required_warmup_bars()`** - Indicator warmup period (Added 2025-11-21)
+```python
+def get_required_warmup_bars(self) -> int:
+    """
+    Calculate the number of historical bars required for indicator warmup.
+
+    This method should return the maximum lookback period needed by all
+    indicators used in the strategy. The backtest will fetch this many
+    bars BEFORE start_date to warm up indicators without consuming
+    trading days.
+
+    Returns:
+        int: Number of bars needed for warmup (default: 0)
+
+    Notes:
+        - Base implementation returns 0 (no warmup needed)
+        - Override in strategy subclasses that use indicators
+        - Calculate as max(all indicator lookback requirements)
+        - For moving averages: period + buffer (e.g., sma_slow + 10)
+        - For volatility: baseline_window + realized_window
+
+    Example:
+        # Strategy using 50-period SMA
+        def get_required_warmup_bars(self) -> int:
+            return self.long_period + 10  # 50 + 10 = 60
+
+        # Strategy using 126+21 volatility windows
+        def get_required_warmup_bars(self) -> int:
+            return self.baseline_window + self.realized_window  # 147
+
+        # Strategy with multiple indicators
+        def get_required_warmup_bars(self) -> int:
+            return max(
+                self.sma_period + 10,  # 60
+                self.ema_period + 5,   # 25
+                self.rsi_period + 10   # 24
+            )  # Returns 60
+    """
+```
+
 **`on_bar()`** - Bar processing (abstract)
 ```python
 @abstractmethod

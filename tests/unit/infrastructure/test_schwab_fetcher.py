@@ -185,9 +185,15 @@ class TestFetchBars(unittest.TestCase):
         mock_config.schwab_api_secret = "test_secret"
         mock_get_config.return_value = mock_config
 
-        # Mock client
+        # Mock client with frequency enums
         mock_client = Mock()
-        mock_client.get_price_history_every_day.return_value = self.mock_response
+        mock_client.get_price_history.return_value = self.mock_response
+        # Mock PriceHistory.FrequencyType and Frequency enums (use actual Schwab API names)
+        mock_client.PriceHistory.FrequencyType.DAILY = 'DAILY'
+        mock_client.PriceHistory.FrequencyType.MINUTE = 'MINUTE'
+        mock_client.PriceHistory.Frequency.DAILY = 'DAILY'
+        mock_client.PriceHistory.Frequency.EVERY_FIVE_MINUTES = 'EVERY_FIVE_MINUTES'
+        mock_client.PriceHistory.Frequency.EVERY_FIFTEEN_MINUTES = 'EVERY_FIFTEEN_MINUTES'
         mock_easy_client.return_value = mock_client
 
         fetcher = SchwabDataFetcher()
@@ -207,7 +213,7 @@ class TestFetchBars(unittest.TestCase):
         assert bars[1]['close'] == Decimal('156.0')
 
         # Verify API was called with correct parameters
-        mock_client.get_price_history_every_day.assert_called_once()
+        mock_client.get_price_history.assert_called_once()
 
     @patch('jutsu_engine.data.fetchers.schwab.get_config')
     def test_fetch_bars_invalid_timeframe(self, mock_get_config):
@@ -220,10 +226,10 @@ class TestFetchBars(unittest.TestCase):
 
         fetcher = SchwabDataFetcher()
 
-        with pytest.raises(ValueError, match="not yet supported"):
+        with pytest.raises(ValueError, match="not supported"):
             fetcher.fetch_bars(
                 symbol='AAPL',
-                timeframe='5m',
+                timeframe='1H',  # Use unsupported timeframe
                 start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 end_date=datetime(2024, 1, 2, tzinfo=timezone.utc)
             )
@@ -255,7 +261,12 @@ class TestFetchBars(unittest.TestCase):
         mock_response.raise_for_status = Mock()
 
         mock_client = Mock()
-        mock_client.get_price_history_every_day.return_value = mock_response
+        mock_client.get_price_history.return_value = mock_response
+        mock_client.PriceHistory.FrequencyType.DAILY = 'DAILY'
+        mock_client.PriceHistory.FrequencyType.MINUTE = 'MINUTE'
+        mock_client.PriceHistory.Frequency.DAILY = 'DAILY'
+        mock_client.PriceHistory.Frequency.EVERY_FIVE_MINUTES = 'EVERY_FIVE_MINUTES'
+        mock_client.PriceHistory.Frequency.EVERY_FIFTEEN_MINUTES = 'EVERY_FIFTEEN_MINUTES'
         mock_easy_client.return_value = mock_client
 
         fetcher = SchwabDataFetcher()
@@ -298,7 +309,12 @@ class TestFetchBars(unittest.TestCase):
         mock_response.raise_for_status = Mock()
 
         mock_client = Mock()
-        mock_client.get_price_history_every_day.return_value = mock_response
+        mock_client.get_price_history.return_value = mock_response
+        mock_client.PriceHistory.FrequencyType.DAILY = 'DAILY'
+        mock_client.PriceHistory.FrequencyType.MINUTE = 'MINUTE'
+        mock_client.PriceHistory.Frequency.DAILY = 'DAILY'
+        mock_client.PriceHistory.Frequency.EVERY_FIVE_MINUTES = 'EVERY_FIVE_MINUTES'
+        mock_client.PriceHistory.Frequency.EVERY_FIFTEEN_MINUTES = 'EVERY_FIFTEEN_MINUTES'
         mock_easy_client.return_value = mock_client
 
         fetcher = SchwabDataFetcher()
@@ -341,7 +357,12 @@ class TestFetchBars(unittest.TestCase):
         mock_response.raise_for_status = Mock()
 
         mock_client = Mock()
-        mock_client.get_price_history_every_day.return_value = mock_response
+        mock_client.get_price_history.return_value = mock_response
+        mock_client.PriceHistory.FrequencyType.DAILY = 'DAILY'
+        mock_client.PriceHistory.FrequencyType.MINUTE = 'MINUTE'
+        mock_client.PriceHistory.Frequency.DAILY = 'DAILY'
+        mock_client.PriceHistory.Frequency.EVERY_FIVE_MINUTES = 'EVERY_FIVE_MINUTES'
+        mock_client.PriceHistory.Frequency.EVERY_FIFTEEN_MINUTES = 'EVERY_FIFTEEN_MINUTES'
         mock_easy_client.return_value = mock_client
 
         fetcher = SchwabDataFetcher()
@@ -373,7 +394,12 @@ class TestFetchBars(unittest.TestCase):
         mock_response.raise_for_status = Mock()
 
         mock_client = Mock()
-        mock_client.get_price_history_every_day.return_value = mock_response
+        mock_client.get_price_history.return_value = mock_response
+        mock_client.PriceHistory.FrequencyType.DAILY = 'DAILY'
+        mock_client.PriceHistory.FrequencyType.MINUTE = 'MINUTE'
+        mock_client.PriceHistory.Frequency.DAILY = 'DAILY'
+        mock_client.PriceHistory.Frequency.EVERY_FIVE_MINUTES = 'EVERY_FIVE_MINUTES'
+        mock_client.PriceHistory.Frequency.EVERY_FIFTEEN_MINUTES = 'EVERY_FIFTEEN_MINUTES'
         mock_easy_client.return_value = mock_client
 
         fetcher = SchwabDataFetcher()
@@ -405,7 +431,12 @@ class TestFetchBars(unittest.TestCase):
         mock_response.raise_for_status = Mock()
 
         mock_client = Mock()
-        mock_client.get_price_history_every_day.return_value = mock_response
+        mock_client.get_price_history.return_value = mock_response
+        mock_client.PriceHistory.FrequencyType.DAILY = 'DAILY'
+        mock_client.PriceHistory.FrequencyType.MINUTE = 'MINUTE'
+        mock_client.PriceHistory.Frequency.DAILY = 'DAILY'
+        mock_client.PriceHistory.Frequency.EVERY_FIVE_MINUTES = 'EVERY_FIVE_MINUTES'
+        mock_client.PriceHistory.Frequency.EVERY_FIFTEEN_MINUTES = 'EVERY_FIFTEEN_MINUTES'
         mock_easy_client.return_value = mock_client
 
         fetcher = SchwabDataFetcher()
@@ -449,11 +480,16 @@ class TestRetryLogic(unittest.TestCase):
 
         # First two attempts fail, third succeeds
         mock_client = Mock()
-        mock_client.get_price_history_every_day.side_effect = [
+        mock_client.get_price_history.side_effect = [
             mock_response_error,
             mock_response_error,
             mock_response_success
         ]
+        mock_client.PriceHistory.FrequencyType.DAILY = 'DAILY'
+        mock_client.PriceHistory.FrequencyType.MINUTE = 'MINUTE'
+        mock_client.PriceHistory.Frequency.DAILY = 'DAILY'
+        mock_client.PriceHistory.Frequency.EVERY_FIVE_MINUTES = 'EVERY_FIVE_MINUTES'
+        mock_client.PriceHistory.Frequency.EVERY_FIFTEEN_MINUTES = 'EVERY_FIFTEEN_MINUTES'
         mock_easy_client.return_value = mock_client
 
         fetcher = SchwabDataFetcher()
@@ -467,7 +503,7 @@ class TestRetryLogic(unittest.TestCase):
         )
 
         # Verify retry attempts
-        assert mock_client.get_price_history_every_day.call_count == 3
+        assert mock_client.get_price_history.call_count == 3
 
         # Verify exponential backoff: 1s, 2s
         assert mock_sleep.call_count == 2
@@ -493,7 +529,12 @@ class TestRetryLogic(unittest.TestCase):
         mock_response.raise_for_status.side_effect = http_error
 
         mock_client = Mock()
-        mock_client.get_price_history_every_day.return_value = mock_response
+        mock_client.get_price_history.return_value = mock_response
+        mock_client.PriceHistory.FrequencyType.DAILY = 'DAILY'
+        mock_client.PriceHistory.FrequencyType.MINUTE = 'MINUTE'
+        mock_client.PriceHistory.Frequency.DAILY = 'DAILY'
+        mock_client.PriceHistory.Frequency.EVERY_FIVE_MINUTES = 'EVERY_FIVE_MINUTES'
+        mock_client.PriceHistory.Frequency.EVERY_FIFTEEN_MINUTES = 'EVERY_FIFTEEN_MINUTES'
         mock_easy_client.return_value = mock_client
 
         fetcher = SchwabDataFetcher()
@@ -508,7 +549,7 @@ class TestRetryLogic(unittest.TestCase):
             )
 
         # Verify max retries attempted
-        assert mock_client.get_price_history_every_day.call_count == 3
+        assert mock_client.get_price_history.call_count == 3
 
     @patch('jutsu_engine.data.fetchers.schwab.auth.easy_client')
     @patch('jutsu_engine.data.fetchers.schwab.get_config')
@@ -528,7 +569,12 @@ class TestRetryLogic(unittest.TestCase):
         mock_response.raise_for_status.side_effect = http_error
 
         mock_client = Mock()
-        mock_client.get_price_history_every_day.return_value = mock_response
+        mock_client.get_price_history.return_value = mock_response
+        mock_client.PriceHistory.FrequencyType.DAILY = 'DAILY'
+        mock_client.PriceHistory.FrequencyType.MINUTE = 'MINUTE'
+        mock_client.PriceHistory.Frequency.DAILY = 'DAILY'
+        mock_client.PriceHistory.Frequency.EVERY_FIVE_MINUTES = 'EVERY_FIVE_MINUTES'
+        mock_client.PriceHistory.Frequency.EVERY_FIFTEEN_MINUTES = 'EVERY_FIFTEEN_MINUTES'
         mock_easy_client.return_value = mock_client
 
         fetcher = SchwabDataFetcher()
@@ -543,7 +589,7 @@ class TestRetryLogic(unittest.TestCase):
             )
 
         # Verify no retries on 401
-        assert mock_client.get_price_history_every_day.call_count == 1
+        assert mock_client.get_price_history.call_count == 1
 
     @patch('jutsu_engine.data.fetchers.schwab.auth.easy_client')
     @patch('jutsu_engine.data.fetchers.schwab.get_config')
@@ -563,7 +609,12 @@ class TestRetryLogic(unittest.TestCase):
         mock_response.raise_for_status.side_effect = http_error
 
         mock_client = Mock()
-        mock_client.get_price_history_every_day.return_value = mock_response
+        mock_client.get_price_history.return_value = mock_response
+        mock_client.PriceHistory.FrequencyType.DAILY = 'DAILY'
+        mock_client.PriceHistory.FrequencyType.MINUTE = 'MINUTE'
+        mock_client.PriceHistory.Frequency.DAILY = 'DAILY'
+        mock_client.PriceHistory.Frequency.EVERY_FIVE_MINUTES = 'EVERY_FIVE_MINUTES'
+        mock_client.PriceHistory.Frequency.EVERY_FIFTEEN_MINUTES = 'EVERY_FIFTEEN_MINUTES'
         mock_easy_client.return_value = mock_client
 
         fetcher = SchwabDataFetcher()
@@ -578,7 +629,7 @@ class TestRetryLogic(unittest.TestCase):
             )
 
         # Verify no retries on 400
-        assert mock_client.get_price_history_every_day.call_count == 1
+        assert mock_client.get_price_history.call_count == 1
 
     @patch('jutsu_engine.data.fetchers.schwab.auth.easy_client')
     @patch('jutsu_engine.data.fetchers.schwab.get_config')
@@ -597,10 +648,15 @@ class TestRetryLogic(unittest.TestCase):
         mock_response_success.json.return_value = {'candles': []}
 
         mock_client = Mock()
-        mock_client.get_price_history_every_day.side_effect = [
+        mock_client.get_price_history.side_effect = [
             requests.exceptions.ConnectionError("Network error"),
             mock_response_success
         ]
+        mock_client.PriceHistory.FrequencyType.DAILY = 'DAILY'
+        mock_client.PriceHistory.FrequencyType.MINUTE = 'MINUTE'
+        mock_client.PriceHistory.Frequency.DAILY = 'DAILY'
+        mock_client.PriceHistory.Frequency.EVERY_FIVE_MINUTES = 'EVERY_FIVE_MINUTES'
+        mock_client.PriceHistory.Frequency.EVERY_FIFTEEN_MINUTES = 'EVERY_FIFTEEN_MINUTES'
         mock_easy_client.return_value = mock_client
 
         fetcher = SchwabDataFetcher()
@@ -614,7 +670,7 @@ class TestRetryLogic(unittest.TestCase):
         )
 
         # Verify retry happened
-        assert mock_client.get_price_history_every_day.call_count == 2
+        assert mock_client.get_price_history.call_count == 2
         assert mock_sleep.call_count == 1
         assert mock_sleep.call_args_list[0][0][0] == 1  # First retry: 1s
 

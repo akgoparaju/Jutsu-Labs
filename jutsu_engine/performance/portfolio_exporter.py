@@ -60,11 +60,13 @@ class PortfolioCSVExporter:
     def export_daily_portfolio_csv(
         self,
         daily_snapshots: List[Dict],
+        start_date: datetime,
         output_path: str,
         strategy_name: str,
         signal_symbol: Optional[str] = None,
         signal_prices: Optional[Dict[str, Decimal]] = None,
         baseline_info: Optional[Dict[str, Any]] = None,
+        regime_data: Optional[List[Dict]] = None,
     ) -> str:
         """
         Export daily portfolio snapshots to CSV.
@@ -76,6 +78,7 @@ class PortfolioCSVExporter:
         Args:
             daily_snapshots: List of daily portfolio state dictionaries from
                            PortfolioSimulator.get_daily_snapshots()
+            start_date: Trading period start date (excludes warmup data before this)
             output_path: Directory or full file path for CSV output
                        If directory: creates {strategy}_{timestamp}.csv
                        If file path: uses exact path
@@ -87,14 +90,18 @@ class PortfolioCSVExporter:
                 - start_price: QQQ price at backtest start
                 - price_history: Dict[date, price] for daily QQQ prices
                 - symbol: Baseline symbol (e.g., 'QQQ')
+            regime_data: Optional list of regime dicts with keys:
+                'timestamp', 'regime_cell', 'trend_state', 'vol_state'
 
         Returns:
             Full path to generated CSV file
 
         Raises:
-            ValueError: If daily_snapshots is empty
+            ValueError: If daily_snapshots is empty or all snapshots are before start_date
 
         Note:
+            Only snapshots >= start_date are exported (warmup period excluded).
+
             If signal_symbol and signal_prices are provided, adds buy-and-hold comparison
             column showing hypothetical value if 100% allocated to signal_symbol at start.
 
@@ -105,6 +112,7 @@ class PortfolioCSVExporter:
         Example:
             csv_path = exporter.export_daily_portfolio_csv(
                 daily_snapshots=portfolio.get_daily_snapshots(),
+                start_date=datetime(2025, 10, 1, tzinfo=timezone.utc),
                 output_path="output",
                 strategy_name="MACD_Trend",
                 baseline_info={
@@ -118,25 +126,57 @@ class PortfolioCSVExporter:
         if not daily_snapshots:
             raise ValueError("Cannot export empty daily snapshots")
 
+        # Filter snapshots to exclude warmup period
+        # Use defensive timezone normalization (pattern from EventLoop timezone fix)
+        from datetime import timezone
+
+        start_date_normalized = start_date
+        if start_date.tzinfo is None:
+            start_date_normalized = start_date.replace(tzinfo=timezone.utc)
+
+        filtered_snapshots = []
+        for snapshot in daily_snapshots:
+            timestamp = snapshot['timestamp']
+            # Normalize snapshot timestamp if needed
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+
+            # Include only snapshots >= start_date (trading period)
+            if timestamp >= start_date_normalized:
+                filtered_snapshots.append(snapshot)
+
+        # Handle edge case: all snapshots before start_date
+        if not filtered_snapshots:
+            raise ValueError(
+                f"No snapshots found after start_date {start_date}. "
+                f"All {len(daily_snapshots)} snapshots are in warmup period."
+            )
+
+        logger.info(
+            f"Filtered {len(daily_snapshots)} snapshots to {len(filtered_snapshots)} "
+            f"(excluded {len(daily_snapshots) - len(filtered_snapshots)} warmup days)"
+        )
+
         # Determine output file path
         output_file = self._get_output_path(output_path, strategy_name)
 
         # Get all tickers ever held (for column headers)
-        all_tickers = self._get_all_tickers(daily_snapshots)
+        all_tickers = self._get_all_tickers(filtered_snapshots)
 
         # Create CSV with all columns
         self._write_csv(
-            daily_snapshots,
+            filtered_snapshots,
             output_file,
             all_tickers,
             signal_symbol,
             signal_prices,
-            baseline_info
+            baseline_info,
+            regime_data
         )
 
         logger.info(
             f"Portfolio CSV exported: {output_file} "
-            f"({len(daily_snapshots)} days, {len(all_tickers)} tickers)"
+            f"({len(filtered_snapshots)} days, {len(all_tickers)} tickers)"
         )
         return output_file
 
@@ -187,6 +227,7 @@ class PortfolioCSVExporter:
         signal_symbol: Optional[str] = None,
         signal_prices: Optional[Dict[str, Decimal]] = None,
         baseline_info: Optional[Dict[str, Any]] = None,
+        regime_data: Optional[List[Dict]] = None,
     ) -> None:
         """
         Write CSV with all columns and data.
@@ -198,15 +239,30 @@ class PortfolioCSVExporter:
             signal_symbol: Optional symbol for buy-and-hold comparison
             signal_prices: Optional dict mapping date strings to prices
             baseline_info: Optional dict with baseline data for daily comparison
+            regime_data: Optional list of regime dicts
         """
+        # Build regime lookup map for fast access (date string -> regime dict)
+        regime_lookup = {}
+        if regime_data:
+            for regime_bar in regime_data:
+                date_str = regime_bar['timestamp'].strftime("%Y-%m-%d")
+                regime_lookup[date_str] = regime_bar
+            logger.debug(f"Built regime lookup map with {len(regime_lookup)} entries")
+
         # Build column headers
-        fixed_columns = [
-            'Date',
+        fixed_columns = ['Date']
+
+        # Add regime columns right after Date (only if regime data exists)
+        if regime_data:
+            fixed_columns.extend(['Regime', 'Trend', 'Vol'])
+
+        # Add portfolio columns
+        fixed_columns.extend([
             'Portfolio_Total_Value',
             'Portfolio_Day_Change_Pct',
             'Portfolio_Overall_Return',
             'Portfolio_PL_Percent',
-        ]
+        ])
 
         # Add baseline columns if baseline info provided
         if baseline_info:
@@ -271,6 +327,11 @@ class PortfolioCSVExporter:
             writer = csv.writer(f)
             writer.writerow(headers)
 
+            # Initialize forward-fill tracking (for handling non-trading days)
+            self._last_baseline_value = None
+            self._last_baseline_return = None
+            self._last_buyhold_value = None
+
             # Write data rows
             prev_value = self.initial_capital
             for snapshot in daily_snapshots:
@@ -282,7 +343,8 @@ class PortfolioCSVExporter:
                     signal_prices,
                     buyhold_initial_shares,
                     baseline_info,
-                    baseline_initial_shares
+                    baseline_initial_shares,
+                    regime_lookup
                 )
                 writer.writerow(row)
                 prev_value = snapshot['total_value']
@@ -299,6 +361,7 @@ class PortfolioCSVExporter:
         buyhold_initial_shares: Optional[Decimal] = None,
         baseline_info: Optional[Dict[str, Any]] = None,
         baseline_initial_shares: Optional[Decimal] = None,
+        regime_lookup: Optional[Dict[str, Dict]] = None,
     ) -> List[str]:
         """
         Build single CSV row with all columns.
@@ -312,6 +375,7 @@ class PortfolioCSVExporter:
             buyhold_initial_shares: Optional initial shares for buy-and-hold calculation
             baseline_info: Optional dict with baseline data
             baseline_initial_shares: Optional initial shares for baseline calculation
+            regime_lookup: Optional dict mapping date strings to regime data
 
         Returns:
             List of formatted string values for CSV row
@@ -319,6 +383,22 @@ class PortfolioCSVExporter:
         # Fixed columns
         date = snapshot['timestamp'].strftime("%Y-%m-%d")
         total_value = snapshot['total_value']
+
+        # Start building row with date
+        row = [date]
+
+        # Add regime columns if regime lookup exists (non-empty dict)
+        if regime_lookup:
+            regime = regime_lookup.get(date)
+            if regime:
+                # Format: "Cell_1", "BullStrong", "Low"
+                regime_cell = f"Cell_{regime['regime_cell']}"
+                trend_state = regime['trend_state']
+                vol_state = regime['vol_state']
+                row.extend([regime_cell, trend_state, vol_state])
+            else:
+                # No regime data for this date (graceful handling)
+                row.extend(['', '', ''])  # Empty strings for missing data
 
         # Calculate day change as percentage
         if prev_value != 0:
@@ -330,14 +410,13 @@ class PortfolioCSVExporter:
         pl_percent = overall_return  # Same as overall return (cumulative)
         cash = snapshot['cash']
 
-        # Format with required precision
-        row = [
-            date,
+        # Add portfolio columns to row
+        row.extend([
             f"{total_value:.2f}",       # $X.XX format
             f"{day_change_pct:.4f}",    # X.XXXX% format (4 decimals like other %)
             f"{overall_return:.4f}",    # X.XXXX% format
             f"{pl_percent:.4f}",        # X.XXXX% format
-        ]
+        ])
 
         # Add baseline values if applicable
         if baseline_initial_shares is not None and baseline_info:
@@ -351,12 +430,22 @@ class PortfolioCSVExporter:
                 # Calculate cumulative return
                 baseline_return_pct = ((baseline_value - self.initial_capital) / self.initial_capital) * 100
 
+                # Store for forward-fill on non-trading days
+                self._last_baseline_value = baseline_value
+                self._last_baseline_return = baseline_return_pct
+
                 row.append(f"{baseline_value:.2f}")      # $X.XX format
                 row.append(f"{baseline_return_pct:.4f}") # X.XXXX% format
             else:
                 # Date not in price history (e.g., weekend/holiday)
-                row.append("N/A")
-                row.append("N/A")
+                # Forward-fill from last valid trading day instead of writing "N/A"
+                if self._last_baseline_value is not None:
+                    row.append(f"{self._last_baseline_value:.2f}")
+                    row.append(f"{self._last_baseline_return:.4f}")
+                else:
+                    # First day is a non-trading day (unlikely but handle gracefully)
+                    row.append(f"{self.initial_capital:.2f}")
+                    row.append("0.0000")
 
         # Add cash column
         row.append(f"{cash:.2f}")      # $X.XX format
@@ -368,10 +457,19 @@ class PortfolioCSVExporter:
 
             if current_signal_price:
                 buyhold_value = buyhold_initial_shares * current_signal_price
+               
+                # Store for forward-fill on non-trading days
+                self._last_buyhold_value = buyhold_value
+                
                 row.append(f"{buyhold_value:.2f}")
             else:
-                # No price data for this date
-                row.append("N/A")
+                # Date not in price history (e.g., weekend/holiday)
+                # Forward-fill from last valid trading day instead of writing "N/A"
+                if self._last_buyhold_value is not None:
+                    row.append(f"{self._last_buyhold_value:.2f}")
+                else:
+                    # First day is a non-trading day (unlikely but handle gracefully)
+                    row.append(f"{self.initial_capital:.2f}")
 
         # Dynamic ticker columns (show 0 if ticker not held)
         for ticker in all_tickers:

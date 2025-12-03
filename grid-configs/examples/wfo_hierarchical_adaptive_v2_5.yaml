@@ -1,0 +1,374 @@
+# Walk-Forward Optimization for Hierarchical Adaptive v2.5
+# =========================================================
+# Validates robustness of v2.5 (Asymmetric DD Governor Fix) across time periods
+#
+# v2.5 Changes from v2.0:
+# -----------------------
+# - Asymmetric DD governor (leverage vs defensive paths)
+# - Updated DD thresholds (DD_soft: 0.10, DD_hard: 0.20)
+# - Enables full exposure range [E_min, E_max]
+# - Fixes bug where defensive positioning (< 1.0x) was unreachable
+#
+# Walk-Forward Methodology:
+# -------------------------
+# - Total Period: 2010-03-01 to 2025-03-01 (15 years)
+# - Window Size: 3.0 years (2.5y IS + 0.5y OOS)
+# - Slide: 0.5 years (6 months forward each iteration)
+# - Windows: 29 total walk-forward windows
+# - Selection Metric: Sortino Ratio (downside risk focus)
+#
+# Process:
+# 1. In-Sample (IS): Optimize parameters on 2.5y training data
+# 2. Out-of-Sample (OOS): Test winning params on next 0.5y validation data
+# 3. Slide forward 0.5y and repeat
+# 4. Aggregate OOS results to measure true predictive performance
+#
+# Parameter Set: Reduced from Phase 1 grid-search
+# - Use narrower ranges around Phase 1 winners
+# - Faster optimization per window (~32 runs vs 243)
+# - Still validates core paradigm robustness
+#
+# Total Backtests: 29 windows × 32 combinations = 928 total backtests
+# Estimated Runtime: 60-90 minutes
+
+# Strategy to optimize
+strategy: "Hierarchical_Adaptive_v2_5"
+
+# Symbol Sets
+# -----------
+# Same as v2.0 configuration
+symbol_sets:
+  - name: "QQQ_TQQQ_VIX"
+    signal_symbol: "QQQ"           # Kalman filter calculations
+    core_long_symbol: "QQQ"        # 1x base allocation
+    leveraged_long_symbol: "TQQQ"  # 3x leveraged overlay
+    vix_symbol: "VIX"              # Volatility compression modulator
+
+# Base Configuration
+# ------------------
+base_config:
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 100000  # $100,000 starting capital
+  commission: 0.0          # $0.00 per trade
+  slippage: 0.0005         # 0.05% per trade
+
+# Walk-Forward Configuration
+# --------------------------
+walk_forward:
+  # Total period to analyze
+  total_start_date: "2010-03-01"
+  total_end_date: "2025-03-01"
+
+  # Window sizing
+  window_size_years: 3.0      # Total window size (IS + OOS)
+  in_sample_years: 2.5        # Training period
+  out_of_sample_years: 0.5    # Validation period
+
+  # Iteration control
+  slide_years: 0.5            # Slide forward 6 months each iteration
+
+  # Selection criteria
+  selection_metric: "sortino_ratio"  # Optimize for downside risk
+
+  # Performance requirements (filters before OOS testing)
+  min_sharpe_ratio: 1.0      # Minimum Sharpe in IS period
+  max_drawdown: 0.30         # Maximum 30% drawdown in IS period
+
+# Parameters to Optimize
+# ----------------------
+# Reduced parameter set based on Phase 1 grid-search winners
+# Assume Phase 1 identified these optimal ranges:
+# - measurement_noise: 2000.0 best performer → test [1000.0, 2000.0]
+# - osc_smoothness: 15 best performer → test [10, 15]
+# - strength_smoothness: 15 best performer → test [10, 15]
+# - T_max: 60 best performer → test [50, 60]
+# - k_trend: 0.3 best performer → test [0.2, 0.3]
+#
+# Total combinations: 2^5 = 32 runs per window
+# (Using 2 values instead of 3 for faster WFO)
+
+parameters:
+  # ===========================================================================
+  # VERSION IDENTIFIER (v2.5 - Asymmetric DD Governor)
+  # ===========================================================================
+  version: ["2.5"]
+
+  # ===========================================================================
+  # TIER 1: KALMAN FILTER PARAMETERS
+  # ===========================================================================
+
+  # Measurement noise
+  # Phase 1 winner likely: 2000.0
+  # WFO tests: lower and winner value
+  measurement_noise: [1000.0, 2000.0]  # 2 values
+
+  # Oscillator smoothness
+  # Phase 1 winner likely: 15
+  # WFO tests: tighter and winner value
+  osc_smoothness: [10, 15]  # 2 values
+
+  # Strength smoothness
+  # Phase 1 winner likely: 15
+  # WFO tests: tighter and winner value
+  strength_smoothness: [10, 15]  # 2 values
+
+  # Process noise (fixed)
+  process_noise_1: [0.01]
+  process_noise_2: [0.01]
+
+  # ===========================================================================
+  # TIER 2: BASELINE EXPOSURE PARAMETERS
+  # ===========================================================================
+
+  # Trend normalization max
+  # Phase 1 winner likely: 60
+  # WFO tests: more aggressive and winner value
+  T_max: [50, 60]  # 2 values
+
+  # Baseline exposure slope (CRITICAL)
+  # Phase 1 winner likely: 0.3
+  # WFO tests: more conservative and winner value
+  k_trend: [0.2, 0.3]  # 2 values
+
+  # Exposure bounds (fixed)
+  E_min: [0.5]
+  E_max: [1.3]
+
+  # ===========================================================================
+  # MODULATORS: Fixed at defaults
+  # ===========================================================================
+  # Phase 2 grid-search will optimize these
+  # WFO uses defaults for validation
+
+  # Volatility modulator
+  sigma_target_multiplier: [0.9]
+  sigma_lookback: [60]
+  S_vol_min: [0.5]
+  S_vol_max: [1.5]
+
+  # VIX compression
+  vix_ema_period: [50]
+  alpha_VIX: [1.0]
+
+  # Drawdown governor (v2.5 UPDATED - Asymmetric Formula)
+  # v2.0: DD_soft = 0.05, DD_hard = 0.15
+  # v2.5: DD_soft = 0.10, DD_hard = 0.20 (less aggressive, more reasonable thresholds)
+  DD_soft: [0.10]   # v2.5: 10% DD starts compression (was 5% in v2.0)
+  DD_hard: [0.20]   # v2.5: 20% DD full compression (was 15% in v2.0)
+  p_min: [0.0]
+
+  # Rebalancing
+  rebalance_threshold: [0.025]
+
+# Expected Output
+# ---------------
+# output/wfo_Hierarchical_Adaptive_v2_5_YYYYMMDD_HHMMSS/
+# ├── wfo_summary.csv           # Overall WFO results across all windows
+# ├── parameter_stability.csv   # How often each parameter value wins
+# ├── oos_performance.csv       # Out-of-sample performance metrics
+# ├── is_vs_oos_comparison.csv  # IS vs OOS performance degradation
+# ├── parameters.yaml           # Copy of this config file
+# ├── README.txt               # Summary and analysis
+# │
+# ├── window_001/              # First window (2010-03 to 2013-03)
+# │   ├── is_period/          # In-sample optimization results
+# │   │   ├── summary_comparison.csv  # All 32 combinations tested
+# │   │   └── best_params.yaml        # Winning parameters
+# │   ├── oos_period/         # Out-of-sample validation
+# │   │   ├── portfolio_daily.csv
+# │   │   ├── trades.csv
+# │   │   └── summary.csv
+# │   └── window_summary.csv  # IS + OOS metrics
+# │
+# ├── window_002/              # Second window (2010-09 to 2013-09)
+# │   └── ... (same structure)
+# │
+# └── ... (27 more windows)
+
+# Usage
+# -----
+# jutsu wfo --config grid-configs/examples/wfo_hierarchical_adaptive_v2_5.yaml
+#
+# After completion:
+# 1. Review wfo_summary.csv for overall OOS performance
+# 2. Check parameter_stability.csv to see if same params win across windows
+# 3. Analyze is_vs_oos_comparison.csv for overfitting signs:
+#    - Large IS/OOS performance gap = overfitting
+#    - Consistent IS/OOS gap = robust strategy
+# 4. Review oos_performance.csv by market regime:
+#    - Bull markets (2010-2019): Strong performance expected
+#    - Bear markets (2020, 2022): Drawdown control critical
+#    - Recovery (2021, 2023): Exposure scaling effectiveness
+# 5. Examine individual windows for edge cases:
+#    - COVID crash (March 2020): How did OOS perform?
+#    - Flash crashes: Did modulators provide protection?
+#    - Low volatility periods: Did strategy stay invested?
+# 6. COMPARE TO v2.0 WFO RESULTS:
+#    - Does v2.5 reach E_min (defensive positioning)?
+#    - Better max drawdown in crisis windows?
+#    - Same or better OOS Sortino ratio?
+
+# Walk-Forward Windows
+# --------------------
+# 29 total windows with 0.5y slide:
+#
+# Window 01: IS 2010-03 to 2012-09, OOS 2012-09 to 2013-03
+# Window 02: IS 2010-09 to 2013-03, OOS 2013-03 to 2013-09
+# Window 03: IS 2011-03 to 2013-09, OOS 2013-09 to 2014-03
+# ... (continue sliding forward 6 months)
+# Window 29: IS 2022-09 to 2025-03, OOS 2024-09 to 2025-03
+#
+# Key Windows to Review:
+# - Window 20 (OOS includes March 2020 COVID crash): Critical stress test
+# - Window 27 (OOS includes 2022 bear market): Drawdown control validation
+# - Early windows (2010-2013): Post-crisis recovery behavior
+# - Late windows (2023-2025): Current market regime validation
+
+# Performance Expectations (v2.5 vs v2.0)
+# ----------------------------------------
+# v2.5 IMPROVEMENTS EXPECTED:
+#
+# Max Drawdown:
+# - v2.0: -18% to -22% (stuck at 100% QQQ minimum)
+# - v2.5: -15% to -18% (can reduce to E_min during stress)
+# - Expected improvement: 3-4% better worst-case drawdown
+#
+# Sortino Ratio (OOS):
+# - v2.0: 1.5 - 1.8
+# - v2.5: 1.6 - 2.0 (better downside protection)
+# - Expected improvement: +0.1 to +0.2
+#
+# Exposure Range Utilization:
+# - v2.0: 50% of range [1.0, 1.5] - defensive range unused
+# - v2.5: 100% of range [0.5, 1.5] - full adaptive capacity
+# - Expected improvement: 2x better range utilization
+#
+# Defensive Positioning:
+# - v2.0: 0% of time below 100% QQQ (bug prevented defensive)
+# - v2.5: 10-20% of time below 100% QQQ (asymmetric fix enables)
+# - Expected improvement: Significant risk management enhancement
+#
+# IS vs OOS Performance:
+# - Average OOS Sortino ≥70% of average IS Sortino (acceptable degradation)
+# - Max individual window OOS Sortino <50% of IS → investigate that period
+# - Consistent degradation pattern (not random) = healthy strategy
+#
+# OOS Performance Targets:
+# - OOS Sortino Ratio: >1.5 (vs IS >1.8)
+# - OOS Max Drawdown: <25% (vs IS <20%)
+# - OOS Win Rate: >50% (vs IS >55%)
+# - OOS Calmar Ratio: >1.0 (vs IS >1.2)
+#
+# Market Regime Performance:
+# - Bull market windows (2010-2019): OOS Sortino >2.0
+# - Bear market windows (2020, 2022): OOS Max DD <30%
+# - Recovery windows (2021, 2023): OOS returns competitive with buy-hold
+# - Choppy periods: OOS drawdown control (modulators effective)
+#
+# v2.5 vs v2.0 Comparison:
+# - v2.5 OOS Max DD should be 3-4% better (defensive positioning works)
+# - v2.5 OOS Sortino should be +0.1 to +0.2 better (less downside vol)
+# - v2.5 parameter stability may differ (new DD thresholds)
+# - v2.5 should reach E_min during bearish + DD periods (v2.0 couldn't)
+
+# Analysis Checklist
+# -------------------
+# After WFO completes:
+#
+# PARAMETER STABILITY ANALYSIS:
+# - [ ] Which params win most often? (measurement_noise, T_max, k_trend?)
+# - [ ] Do winning params cluster or vary randomly?
+# - [ ] Are there regime-dependent param preferences? (bull vs bear)
+# - [ ] Do early windows prefer different params than late windows?
+#
+# IS vs OOS DEGRADATION:
+# - [ ] Average IS/OOS performance gap (should be 20-30%)
+# - [ ] Outlier windows with large gaps (investigate these periods)
+# - [ ] Consistent degradation pattern across windows?
+# - [ ] Any windows where OOS > IS? (lucky or genuine edge?)
+#
+# OOS PERFORMANCE BY REGIME:
+# - [ ] COVID crash (March 2020): Did asymmetric DD governor protect capital?
+# - [ ] 2022 bear market: Drawdown control effective with v2.5?
+# - [ ] 2023 recovery: Did exposure scaling capture upside?
+# - [ ] Low volatility periods: Did strategy stay invested?
+#
+# TRADE QUALITY (OOS):
+# - [ ] Average win rate across windows
+# - [ ] Profit factor consistency
+# - [ ] Trade frequency (rebalancing threshold appropriate?)
+# - [ ] Position sizing (QQQ/TQQQ allocation sensible?)
+#
+# v2.5 vs v2.0 COMPARISON:
+# - [ ] Does v2.5 reach E_min during defensive periods? (v2.0 couldn't)
+# - [ ] Better max drawdown in crisis windows? (v2.5 target: 3-4% improvement)
+# - [ ] Same or better OOS Sortino? (v2.5 target: +0.1 to +0.2)
+# - [ ] Full exposure range utilization? (v2.5 should use [0.5, 1.5])
+# - [ ] Defensive positioning active? (v2.5 should be defensive 10-20% of time)
+#
+# ROBUSTNESS VALIDATION:
+# - [ ] Strategy works across all market regimes?
+# - [ ] Parameter sensitivity reasonable? (small changes = small impact)
+# - [ ] No extreme outlier windows that dominate results?
+# - [ ] OOS results support production deployment?
+#
+# DECISION CRITERIA:
+# ✅ PROCEED TO PRODUCTION: Stable params, consistent OOS, <30% degradation, v2.5 > v2.0
+# ⚠️  OPTIMIZE FURTHER: Unstable params or >40% IS/OOS gap → Phase 2 needed
+# ❌ REDESIGN STRATEGY: Poor OOS, regime-dependent failures, >50% degradation, v2.5 ≤ v2.0
+
+# Research Suggestions
+# --------------------
+# POST-WFO ANALYSIS:
+#
+# 1. Parameter Sensitivity Study:
+#    - Take most stable params from WFO
+#    - Test ±10% variations in each parameter
+#    - Measure performance impact (should be gradual, not cliff)
+#
+# 2. Regime-Specific Analysis:
+#    - Group windows by market regime (bull/bear/chop)
+#    - Compare param preferences by regime
+#    - Consider regime-adaptive parameter sets if needed
+#
+# 3. Ensemble Approach:
+#    - Take top 3-5 param sets from WFO
+#    - Run equal-weight ensemble across all params
+#    - Compare to single best param set (often more robust)
+#
+# 4. Monte Carlo Validation:
+#    - Use WFO winning params
+#    - Run 1000 Monte Carlo simulations with randomized returns
+#    - Validate Sortino/Drawdown statistics hold up
+#
+# 5. v2.5 vs v2.0 Deep Dive:
+#    - Compare exposure distributions (does v2.5 actually go defensive?)
+#    - Analyze DD governor activation patterns
+#    - Review crisis period behavior (COVID, 2022 bear)
+#    - Validate asymmetric formula effectiveness
+
+# Next Steps
+# ----------
+# After WFO validation:
+#
+# IF v2.5 RESULTS ARE STRONG:
+# 1. Select final parameter set (most stable from WFO)
+# 2. Run full-period backtest with winning params
+# 3. Compare directly to v2.0 best performer (Run 139)
+# 4. Generate production deployment plan
+# 5. Consider paper trading validation
+#
+# IF v2.5 RESULTS ARE MIXED:
+# 1. Investigate why asymmetric DD governor didn't improve results
+# 2. Run Phase 2 grid-search on modulator parameters
+# 3. Test alternative DD threshold values
+# 4. Consider hybrid v2.0/v2.5 approach
+#
+# IF v2.5 RESULTS ARE WORSE THAN v2.0:
+# 1. Revert to v2.0 (keep v2.5 code for analysis)
+# 2. Document why asymmetric formula underperformed
+# 3. Revisit v2.5 design assumptions
+# 4. Consider alternative DD governor formulations

@@ -1,0 +1,146 @@
+# Walk-Forward Optimization for Hierarchical Adaptive v3.5b - Execution Timing Analysis
+# =====================================================================================
+# Purpose: Test execution timing robustness across multiple time periods
+#
+# WFO Configuration:
+# - 29 walk-forward windows (2010-2025)
+# - 2 execution_time values tested per window
+# - Total: 29 × 2 = 58 backtests
+#
+# Execution Time Options Tested:
+# - "15min_after_open": Early execution with stabilized spreads
+# - "close": EOD execution (baseline/default)
+
+# Strategy to optimize
+strategy: "Hierarchical_Adaptive_v3_5b"
+
+# Symbol Sets
+# -----------
+# v3.5b with Treasury Overlay requires 6 symbols
+symbol_sets:
+  - name: "QQQ_TQQQ_PSQ_Bonds"
+    signal_symbol: "QQQ"                # Kalman + SMA + vol calculations
+    core_long_symbol: "QQQ"             # 1x base allocation
+    leveraged_long_symbol: "TQQQ"       # 3x leveraged overlay
+    inverse_hedge_symbol: "PSQ"         # -1x inverse (optional, disabled by default)
+    treasury_trend_symbol: "TLT"        # 20+ Year Treasury (bond trend signal)
+    bull_bond_symbol: "TMF"             # 3x Bull Bonds (deflation/safety)
+    bear_bond_symbol: "TMV"             # 3x Bear Bonds (inflation/rate shock)
+
+# Base Configuration
+# ------------------
+base_config:
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 100000  # $100,000 starting capital
+  commission: 0.0          # $0.00 per trade
+  slippage: 0.001          # 0.1% per trade (may vary by execution_time)
+
+# Walk-Forward Configuration
+# --------------------------
+walk_forward:
+  # Total period to analyze
+  total_start_date: "2010-02-01"
+  total_end_date: "2025-11-21"
+
+  # Window sizing
+  window_size_years: 3.0      # Total window size (IS + OOS)
+  in_sample_years: 2.5        # Training period
+  out_of_sample_years: 0.5    # Validation period
+
+  # Iteration control
+  slide_years: 0.5            # Slide forward 6 months each iteration
+
+  # Selection criteria
+  selection_metric: "sharpe_ratio"  # Optimize for risk-adjusted return
+
+  # Performance requirements (filters before OOS testing)
+  min_sharpe_ratio: 1.0      # Minimum Sharpe in IS period
+  max_drawdown: 0.35         # Maximum 35% drawdown in IS period
+
+# Parameters to Optimize
+# ----------------------
+# WFO: Test execution_time + minimal regime boundary variation
+# Total combinations: 2 (execution_time) × 1 (fixed params) = 2 runs per window
+#
+# Total Backtests: 29 windows × 2 combinations = 58 backtests
+# Estimated Runtime: 15-20 minutes
+
+parameters:
+  # ===========================================================================
+  # EXECUTION TIMING (GRID-SEARCH - 2 values)
+  # ===========================================================================
+  # Test early vs late execution
+  execution_time:
+    - "15min_after_open"        # Early execution with stabilized spreads
+    - "close"                   # EOD execution (baseline)
+
+  # ===========================================================================
+  # KALMAN TREND PARAMETERS (Fixed at v2.8 winners)
+  # ===========================================================================
+  measurement_noise: [2000.0]
+  process_noise_1: [0.01]
+  process_noise_2: [0.01]
+  osc_smoothness: [15]
+  strength_smoothness: [15]
+  T_max: [50.0]
+
+  # ===========================================================================
+  # STRUCTURAL TREND PARAMETERS (Fixed at defaults)
+  # ===========================================================================
+  sma_fast: [50]
+  sma_slow: [200]
+  t_norm_bull_thresh: [0.2]
+  t_norm_bear_thresh: [-0.3]
+
+  # ===========================================================================
+  # VOLATILITY Z-SCORE PARAMETERS (Fixed at defaults)
+  # ===========================================================================
+  realized_vol_window: [21]
+  vol_baseline_window: [126]
+  upper_thresh_z: [1.0]
+  lower_thresh_z: [0.0]
+
+  # ===========================================================================
+  # VOL-CRUSH OVERRIDE (Fixed at defaults)
+  # ===========================================================================
+  vol_crush_threshold: [-0.20]
+  vol_crush_lookback: [5]
+
+  # ===========================================================================
+  # ALLOCATION PARAMETERS (Fixed at defaults)
+  # ===========================================================================
+  leverage_scalar: [1.0]
+
+  # ===========================================================================
+  # INSTRUMENT TOGGLES (Fixed at defaults)
+  # ===========================================================================
+  use_inverse_hedge: [false]
+  w_PSQ_max: [0.5]
+
+  # ===========================================================================
+  # REBALANCING (Fixed at defaults)
+  # ===========================================================================
+  rebalance_threshold: [0.025]
+
+# Notes:
+# ------
+# 1. This WFO tests execution timing robustness across time
+# 2. Only 2 execution_time values tested (early vs late)
+# 3. All other parameters fixed at v3.5b defaults
+#
+# 4. Expected Insights:
+#    - Does early execution (15min_after_open) improve fills?
+#    - Is timing impact consistent across different market conditions?
+#    - Which timing is more robust in OOS periods?
+#
+# 5. Comparison Metrics (per window):
+#    - OOS Sharpe Ratio
+#    - OOS Max Drawdown
+#    - OOS Total Return
+#    - Parameter Stability (does best timing change per window?)
+#
+# 6. Example CLI usage:
+#    jutsu wfo -c grid-configs/examples/wfo_hierarchical_adaptive_v3_5b_execution_timing.yaml

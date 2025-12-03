@@ -1,0 +1,162 @@
+# Grid Search Configuration for Hierarchical Adaptive v3.5b - Execution Timing Analysis
+# =======================================================================================
+# Purpose: Test execution timing impact on strategy performance
+#
+# Grid Size: 4 runs (1 execution_time × 4 values)
+# Runtime: ~5-10 minutes (single-parameter grid for quick testing)
+#
+# Test Approach:
+# - Fix all other parameters at v3.5b defaults (proven winners)
+# - Vary only execution_time to isolate timing impact
+# - Compare metrics across execution times
+#
+# Expected Insights:
+# - Slippage impact by execution time
+# - Fill quality differences (open vs close)
+# - Sharpe ratio changes
+# - Max drawdown sensitivity to timing
+
+# Strategy to optimize
+strategy: "Hierarchical_Adaptive_v3_5b"
+
+# Symbol Sets
+# -----------
+# v3.5b with Treasury Overlay requires 6 symbols:
+# - QQQ/TQQQ/PSQ for equity allocation
+# - TLT/TMF/TMV for bond overlay
+symbol_sets:
+  - name: "QQQ_TQQQ_PSQ_Bonds"
+    signal_symbol: "QQQ"                # Kalman + SMA + vol calculations
+    core_long_symbol: "QQQ"             # 1x base allocation
+    leveraged_long_symbol: "TQQQ"       # 3x leveraged overlay
+    inverse_hedge_symbol: "PSQ"         # -1x inverse (optional, disabled by default)
+    treasury_trend_symbol: "TLT"        # 20+ Year Treasury (bond trend signal)
+    bull_bond_symbol: "TMF"             # 3x Bull Bonds (deflation/safety)
+    bear_bond_symbol: "TMV"             # 3x Bear Bonds (inflation/rate shock)
+
+# Base Configuration
+# ------------------
+# Fixed settings applied to ALL backtests
+base_config:
+  # Date range - 2 years for execution timing analysis
+  start_date: "2025-03-10"
+  end_date: "2025-11-24"
+
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 10000   # $10,000 starting capital
+  commission: 0.0          # $0.00 per trade
+  slippage: 0.001          # 0.1% per trade (may vary by execution_time)
+
+# Parameters to Optimize
+# ----------------------
+# Grid Search: Execution Timing Only (4 values)
+# All other parameters fixed at v3.5b defaults
+#
+# Total combinations: 4 runs
+
+parameters:
+  # ===========================================================================
+  # EXECUTION TIMING (GRID-SEARCH - 4 values)
+  # ===========================================================================
+  # When to execute trades on signal generation day
+  execution_time:
+    - "open"                    # Execute at market open (9:30 AM ET)
+    - "15min_after_open"        # Execute 15 min after open (9:45 AM ET)
+    - "15min_before_close"      # Execute 15 min before close (3:45 PM ET)
+    - "close"                   # Execute at market close (4:00 PM ET) [DEFAULT]
+
+  # ===========================================================================
+  # KALMAN TREND PARAMETERS (Fixed at v2.8 winners)
+  # ===========================================================================
+  measurement_noise: [3000.0]
+  process_noise_1: [0.01]
+  process_noise_2: [0.01]
+  osc_smoothness: [15]
+  strength_smoothness: [15]
+  T_max: [50.0]
+
+  # ===========================================================================
+  # STRUCTURAL TREND PARAMETERS (Fixed at defaults)
+  # ===========================================================================
+  sma_fast: [40]
+  sma_slow: [140]
+  t_norm_bull_thresh: [0.2]
+  t_norm_bear_thresh: [-0.3]
+
+  # ===========================================================================
+  # VOLATILITY Z-SCORE PARAMETERS (Fixed at defaults)
+  # ===========================================================================
+  realized_vol_window: [21]
+  vol_baseline_window: [126]
+  upper_thresh_z: [1.0]
+  lower_thresh_z: [0.2]
+
+  # ===========================================================================
+  # VOL-CRUSH OVERRIDE (Fixed at defaults)
+  # ===========================================================================
+  vol_crush_threshold: [-0.15]
+  vol_crush_lookback: [5]
+
+  # ===========================================================================
+  # ALLOCATION PARAMETERS (Fixed at defaults)
+  # ===========================================================================
+  leverage_scalar: [1.0]
+
+  # ===========================================================================
+  # INSTRUMENT TOGGLES (Fixed at defaults)
+  # ===========================================================================
+  use_inverse_hedge: [false]
+  w_PSQ_max: [0.5]
+
+  # ===========================================================================
+  # REBALANCING (Fixed at defaults)
+  # ===========================================================================
+  rebalance_threshold: [0.025]
+
+# Grid Search Settings
+# --------------------
+# Checkpoint every 2 runs for quick testing
+max_combinations: 250         # Allow up to 10 runs (safety margin)
+checkpoint_interval: 2        # Save state every 2 runs
+
+allow_treasury: [true]       # Fixed: Enable Treasury Overlay
+
+# Bond SMA periods (Fixed at spec defaults)
+# Fast: 20-day (1-month bond trend)
+# Slow: 60-day (3-month bond structure)
+bond_sma_fast: [20]          # Fixed
+bond_sma_slow: [60]
+max_bond_weight: [0.4]       # Fixed: 40% global cap
+
+# Bond symbols (Fixed at spec defaults)
+# TLT: 20+ Year Treasury ETF (trend signal)
+# TMF: 3x Bull Bonds (deflation/safety)
+# TMV: 3x Bear Bonds (inflation/rate shock)
+treasury_trend_symbol: ["TLT"]   # Fixed
+bull_bond_symbol: ["TMF"]        # Fixed
+bear_bond_symbol: ["TMV"]        # Fixed
+
+# Notes:
+# ------
+# 1. This is a focused grid search testing ONLY execution_time
+# 2. All other parameters fixed at v3.5b defaults
+# 3. Total runs: 4 (one per execution_time value)
+# 4. Expected runtime: 5-10 minutes
+#
+# 5. Expected Results:
+#    - Run 001: execution_time="open" (earliest, may have wider spreads)
+#    - Run 002: execution_time="15min_after_open" (early, stabilized spreads)
+#    - Run 003: execution_time="15min_before_close" (late, near-close pricing)
+#    - Run 004: execution_time="close" (latest, EOD pricing) [BASELINE]
+#
+# 6. Comparison Metrics:
+#    - Sharpe Ratio: Risk-adjusted return by timing
+#    - Max Drawdown: Risk exposure by timing
+#    - Total Return: Absolute performance by timing
+#    - Profit Factor: Win/loss ratio by timing
+#
+# 7. Example CLI usage:
+#    jutsu grid-search -c grid-configs/examples/grid_search_hierarchical_adaptive_v3_5b_execution_timing.yaml

@@ -1,0 +1,232 @@
+# Live Trading Configuration - Jutsu Labs
+# Version: 1.0
+# Strategy: Hierarchical Adaptive v3.5b ("Titan Config")
+
+# ==============================================================================
+# ENVIRONMENT SETTINGS
+# ==============================================================================
+version: "1.0"
+environment: "dry_run"  # Options: dry_run, paper, live
+
+# ==============================================================================
+# STRATEGY PARAMETERS (Titan Config from PRD)
+# ==============================================================================
+strategy:
+  name: "Hierarchical_Adaptive_v3_5b"
+
+  # Trading Universe
+  universe:
+    signal_symbol: "QQQ"     # Equity trend signal
+    bull_symbol: "TQQQ"      # 3x leveraged QQQ
+    bond_signal: "TLT"       # Bond trend signal
+    bull_bond: "TMF"         # 3x leveraged TLT
+    bear_bond: "TMV"         # 3x inverse TLT
+
+  # Trend Detection Engine
+  trend_engine:
+    equity_fast_sma: 40      # Fast equity SMA period
+    equity_slow_sma: 140     # Slow equity SMA period
+    bond_fast_sma: 20        # Fast bond SMA period
+    bond_slow_sma: 60        # Slow bond SMA period
+    kalman_model: "velocity_v3.5"  # Kalman filter model version
+
+  # Volatility Regime Engine
+  volatility_engine:
+    short_window: 21         # Short volatility window (1 month)
+    long_window: 126         # Long volatility window (6 months)
+    z_upper: 1.0             # Upper threshold for regime change
+    z_lower: 0.2             # Lower threshold for regime change
+    vol_crush_threshold: -0.15  # Spike drop detection
+
+  # Allocation Engine
+  allocation:
+    leverage_scalar: 1.0     # Leverage multiplier (1.0 = no extra leverage)
+    inverse_hedge: false     # Enable inverse ETF hedging
+    safe_haven_active: true  # Enable safe-haven bond allocation
+    max_bond_weight: 0.40    # Max bond allocation (40%)
+
+# ==============================================================================
+# EXECUTION SETTINGS
+# ==============================================================================
+execution:
+  rebalance_threshold_pct: 5.0      # Don't trade if position diff <5%
+  max_slippage_pct: 0.5             # CONFIGURABLE MAX SLIPPAGE (user requirement)
+  slippage_warning_pct: 0.3         # Warn if slippage >0.3%
+  slippage_abort_pct: 1.0           # Abort if slippage >1.0%
+  max_order_retries: 3              # Retry count for partial fills
+  retry_delay_seconds: 5            # Wait between retries
+  max_buying_power_pct: 95          # Use max 95% of buying power (5% buffer)
+
+  # Order execution sequence
+  order_sequence:
+    - "SELL"  # Sell first (raise cash)
+    - "BUY"   # Buy second
+
+# ==============================================================================
+# TIMING SCHEDULE (EST)
+# ==============================================================================
+schedule:
+  auth_check_time: "15:49:30"       # Pre-execution OAuth validation
+  data_fetch_time: "15:50:00"       # Historical data fetch
+  execution_time: "15:55:00"        # Order execution window
+  validation_time: "16:15:00"       # Post-market validation
+
+# ==============================================================================
+# RISK LIMITS
+# ==============================================================================
+risk:
+  max_position_size_pct: 100        # Per symbol (TQQQ can be 100%)
+  max_total_leverage: 2.0           # Hard cap on total exposure
+  min_cash_pct: 5.0                 # Always keep 5% cash reserve
+
+  # Abort conditions (critical failures)
+  abort_conditions:
+    - "auth_failure"
+    - "corporate_action_detected"
+    - "extreme_slippage"
+    - "account_equity_mismatch"
+    - "state_corruption"
+
+# ==============================================================================
+# STATE MANAGEMENT
+# ==============================================================================
+state:
+  file_path: "state/state.json"
+  backup_enabled: true
+  backup_path: "state/backups/"
+  reconciliation_threshold_pct: 2.0  # Warn if state drift >2%
+
+  # State file structure (for reference)
+  schema:
+    last_run: "ISO-8601 timestamp"
+    vol_state: "int (hysteresis state: 0-2)"
+    current_positions: "Dict[str, int] (symbol: shares)"
+
+# ==============================================================================
+# ALERTS (Phase 3)
+# ==============================================================================
+alerts:
+  sms_enabled: false               # Enable SMS alerts (Phase 3)
+  email_enabled: true              # Enable email alerts
+
+  # Critical alert conditions
+  critical_conditions:
+    - "auth_failure"
+    - "corporate_action_detected"
+    - "slippage_exceeded"
+    - "position_drift_high"
+    - "data_fetch_timeout"
+
+  # Contact information (populate from .env)
+  sms_number: "${ALERT_SMS_NUMBER}"
+  email_address: "${ALERT_EMAIL}"
+
+# ==============================================================================
+# SCHWAB API CONFIGURATION
+# ==============================================================================
+schwab:
+  api_key: "${SCHWAB_API_KEY}"           # From .env
+  api_secret: "${SCHWAB_API_SECRET}"     # From .env
+  redirect_uri: "https://localhost:8182"
+  token_path: "token.json"
+  account_number: "${SCHWAB_ACCOUNT_NUMBER}"
+  environment: "paper"                   # paper or live
+
+  # Rate limiting
+  rate_limit:
+    market_data_per_second: 2
+    trading_per_second: 1
+
+# ==============================================================================
+# LOGGING
+# ==============================================================================
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file_path: "logs/live_trading_{date}.log"
+  retention_days: 90
+  format: "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+
+  # Module-specific log levels
+  modules:
+    LIVE.DATA_FETCHER: "INFO"
+    LIVE.STRATEGY_RUNNER: "INFO"
+    LIVE.ORDER_EXECUTOR: "INFO"
+    LIVE.STATE: "INFO"
+    LIVE.MARKET_CALENDAR: "WARNING"
+
+# ==============================================================================
+# VALIDATION (Phase 1)
+# ==============================================================================
+validation:
+  backtest_rerun_enabled: true
+  price_drift_threshold_pct: 0.5     # Warn if 15:55 vs 16:00 >0.5%
+  logic_match_threshold_pct: 95      # Require ≥95% logic match over 20 days
+
+  # Corporate action detection
+  corporate_action:
+    price_drop_threshold_pct: 20     # Flag if >20% single-day drop
+    lookback_days: 5                 # Check last 5 days
+
+# ==============================================================================
+# DATA FETCHING
+# ==============================================================================
+data:
+  historical_lookback: 250           # Trading days to fetch
+  quote_timeout_seconds: 30          # Max time for quote fetch
+  historical_timeout_seconds: 60     # Max time for historical data
+
+  # Validation
+  min_bars_required: 240             # Require at least 240 bars
+  max_price_gap_pct: 10              # Flag if bar-to-bar gap >10%
+
+# ==============================================================================
+# PERFORMANCE TARGETS (For Monitoring)
+# ==============================================================================
+performance:
+  phase_0:
+    oauth_auth_seconds: 1.0
+    quote_fetch_seconds: 0.5
+    market_calendar_seconds: 0.1
+
+  phase_1:
+    historical_fetch_seconds: 5.0
+    quote_fetch_all_seconds: 2.0
+    strategy_execution_seconds: 3.0
+    total_workflow_seconds: 20.0
+    state_save_load_seconds: 0.1
+
+  phase_2:
+    order_execution_per_order: 5.0
+    fill_validation_seconds: 2.0
+    total_workflow_seconds: 60.0
+
+# ==============================================================================
+# HEALTH MONITORING (Phase 3)
+# ==============================================================================
+health:
+  check_interval_hours: 6
+  checks:
+    - "api_connectivity"
+    - "state_file_integrity"
+    - "disk_space_gb"
+    - "cron_schedule"
+
+  thresholds:
+    min_disk_space_gb: 1.0
+    max_log_age_days: 7
+
+# ==============================================================================
+# NOTES
+# ==============================================================================
+# This configuration implements the "Titan Config" from the PRD.
+#
+# Key User Requirements:
+# 1. NO FRACTIONAL SHARES - All position calculations round DOWN
+# 2. CONFIGURABLE SLIPPAGE - max_slippage_pct = 0.5% (default)
+# 3. ATOMIC STATE WRITES - Temp file + rename pattern
+# 4. CORPORATE ACTION DETECTION - >20% price drop triggers abort
+#
+# Phase 0: Foundation (authentication, market calendar)
+# Phase 1: Dry-Run Mode (no real orders)
+# Phase 2: Paper Trading (real orders in paper account)
+# Phase 3: Production Hardening (alerts, health monitoring)

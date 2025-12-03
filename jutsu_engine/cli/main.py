@@ -20,7 +20,7 @@ import click
 import importlib
 import inspect
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
@@ -161,8 +161,9 @@ def init(db_url: Optional[str]):
         raise click.Abort()
 
 
-@cli.command()
-@click.option('--symbol', required=True, help='Stock ticker symbol (e.g., AAPL)')
+@cli.group(invoke_without_command=True)
+@click.pass_context
+@click.option('--symbol', default=None, help='Stock ticker symbol (e.g., AAPL)')
 @click.option(
     '--timeframe',
     default='1D',
@@ -170,7 +171,7 @@ def init(db_url: Optional[str]):
 )
 @click.option(
     '--start',
-    required=True,
+    default=None,
     help='Start date (YYYY-MM-DD)',
 )
 @click.option(
@@ -183,12 +184,33 @@ def init(db_url: Optional[str]):
     is_flag=True,
     help='Force refresh, ignore existing data',
 )
+@click.option(
+    '--all',
+    'sync_all',
+    is_flag=True,
+    help='Sync all symbols to latest date (today)',
+)
+@click.option(
+    '--list',
+    'list_symbols',
+    is_flag=True,
+    help='List all symbols with date ranges',
+)
+@click.option(
+    '--output',
+    default=None,
+    help='Output file for CSV export (used with --list)',
+)
 def sync(
-    symbol: str,
+    ctx: click.Context,
+    symbol: Optional[str],
     timeframe: str,
-    start: str,
+    start: Optional[str],
     end: Optional[str],
     force: bool,
+    sync_all: bool,
+    list_symbols: bool,
+    output: Optional[str],
 ):
     """
     Synchronize market data from Schwab API.
@@ -196,17 +218,25 @@ def sync(
     Fetches historical price data and stores it in the database.
     Supports incremental updates to avoid re-fetching existing data.
 
-    Example:
+    Modes:
+        # List all symbols with date ranges
+        jutsu sync --list
+        jutsu sync --list --output symbols.csv
+
+        # Sync all symbols to today
+        jutsu sync --all
+
+        # Sync single symbol
         jutsu sync --symbol AAPL --timeframe 1D --start 2024-01-01
         jutsu sync --symbol MSFT --timeframe 1H --start 2024-01-01 --end 2024-12-31
+
+        # Delete symbol data
+        jutsu sync delete --symbol TQQQ
     """
+    # If a subcommand was invoked, skip this function
+    if ctx.invoked_subcommand is not None:
+        return
     config = get_config()
-
-    # Parse dates
-    start_date = datetime.strptime(start, '%Y-%m-%d').replace(tzinfo=timezone.utc)
-    end_date = datetime.strptime(end, '%Y-%m-%d').replace(tzinfo=timezone.utc) if end else datetime.now(timezone.utc)
-
-    click.echo(f"Syncing {symbol} {timeframe} from {start_date.date()} to {end_date.date()}")
 
     try:
         # Create database session
@@ -214,9 +244,160 @@ def sync(
         Session = sessionmaker(bind=engine)
         session = Session()
 
-        # Create fetcher and sync manager
-        fetcher = SchwabDataFetcher()
         sync_manager = DataSync(session)
+
+        # MODE 1: List symbols with date ranges
+        if list_symbols:
+            metadata_list = sync_manager.get_all_symbols_metadata()
+
+            if not metadata_list:
+                click.echo(click.style("✗ No symbols found in database", fg='yellow'))
+                session.close()
+                return
+
+            # Display in terminal table
+            click.echo("=" * 90)
+            click.echo(f"{'Symbol':<12} {'Timeframe':<10} {'First Bar':<12} {'Last Bar':<12} {'Total Bars':>12}")
+            click.echo("=" * 90)
+
+            for item in metadata_list:
+                first_bar_str = item['first_bar'].strftime('%Y-%m-%d') if item['first_bar'] else 'N/A'
+                last_bar_str = item['last_bar'].strftime('%Y-%m-%d') if item['last_bar'] else 'N/A'
+
+                click.echo(
+                    f"{item['symbol']:<12} {item['timeframe']:<10} {first_bar_str:<12} "
+                    f"{last_bar_str:<12} {item['total_bars']:>12,}"
+                )
+
+            click.echo("=" * 90)
+            click.echo(click.style(f"\n✓ Found {len(metadata_list)} symbol/timeframe combinations", fg='green'))
+
+            # Export to CSV if requested
+            if output:
+                import csv
+                from pathlib import Path
+
+                output_path = Path(output)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+
+                with open(output_path, 'w', newline='') as csvfile:
+                    fieldnames = ['symbol', 'timeframe', 'first_bar', 'last_bar', 'total_bars']
+                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+                    writer.writeheader()
+                    for item in metadata_list:
+                        writer.writerow({
+                            'symbol': item['symbol'],
+                            'timeframe': item['timeframe'],
+                            'first_bar': item['first_bar'].strftime('%Y-%m-%d') if item['first_bar'] else '',
+                            'last_bar': item['last_bar'].strftime('%Y-%m-%d') if item['last_bar'] else '',
+                            'total_bars': item['total_bars'],
+                        })
+
+                click.echo(click.style(f"✓ Exported to {output}", fg='green'))
+
+            session.close()
+            return
+
+        # MODE 2: Sync all symbols to today
+        if sync_all:
+            click.echo("=" * 60)
+            if force:
+                click.echo("SYNC ALL SYMBOLS TO TODAY (FORCE MODE)")
+                click.echo(click.style("⚠️  Force mode: May fetch incomplete bars if market is open", fg='yellow'))
+            else:
+                click.echo("SYNC ALL SYMBOLS TO TODAY")
+            click.echo("=" * 60)
+
+            # Create fetcher
+            fetcher = SchwabDataFetcher()
+
+            # Run sync all
+            with click.progressbar(
+                length=1,
+                label='Syncing all symbols',
+                show_eta=False,
+            ) as bar:
+                result = sync_manager.sync_all_symbols(fetcher=fetcher, force=force)
+                bar.update(1)
+
+            # Display summary
+            click.echo("\n" + "=" * 60)
+            click.echo("SYNC RESULTS")
+            click.echo("=" * 60)
+            click.echo(f"Total Symbols:      {result['total_symbols']}")
+            click.echo(f"Successful Syncs:   {result['successful_syncs']}")
+            click.echo(f"Failed Syncs:       {result['failed_syncs']}")
+
+            # Display details
+            click.echo("\nDetails:")
+            click.echo(f"{'Symbol':<15} {'Status':<20} {'Bars Added':>12} {'Date Range':<25}")
+            click.echo("-" * 80)
+
+            for symbol_key, info in result['results'].items():
+                start_str = info['start_date'].strftime('%Y-%m-%d')
+                end_str = info['end_date'].strftime('%Y-%m-%d')
+                date_range = f"{start_str} to {end_str}"
+
+                status_str = info['status']
+                if info['status'] == 'success':
+                    status_color = 'green'
+                elif info['status'] == 'success_after_retry':
+                    status_color = 'yellow'
+                    status_str += " (retry)"
+                else:
+                    status_color = 'red'
+                    status_str = f"FAILED: {info['error'][:30]}"
+
+                click.secho(
+                    f"{symbol_key:<15} {status_str:<20} {info['bars_added']:>12,} {date_range:<25}",
+                    fg=status_color
+                )
+
+            click.echo("=" * 60)
+
+            if result['successful_syncs'] == result['total_symbols']:
+                click.echo(click.style("\n✓ All symbols synced successfully!", fg='green'))
+            elif result['successful_syncs'] > 0:
+                click.echo(click.style(f"\n⚠ Partial success: {result['successful_syncs']}/{result['total_symbols']} synced", fg='yellow'))
+            else:
+                click.echo(click.style("\n✗ All syncs failed", fg='red'))
+
+            session.close()
+            return
+
+        # MODE 3: Normal single-symbol sync
+        if not symbol:
+            click.echo(click.style("✗ Error: Must provide --symbol, --all, or --list", fg='red'))
+            session.close()
+            raise click.Abort()
+
+        if not start:
+            click.echo(click.style("✗ Error: --start is required for single symbol sync", fg='red'))
+            session.close()
+            raise click.Abort()
+
+        # Parse dates
+        start_date = datetime.strptime(start, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+        # Parse end date and set to end-of-day (23:59:59) to include all bars from that date
+        # Database bars may have timestamps like 2025-11-24 05:00:00, which would be excluded
+        # if end_date is midnight (2025-11-24 00:00:00)
+        if end:
+            end_date = datetime.strptime(end, '%Y-%m-%d').replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+        else:
+            # For daily bars, cap at last trading day (accounting for weekends)
+            # Use start-of-day (midnight) timestamp for compatibility with Schwab API
+            if timeframe == '1D':
+                # Go back 4 days to account for weekend + UTC timezone offset
+                safe_date = datetime.now(timezone.utc).date() - timedelta(days=4)
+                end_date = datetime.combine(safe_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+            else:
+                end_date = datetime.now(timezone.utc)
+
+        click.echo(f"Syncing {symbol} {timeframe} from {start_date.date()} to {end_date.date()}")
+
+        # Create fetcher
+        fetcher = SchwabDataFetcher()
 
         # Sync data
         with click.progressbar(
@@ -247,6 +428,87 @@ def sync(
 
     except Exception as e:
         click.echo(click.style(f"✗ Sync failed: {e}", fg='red'))
+        raise click.Abort()
+
+
+@sync.command(name='delete')
+@click.option('--symbol', required=True, help='Stock ticker symbol to delete (e.g., TQQQ)')
+@click.option(
+    '--force',
+    is_flag=True,
+    help='Skip confirmation prompt',
+)
+def delete_data(symbol: str, force: bool):
+    """
+    Delete all market data for a symbol.
+
+    WARNING: This operation is irreversible. All market_data and data_metadata
+    entries for the symbol will be permanently deleted across all timeframes.
+
+    Example:
+        jutsu sync delete --symbol TQQQ
+        jutsu sync delete --symbol AAPL --force
+    """
+    config = get_config()
+
+    try:
+        # Create database session
+        engine = create_engine(config.database_url)
+        Session = sessionmaker(bind=engine)
+        session = Session()
+
+        sync_manager = DataSync(session)
+
+        # Get current data count for confirmation message
+        from jutsu_engine.data.models import MarketData
+        row_count = (
+            session.query(MarketData)
+            .filter(MarketData.symbol == symbol)
+            .count()
+        )
+
+        if row_count == 0:
+            click.echo(click.style(f"✗ No data found for {symbol}", fg='yellow'))
+            session.close()
+            return
+
+        # Confirmation prompt (unless --force)
+        if not force:
+            click.echo(f"\n⚠  WARNING: This will permanently delete {row_count:,} bars for {symbol}")
+            click.echo("This operation cannot be undone.\n")
+            if not click.confirm(f"Delete all data for {symbol}?"):
+                click.echo("Deletion cancelled.")
+                session.close()
+                return
+
+        # Perform deletion
+        click.echo(f"\nDeleting data for {symbol}...")
+        result = sync_manager.delete_symbol_data(symbol=symbol, force=True)
+
+        # Display results
+        if result['success']:
+            if result['rows_deleted'] > 0:
+                click.echo(
+                    click.style(
+                        f"✓ {result['message']} ({result['rows_deleted']:,} bars removed)",
+                        fg='green',
+                    )
+                )
+                if result['metadata_deleted']:
+                    click.echo(click.style("✓ Metadata removed", fg='green'))
+            else:
+                click.echo(click.style(result['message'], fg='yellow'))
+        else:
+            click.echo(click.style(f"✗ Deletion failed", fg='red'))
+
+        session.close()
+
+    except ValueError as e:
+        click.echo(click.style(f"✗ Invalid input: {e}", fg='red'))
+        raise click.Abort()
+    except Exception as e:
+        click.echo(click.style(f"✗ Deletion failed: {e}", fg='red'))
+        logger.error(f"Delete operation failed: {e}", exc_info=True)
         raise click.Abort()
 
 
@@ -533,6 +795,11 @@ def _display_comparison_section(results: dict, baseline: dict):
     default=None,
     help='Allocation for defense trades (default from .env: STRATEGY_MACD_V4_ALLOCATION_DEFENSE)',
 )
+@click.option(
+    '--plot/--no-plot',
+    default=True,
+    help='Generate interactive plots (default: enabled)',
+)
 def backtest(
     symbol: Optional[str],
     symbols: tuple,
@@ -564,6 +831,8 @@ def backtest(
     ema_trend_period: Optional[int],
     risk_bull: Optional[float],
     allocation_defense: Optional[float],
+    # Plotting
+    plot: bool,
 ):
     """
     Run a backtest with specified parameters.
@@ -604,7 +873,10 @@ def backtest(
 
     # Parse dates
     start_date = datetime.strptime(start, '%Y-%m-%d').replace(tzinfo=timezone.utc)
-    end_date = datetime.strptime(end, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+    # Parse end date and set to end-of-day (23:59:59) to include all bars from that date
+    # Database bars may have timestamps throughout the day (e.g., 2025-11-24 05:00:00)
+    # Setting to 23:59:59 ensures ALL bars from the end date are included
+    end_date = datetime.strptime(end, '%Y-%m-%d').replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
 
     # Apply priority: CLI > .env > hardcoded
     final_capital = capital if capital is not None else env_initial_capital
@@ -853,6 +1125,30 @@ def backtest(
 
         click.echo()  # Blank line after exports
 
+        # Generate plots if requested
+        if plot and 'portfolio_csv_path' in results and results['portfolio_csv_path']:
+            try:
+                from jutsu_engine.infrastructure.visualization import EquityPlotter
+
+                click.echo("Generating interactive plots...")
+
+                # Create plotter
+                plotter = EquityPlotter(csv_path=results['portfolio_csv_path'])
+
+                # Generate all plots
+                equity_path, drawdown_path = plotter.generate_all_plots()
+
+                # Display plot paths
+                click.echo("\nPLOTS GENERATED:")
+                click.echo(f"  ✓ Equity curve: {equity_path}")
+                click.echo(f"  ✓ Drawdown: {drawdown_path}")
+                click.echo()
+
+            except Exception as e:
+                logger.warning(f"Plot generation failed: {e}")
+                click.echo(click.style(f"  ⚠ Plot generation failed: {e}", fg='yellow'))
+                click.echo()
+
         # Save to file if requested
         if output:
             import json
@@ -964,7 +1260,14 @@ def validate(
 
     # Parse dates if provided
     start_date = datetime.strptime(start, '%Y-%m-%d').replace(tzinfo=timezone.utc) if start else None
-    end_date = datetime.strptime(end, '%Y-%m-%d').replace(tzinfo=timezone.utc) if end else None
+    # Parse end date and set to end-of-day (23:59:59) to include all bars from that date
+    # Database bars may have timestamps throughout the day (e.g., 2025-11-24 05:00:00)
+    # Setting to 23:59:59 ensures ALL bars from the end date are included
+    end_date = (
+        datetime.strptime(end, '%Y-%m-%d').replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+        if end
+        else None
+    )
 
     try:
         # Create database session
@@ -1031,7 +1334,17 @@ def validate(
     default='output',
     help='Base output directory (default: output/)',
 )
-def grid_search(config: str, output: str):
+@click.option(
+    '--analyze',
+    is_flag=True,
+    help='Run robustness analysis after grid search',
+)
+@click.option(
+    '--plot/--no-plot',
+    default=True,
+    help='Generate interactive plots (default: enabled)',
+)
+def grid_search(config: str, output: str, analyze: bool, plot: bool):
     """
     Run parameter grid search optimization.
 
@@ -1087,7 +1400,8 @@ def grid_search(config: str, output: str):
     try:
         result = runner.execute_grid_search(
             output_base=output,
-            config_path=config
+            config_path=config,
+            generate_plots=plot
         )
     except Exception as e:
         click.echo(click.style(f"\n✗ Grid search failed: {e}", fg='red'))
@@ -1104,6 +1418,8 @@ def grid_search(config: str, output: str):
     click.echo(f"  - summary_comparison.csv (metrics comparison)")
     click.echo(f"  - run_config.csv (parameter mapping)")
     click.echo(f"  - {len(result.run_results)} run directories")
+    if plot:
+        click.echo(f"  - plots/ directory (4 interactive HTML visualizations)")
 
     # Best run (by Sharpe Ratio)
     if len(result.summary_df) > 0 and 'sharpe_ratio' in result.summary_df.columns:
@@ -1119,6 +1435,42 @@ def grid_search(config: str, output: str):
         click.echo(click.style("\n⚠ No valid results to display", fg='yellow'))
 
     click.echo("=" * 60)
+
+    # Run analyzer if flag set
+    if analyze:
+        from jutsu_engine.application.grid_search_runner import GridSearchAnalyzer
+
+        click.echo("\n" + "=" * 60)
+        click.echo("Running Robustness Analysis...")
+        click.echo("=" * 60)
+
+        try:
+            analyzer = GridSearchAnalyzer(output_dir=result.output_dir)
+            summary = analyzer.analyze()
+
+            # Display summary
+            click.echo(f"\nAnalysis complete: {len(summary)} configurations analyzed")
+
+            # Check if we have results
+            if len(summary) == 0:
+                click.echo(click.style("\n⚠ No configurations analyzed (all runs filtered or missing data)", fg='yellow'))
+                click.echo(f"\nOutput: {result.output_dir / 'analyzer_summary.csv'}")
+            else:
+                click.echo(f"\nVerdict Breakdown:")
+                verdict_counts = summary['verdict'].value_counts()
+                for verdict, count in verdict_counts.items():
+                    click.echo(f"  {verdict}: {count}")
+
+                # Highlight TITAN configs
+                titan_configs = summary[summary['verdict'] == 'TITAN CONFIG']
+                if len(titan_configs) > 0:
+                    click.echo(click.style(f"\n✓ Found {len(titan_configs)} TITAN CONFIG(s)!", fg='green', bold=True))
+
+                click.echo(f"\nOutput: {result.output_dir / 'analyzer_summary.csv'}")
+
+        except Exception as e:
+            click.echo(click.style(f"\n✗ Analysis failed: {e}", fg='red'))
+            logger.error(f"Analyzer execution failed: {e}", exc_info=True)
 
 
 @cli.command()
@@ -1140,7 +1492,12 @@ def grid_search(config: str, output: str):
     is_flag=True,
     help='Show window plan without running',
 )
-def wfo(config: str, output_dir: Optional[str], dry_run: bool):
+@click.option(
+    '--plot/--no-plot',
+    default=True,
+    help='Generate interactive plots (default: enabled)',
+)
+def wfo(config: str, output_dir: Optional[str], dry_run: bool, plot: bool):
     """
     Walk-Forward Optimization - defeat curve-fitting through periodic re-optimization.
 

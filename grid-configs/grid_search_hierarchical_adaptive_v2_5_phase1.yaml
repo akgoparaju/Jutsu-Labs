@@ -1,0 +1,347 @@
+# Grid Search Configuration for Hierarchical Adaptive v2.5 (Phase 1)
+# ========================================================================
+# Phase 1 Focused Grid Search: 243 runs (3^5 parameter combinations)
+# Validates v2.5 asymmetric DD governor fix
+#
+# v2.5 Changes from v2.0:
+# ----------------------
+# 1. Asymmetric DD governor: Leverage compression vs defensive preservation
+# 2. Updated DD thresholds: DD_soft = 0.10 (was 0.05), DD_hard = 0.20 (was 0.15)
+# 3. Enables full exposure range [E_min, E_max] - v2.0 was stuck at [1.0, E_max]
+#
+# Strategy Overview (v2.5 Bug Fix):
+# ----------------------------------
+# v2.0 Problem: DD governor formula `E_raw = 1.0 + (E_volVIX - 1.0) * P_DD`
+#               created symmetric compression that prevented defensive positioning
+# v2.5 Solution: Asymmetric formula with two paths:
+#   - Leverage path (E > 1.0): Compress toward 1.0 (same as v2.0)
+#   - Defensive path (E <= 1.0): Interpolate between E_volVIX and 1.0 (NEW)
+#
+# Expected Improvements:
+# - Max drawdown: 3-4% better
+# - Min exposure: Actually reaches E_min (v2.0 never went below 1.0)
+# - Exposure utilization: 100% of range vs v2.0's 50%
+#
+# 5-Tier Exposure Engine (Same as v2.0):
+# - TIER 1: Kalman trend → T_norm ∈ [-1, +1]
+# - TIER 2: Baseline exposure → E_trend = 1.0 + k_trend * T_norm
+# - TIER 3: Volatility modulator → S_vol = clip(σ_target / σ_real, S_min, S_max)
+# - TIER 4: VIX compression → P_VIX = 1 / (1 + α_VIX * (R_VIX - 1))
+# - TIER 5: Drawdown governor → P_DD (v2.5 ASYMMETRIC)
+#
+# Position Mapping (Same as v2.0):
+# - If E_t ≤ 1.0: w_TQQQ = 0, w_QQQ = E_t, w_cash = 1 - E_t
+# - If E_t > 1.0: w_TQQQ = (E_t - 1)/2, w_QQQ = 1 - w_TQQQ, w_cash = 0
+#
+# Phase 1 Strategy:
+# -----------------
+# Focus: 5 critical parameters controlling core trend/exposure dynamics
+# - measurement_noise: Kalman filter smoothness
+# - osc_smoothness: Kalman oscillator smoothing
+# - strength_smoothness: Trend strength smoothing
+# - T_max: Trend normalization threshold (CRITICAL)
+# - k_trend: Baseline exposure slope (CRITICAL - controls E_trend sensitivity)
+#
+# All modulators (vol, VIX, DD) fixed at v2.5 defaults
+# Phase 2 will optimize modulators based on Phase 1 winners
+#
+# Total combinations: 3^5 = 243 runs
+# Estimated runtime: 30-45 minutes (depending on hardware)
+
+# Strategy to optimize
+strategy: "Hierarchical_Adaptive_v2_5"
+
+# Symbol Sets
+# -----------
+# v2.5 requires 3 symbols (same as v2.0):
+# - No SQQQ (long-side only)
+# - VIX used for compression modulator
+symbol_sets:
+  - name: "QQQ_TQQQ_VIX"
+    signal_symbol: "QQQ"           # Kalman filter calculations
+    core_long_symbol: "QQQ"        # 1x base allocation
+    leveraged_long_symbol: "TQQQ"  # 3x leveraged overlay (when E_t > 1.0)
+    vix_symbol: "VIX"              # Volatility compression modulator
+
+# Base Configuration
+# ------------------
+# Fixed settings applied to ALL backtests
+base_config:
+  # Date range - Full history (2010-2024)
+  # Includes: Financial crisis recovery, bull market, COVID crash, recovery
+  start_date: "2010-03-01"
+  end_date: "2025-11-01"
+
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 10000  # $100,000 starting capital
+  commission: 0.0          # $0.00 per trade
+  slippage: 0.0005         # 0.05% per trade
+
+# Parameters to Optimize
+# ----------------------
+# Phase 1: 5 critical parameters (3 values each = 243 combinations)
+# All other parameters fixed at v2.5 defaults from hierarchical_adaptive_v2_5.md
+
+parameters:
+  # ===========================================================================
+  # TIER 1: KALMAN FILTER PARAMETERS (3 parameters optimized)
+  # ===========================================================================
+  # Controls trend calculation and normalization
+
+  # Measurement noise (higher = smoother Kalman filter)
+  # Default: 2000.0, Range: [1000.0, 5000.0]
+  # Lower values = more responsive, noisier trend
+  # Higher values = smoother, slower-moving trend
+  measurement_noise: [1000.0, 2000.0, 3000.0]  # 3 values
+
+  # Oscillator smoothness (higher = smoother oscillator)
+  # Default: 15, Range: [10, 20]
+  # Controls smoothing of trend oscillator component
+  osc_smoothness: [15]  # 1 value (fixed for Phase 1)
+
+  # Strength smoothness (higher = smoother trend strength)
+  # Default: 15, Range: [10, 20]
+  # Controls smoothing of trend strength signal
+  strength_smoothness: [15]  # 1 value (fixed for Phase 1)
+
+  # Process noise parameters (fixed at defaults)
+  process_noise_1: [0.01]  # Fixed
+  process_noise_2: [0.01]  # Fixed
+
+  # ===========================================================================
+  # TIER 2: BASELINE EXPOSURE PARAMETERS (2 parameters optimized)
+  # ===========================================================================
+  # Controls E_trend = 1.0 + k_trend * T_norm
+
+  # Trend normalization max (CRITICAL parameter)
+  # Default: 60, Range: [50, 70]
+  # T_norm = clip(trend_strength / T_max, -1, +1)
+  # Lower values = stronger trends hit ±1 faster (more aggressive)
+  # Higher values = trends stay in mid-range longer (more conservative)
+  T_max: [50,60,70]  # 1 value (fixed for Phase 1)
+
+  # Baseline exposure slope (CRITICAL parameter)
+  # Default: 0.3, Range: [0.2, 0.7]
+  # E_trend = 1.0 + k_trend * T_norm
+  # Lower values = less exposure variation (more stable)
+  # Higher values = more exposure variation (more aggressive)
+  k_trend: [0.3, 0.5, 0.7]  # 3 values
+
+  # Exposure bounds (fixed at defaults for Phase 1)
+  E_min: [0.4]   # Fixed: Minimum exposure (40% QQQ in weakest trend)
+  E_max: [1.5]   # Fixed: Maximum exposure (1.5x leverage cap)
+
+  # ===========================================================================
+  # TIER 3: VOLATILITY MODULATOR (Fixed at defaults for Phase 1)
+  # ===========================================================================
+  # Will optimize in Phase 2 based on Phase 1 winners
+
+  sigma_target_multiplier: [0.7, 0.8, 0.9]  # 3 values: σ_target = historical_vol × multiplier
+  realized_vol_lookback: [20]     # Fixed: 20 days for realized vol calculation
+  S_vol_min: [0.5]                # Fixed: Minimum vol scaler (50% compression)
+  S_vol_max: [1.5]                # Fixed: Maximum vol scaler (150% expansion)
+
+  # ===========================================================================
+  # TIER 4: VIX COMPRESSION MODULATOR (Fixed at defaults for Phase 1)
+  # ===========================================================================
+  # Will optimize in Phase 2 based on Phase 1 winners
+
+  vix_ema_period: [50]   # Fixed: VIX EMA smoothing (50-day)
+  alpha_VIX: [1.0,2.0, 3.0]       # 2 values: VIX compression strength
+
+  # ===========================================================================
+  # TIER 5: DRAWDOWN GOVERNOR (v2.5 UPDATED DEFAULTS)
+  # ===========================================================================
+  # NEW in v2.5: Asymmetric formula + updated thresholds
+  # v2.0: DD_soft = 0.05, DD_hard = 0.15 (too aggressive)
+  # v2.5: DD_soft = 0.10, DD_hard = 0.20 (more reasonable)
+
+  DD_soft: [0.10]   # Fixed: 10% DD starts compression (v2.5 default)
+  DD_hard: [0.20]   # Fixed: 20% DD full compression (v2.5 default)
+  p_min: [0.0]      # Fixed: Minimum exposure multiplier at DD_hard
+
+  # ===========================================================================
+  # TIER 6: REBALANCING (Fixed at defaults for Phase 1)
+  # ===========================================================================
+
+  rebalance_threshold: [0.025]  # Fixed: 2.5% drift triggers rebalance
+
+# Optional Constraints
+# --------------------
+# Safety limits to prevent accidental large-scale runs
+
+# Maximum total combinations to run
+# Current combinations: 243 (3^5)
+max_combinations: 300
+
+# Checkpoint interval
+# Save progress every N backtests for resume capability
+checkpoint_interval: 50
+
+# Expected Output
+# ---------------
+# output/grid_search_Hierarchical_Adaptive_v2_5_YYYYMMDD_HHMMSS/
+# ├── summary_comparison.csv   # Metrics for all 243 runs (sortable)
+# ├── run_config.csv          # Parameter mapping (which run = which params)
+# ├── parameters.yaml         # Copy of this config file
+# ├── README.txt             # Summary statistics and top performers
+# ├── run_0001/              # First parameter combination
+# │   ├── portfolio_daily.csv
+# │   ├── trades.csv
+# │   └── summary.csv
+# ├── run_0002/              # Second parameter combination
+# │   ├── portfolio_daily.csv
+# │   ├── trades.csv
+# │   └── summary.csv
+# └── ... (241 more runs)
+
+# Usage
+# -----
+# jutsu grid-search --config grid-configs/examples/grid_search_hierarchical_adaptive_v2_5.yaml
+#
+# After completion:
+# 1. Open summary_comparison.csv
+# 2. Sort by Sortino Ratio (highest to lowest)
+# 3. Review top 20-50 parameter combinations
+# 4. Look for consistent patterns:
+#    - Do certain measurement_noise values consistently outperform?
+#    - What T_max values appear most often in top performers?
+#    - What k_trend values provide best risk-adjusted returns?
+#    - Are there patterns in Kalman smoothing parameters?
+# 5. Identify parameter stability:
+#    - Do top performers cluster around specific values?
+#    - Or do parameters vary widely (sign of overfitting)?
+# 6. Compare to v2.0 baseline:
+#    - Does v2.5 achieve better max drawdown?
+#    - Does v2.5 actually reach E_min (v2.0 never went below 1.0)?
+#    - Is exposure range fully utilized?
+# 7. Next steps:
+#    - Run Phase 2 grid search on modulator parameters
+#    - Run WFO to validate robustness across time periods
+#    - Compare best v2.5 to best v2.0 head-to-head
+
+# Research Suggestions
+# --------------------
+# STAGED OPTIMIZATION APPROACH:
+#
+# Phase 1 (This Config): Core Trend/Exposure Parameters (243 runs)
+# - Validates v2.5 asymmetric DD governor fix
+# - Identifies optimal Kalman filter settings
+# - Finds best T_max and k_trend for continuous exposure
+# - All modulators at v2.5 defaults (control variables)
+#
+# Phase 2 (Next): Modulator Optimization (729 runs)
+# - Fix Phase 1 winners for measurement_noise, smoothness, T_max, k_trend
+# - Optimize volatility modulator: sigma_target_multiplier, S_vol_min/max
+# - Optimize VIX modulator: vix_ema_period, alpha_VIX
+# - Optimize DD governor: DD_soft, DD_hard, p_min (test v2.5 thresholds)
+# - 3^6 = 729 combinations
+#
+# Phase 3: Fine-Tuning (81 runs)
+# - Fix Phase 1 + Phase 2 winners
+# - Optimize rebalancing threshold: [0.015, 0.025, 0.035]
+# - Optimize exposure bounds: E_min, E_max
+# - Test sigma_lookback variations
+# - 3^4 = 81 combinations
+#
+# Phase 4: Walk-Forward Optimization (Validation)
+# - Use best parameters from Phases 1-3
+# - Run WFO to validate robustness across time periods
+# - Check parameter stability (winners consistent across windows?)
+# - Validate performance in different market conditions
+
+# Performance Expectations
+# ------------------------
+# Based on v2.0 baseline and v2.5 asymmetric DD governor fix:
+#
+# v2.5 IMPROVEMENTS OVER v2.0:
+# - Max Drawdown: 3-4% better (v2.5 can go defensive, v2.0 stuck at 1.0x)
+# - Min Exposure: ~0.4-0.5 (v2.5) vs ~1.0 (v2.0 bug)
+# - Exposure Utilization: 100% of [E_min, E_max] vs 50% in v2.0
+# - Sortino Ratio: +0.1 to +0.2 improvement (better downside protection)
+# - Defensive Periods: 10-20% of time (v2.5) vs 0% (v2.0 bug)
+#
+# MINIMUM SUCCESS CRITERIA (v2.5 vs v2.0):
+# - Max DD: ≥2% improvement
+# - Min exposure reached: <0.9 (proves defensive positioning works)
+# - Sortino Ratio: No degradation (ideally +0.1 or better)
+# - Win Rate: Maintain or improve (>55%)
+#
+# TARGET SUCCESS CRITERIA:
+# - Max DD: 3-4% improvement
+# - Sortino Ratio: +0.1 to +0.2
+# - Full exposure range utilized (80%+ of designed range)
+#
+# v2.5 SPECIFIC VALIDATION CRITERIA:
+# - Asymmetric DD governor works correctly (leverage vs defensive paths)
+# - E_min actually reachable during bearish periods with DD
+# - No "stuck at 1.0" behavior (v2.0 bug eliminated)
+# - Smoother drawdown recovery (defensive positioning helps)
+
+# Analysis Checklist
+# -------------------
+# After grid search completes:
+#
+# PARAMETER ANALYSIS:
+# - [ ] Top 50 runs: Do measurement_noise values cluster?
+# - [ ] Top 50 runs: What k_trend values dominate? (0.3, 0.5, or 0.7?)
+# - [ ] Parameter stability: Do results vary wildly or show clear winners?
+# - [ ] Interaction effects: Do certain parameter combos work better together?
+#
+# v2.5 SPECIFIC ANALYSIS:
+# - [ ] Min exposure reached: Is it close to E_min (0.4)?
+# - [ ] Exposure distribution: Does E_t use full [0.4, 1.5] range?
+# - [ ] Defensive periods: When does E_t < 1.0 occur? (bearish + DD?)
+# - [ ] DD governor behavior: Compare leverage vs defensive path usage
+# - [ ] Crisis performance: How did v2.5 handle COVID crash vs v2.0?
+#
+# PERFORMANCE ANALYSIS:
+# - [ ] Compare best v2.5 vs best v2.0 (asymmetric vs symmetric DD)
+# - [ ] Max drawdown improvement: Did we achieve 3-4% target?
+# - [ ] Sortino ratio improvement: Did we achieve +0.1 to +0.2 target?
+# - [ ] Check rebalancing frequency: Is 2.5% threshold appropriate?
+# - [ ] Review trade quality: win rate, avg win/loss, profit factor
+# - [ ] Verify QQQ/TQQQ mapping: Does w_TQQQ only appear when E_t > 1.0?
+#
+# RISK ANALYSIS:
+# - [ ] Max drawdown: Is v2.5 better than v2.0?
+# - [ ] Drawdown recovery: Faster recovery with defensive positioning?
+# - [ ] Exposure behavior during 2020 COVID crash (critical test)
+# - [ ] Check for whipsaw: Are transitions smooth or erratic?
+# - [ ] Defensive positioning: Does it activate appropriately?
+#
+# ROBUSTNESS CHECKS:
+# - [ ] Performance across market regimes: bull, bear, chop
+# - [ ] Consistency: Do top performers work across entire period?
+# - [ ] Overfitting signs: Are top performers widely separated in param space?
+# - [ ] Bug fix validation: Did asymmetric DD governor solve the problem?
+#
+# DECISION CRITERIA:
+# ✅ SUCCESS: v2.5 improves DD, reaches E_min, utilizes full range
+# ⚠️  INVESTIGATE: Mixed results, need deeper analysis
+# ❌ ROLLBACK: v2.5 worse than v2.0, revert to v2.0
+
+# v2.5 Testing Notes
+# ------------------
+# This grid search serves as validation that v2.5 asymmetric DD governor:
+# 1. Actually allows defensive positioning (E < 1.0)
+# 2. Improves max drawdown vs v2.0
+# 3. Maintains or improves risk-adjusted returns
+# 4. Uses full exposure range [E_min, E_max]
+#
+# Key validation points:
+# - Run 139 (best v2.0): Never went below 100% QQQ
+# - v2.5 should reach ~40-50% QQQ during bearish periods with DD
+# - If v2.5 still stuck at 1.0, asymmetric formula didn't work
+# - If v2.5 reaches E_min, bug fix successful
+#
+# Comparison workflow:
+# 1. Run this v2.5 grid search (243 runs)
+# 2. Compare best v2.5 to Run 139 (best v2.0)
+# 3. Analyze min_exposure_reached metric
+# 4. Check exposure_utilization percentage
+# 5. Validate crisis performance (COVID crash)
+# 6. Make go/no-go decision for Phase 2
