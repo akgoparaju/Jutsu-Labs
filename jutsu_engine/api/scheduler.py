@@ -31,6 +31,7 @@ import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.memory import MemoryJobStore
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 logger = logging.getLogger('API.SCHEDULER')
 
@@ -181,9 +182,11 @@ class SchedulerService:
         self._config_loader = config_loader
         self._scheduler: Optional[AsyncIOScheduler] = None
         self._job_id = 'daily_trading_job'
-        self._refresh_job_id = 'market_close_refresh_job'  # NEW: Market close refresh job
+        self._refresh_job_id = 'market_close_refresh_job'  # Market close refresh job
+        self._hourly_refresh_job_id = 'hourly_refresh_job'  # Hourly price refresh job
         self._is_running_job = False
-        self._is_running_refresh = False  # NEW: Track refresh job state
+        self._is_running_refresh = False  # Track refresh job state
+        self._is_running_hourly_refresh = False  # Track hourly refresh state
         self._initialized = True
 
         logger.info("SchedulerService initialized")
@@ -353,6 +356,69 @@ class SchedulerService:
         finally:
             self._is_running_refresh = False
 
+    async def _execute_hourly_refresh_job(self):
+        """
+        Execute the hourly data refresh job during market hours.
+
+        Updates position prices and calculates P&L WITHOUT saving a snapshot.
+        This provides intraday price updates while the market is open.
+
+        Market hours check: Only runs 10:00 AM - 3:30 PM EST (not close to market close)
+        The 4:00 PM market close refresh handles end-of-day snapshot.
+        """
+        if self._is_running_hourly_refresh or self._is_running_refresh:
+            logger.debug("Hourly refresh skipped - another refresh already running")
+            return
+
+        self._is_running_hourly_refresh = True
+
+        try:
+            # Check if within market hours (10:00 AM - 3:30 PM EST)
+            # Skip if close to market close (4 PM handled by separate job)
+            now_est = datetime.now(EASTERN)
+
+            # Only run during market hours (skip before 10 AM and after 3:30 PM)
+            if now_est.hour < 10 or (now_est.hour >= 15 and now_est.minute >= 30) or now_est.hour >= 16:
+                logger.debug(f"Outside hourly refresh window ({now_est.strftime('%I:%M %p EST')}) - skipping")
+                return
+
+            # Check weekday (0=Monday, 4=Friday)
+            if now_est.weekday() > 4:
+                logger.debug("Weekend - skipping hourly refresh")
+                return
+
+            # Check if it's a trading day
+            from jutsu_engine.live.market_calendar import is_trading_day
+
+            if not is_trading_day():
+                logger.debug("Not a trading day - skipping hourly refresh")
+                return
+
+            logger.info(f"Hourly Data Refresh Starting ({now_est.strftime('%I:%M %p EST')})")
+
+            try:
+                from jutsu_engine.live.data_refresh import get_data_refresher
+
+                refresher = get_data_refresher()
+
+                # Perform refresh WITHOUT saving snapshot (sync_data=True to get latest prices)
+                # Snapshot is saved only at market close
+                results = await refresher.full_refresh(
+                    sync_data=True,
+                    calculate_ind=False,  # Skip indicators for hourly refresh
+                )
+
+                if results['success']:
+                    logger.info(f"Hourly refresh completed successfully ({now_est.strftime('%I:%M %p EST')})")
+                else:
+                    logger.warning(f"Hourly refresh completed with errors: {results['errors']}")
+
+            except Exception as e:
+                logger.error(f"Hourly refresh job failed: {e}", exc_info=True)
+
+        finally:
+            self._is_running_hourly_refresh = False
+
     def start(self):
         """Start the scheduler."""
         if self._scheduler is not None and self._scheduler.running:
@@ -417,8 +483,24 @@ class SchedulerService:
         
         logger.info("Data refresh job scheduled: 4:00 PM EST (Mon-Fri)")
 
+        # Add hourly refresh job (runs every 1 hour)
+        # The job will self-check if within market hours before executing
+        hourly_trigger = IntervalTrigger(hours=1, timezone=EASTERN)
+
+        self._scheduler.add_job(
+            self._execute_hourly_refresh_job,
+            trigger=hourly_trigger,
+            id=self._hourly_refresh_job_id,
+            name='Hourly Price Refresh',
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
+
+        logger.info("Hourly refresh job scheduled: Every 1 hour (market hours only: 10 AM - 3:30 PM EST)")
+
     def _remove_job(self):
-        """Remove the trading job and data refresh job from the scheduler."""
+        """Remove the trading job, data refresh job, and hourly refresh job from the scheduler."""
         if self._scheduler is None:
             return
 
@@ -427,10 +509,16 @@ class SchedulerService:
             logger.info("Trading job removed from scheduler")
         except Exception:
             pass  # Job may not exist
-        
+
         try:
             self._scheduler.remove_job(self._refresh_job_id)
             logger.info("Data refresh job removed from scheduler")
+        except Exception:
+            pass  # Job may not exist
+
+        try:
+            self._scheduler.remove_job(self._hourly_refresh_job_id)
+            logger.info("Hourly refresh job removed from scheduler")
         except Exception:
             pass  # Job may not exist
 
@@ -530,12 +618,14 @@ class SchedulerService:
             'execution_time_est': est_time.strftime('%I:%M %p EST'),
             'next_run': self.get_next_run_time(),
             'next_refresh': self._get_next_refresh_time(),
+            'next_hourly_refresh': self._get_next_hourly_refresh_time(),
             'last_run': self.state.last_run,
             'last_run_status': self.state.last_run_status,
             'last_error': self.state.last_error,
             'run_count': self.state.run_count,
             'is_running': self._is_running_job,
             'is_running_refresh': self._is_running_refresh,
+            'is_running_hourly_refresh': self._is_running_hourly_refresh,
             'valid_execution_times': list(EXECUTION_TIME_MAP.keys()),
         }
     
@@ -543,14 +633,28 @@ class SchedulerService:
         """Get the next scheduled data refresh time."""
         if self._scheduler is None or not self.state.enabled:
             return None
-        
+
         try:
             job = self._scheduler.get_job(self._refresh_job_id)
             if job and job.next_run_time:
                 return job.next_run_time.isoformat()
         except Exception as e:
             logger.warning(f"Failed to get next refresh time: {e}")
-        
+
+        return None
+
+    def _get_next_hourly_refresh_time(self) -> Optional[str]:
+        """Get the next scheduled hourly refresh time."""
+        if self._scheduler is None or not self.state.enabled:
+            return None
+
+        try:
+            job = self._scheduler.get_job(self._hourly_refresh_job_id)
+            if job and job.next_run_time:
+                return job.next_run_time.isoformat()
+        except Exception as e:
+            logger.warning(f"Failed to get next hourly refresh time: {e}")
+
         return None
     
     async def trigger_data_refresh(self) -> Dict[str, Any]:

@@ -1,3 +1,32 @@
+#### **Hourly Price Refresh Scheduler** (2025-12-05)
+
+**Added intraday price updates via interval-based scheduler job**
+
+**New Feature**:
+
+1. **Hourly Refresh Job** (`jutsu_engine/api/scheduler.py`):
+   - New `IntervalTrigger`-based job runs every 1 hour
+   - Market hours check: Only executes 10:00 AM - 3:30 PM EST
+   - Calls `full_refresh(sync_data=True, calculate_ind=False)` for price updates
+   - Does NOT save snapshot (4 PM market close job handles EOD snapshot)
+   - Mutex with market close refresh to prevent concurrent refreshes
+
+**Scheduler Jobs (Complete Set)**:
+| Job | Trigger | Time | Purpose |
+|-----|---------|------|---------|
+| Trading | CronTrigger | 9:45 AM EST | Full trading workflow |
+| Market Close | CronTrigger | 4:00 PM EST | EOD price update + snapshot |
+| **Hourly Refresh** | IntervalTrigger | Every 1 hr | Intraday price updates |
+
+**API Status Changes**:
+- Added `next_hourly_refresh` field: Next scheduled hourly refresh (ISO format)
+- Added `is_running_hourly_refresh` flag: Whether hourly refresh is running
+
+**Files Changed**:
+- `jutsu_engine/api/scheduler.py` (lines 34, 186, 189, 359-420, 486-500, 518-523, 615-630, 644-656)
+
+---
+
 #### **Dashboard UI Fixes & P/L Calculation Bug Fix** (2025-12-05)
 
 **Fixed multiple dashboard display issues and critical P/L calculation bug**
