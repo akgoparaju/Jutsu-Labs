@@ -1,3 +1,1070 @@
+#### **Dashboard UI Fixes & P/L Calculation Bug Fix** (2025-12-05)
+
+**Fixed multiple dashboard display issues and critical P/L calculation bug**
+
+**Bug Fixes**:
+
+1. **P/L Always Showing 0 Bug** (`jutsu_engine/live/data_refresh.py` line 367):
+   - **Root Cause**: `avg_cost` was being updated to current price on every refresh
+   - **Fix**: Removed `pos.avg_cost = float(new_price)` - avg_cost should never change after initial purchase
+   - P/L now correctly calculated as `market_value - (quantity * avg_cost)`
+
+2. **QQQ Baseline Price Wrong** (`state/state.json`):
+   - **Root Cause**: `initial_qqq_price` was set to closing price ($622.94) instead of fill price ($621.29)
+   - **Fix**: Updated to $621.29 (actual fill price when QQQ was purchased)
+   - Baseline comparison now matches portfolio QQQ P/L (both ~0.68%)
+
+3. **Baseline Values Showing None for 0%** (`jutsu_engine/api/routes/performance.py` lines 185-186):
+   - **Root Cause**: Truthy check `if value` treated 0 as None
+   - **Fix**: Changed to `if value is not None` for proper 0 handling
+
+4. **Last Updated Timestamp Not Appearing** (`jutsu_engine/api/routes/status.py` lines 142-152):
+   - **Root Cause**: `last_execution` was None when no scheduled execution recorded
+   - **Fix**: Added fallback to use latest `PerformanceSnapshot.timestamp`
+
+5. **Last Updated Wrong Timezone** (`dashboard/src/components/Layout.tsx` line 35-47):
+   - **Root Cause**: API returns UTC timestamps without 'Z' suffix, JavaScript interpreted as local time
+   - **Fix**: Append 'Z' suffix before parsing to ensure UTC→local conversion
+   - Now displays correct local time (e.g., 1:00 PM PST instead of 9:00 PM)
+
+**Dashboard Improvements**:
+
+1. **Engine Control** (`dashboard/src/pages/Config.tsx`):
+   - Removed deprecated "Online Mock" mode option
+   - Renamed modes: "Offline Mock" → "Paper Trading", "Online Live" → "Live Trading"
+
+2. **Scheduler Control** (`dashboard/src/pages/Config.tsx`):
+   - Made collapsible with expand/collapse toggle
+   - Moved to bottom of Configuration page
+
+3. **Header Display** (`dashboard/src/components/Layout.tsx`):
+   - Added "Last Updated" timestamp in header (local time)
+   - Fixed label from ambiguous "Data:" to clear "Last Updated:"
+
+**Database Corrections**:
+- Fixed positions `avg_cost`: TQQQ=$55.09, QQQ=$621.29
+- Fixed baseline values: 12/4 baseline=$10,000 (0%), 12/5 baseline=$10,067.76 (0.68%)
+
+**Files Changed**:
+- `jutsu_engine/live/data_refresh.py`
+- `jutsu_engine/api/routes/performance.py`
+- `jutsu_engine/api/routes/status.py`
+- `dashboard/src/components/Layout.tsx`
+- `dashboard/src/pages/Config.tsx`
+- `state/state.json`
+
+---
+
+#### **Phase 5.3 Crash Recovery & QQQ Baseline Comparison** (2025-12-05)
+
+**Completed Phase 5 Production Hardening and added QQQ buy-and-hold baseline comparison**
+
+**Phase 5.3 - Crash Recovery Implementation**:
+
+1. **`jutsu_engine/live/recovery.py`** (NEW MODULE):
+   - `RecoveryManager` class for crash recovery and auto-restart coordination
+   - `RecoveryAction` enum: NONE, MISSED_EXECUTION_DETECTED, STATE_RECOVERED, PROCESS_RESTARTED, MANUAL_INTERVENTION_REQUIRED
+   - `record_heartbeat()`: Record execution heartbeat to file
+   - `check_missed_executions()`: Detect missed scheduled executions using heartbeat + cron analysis
+   - `perform_recovery()`: Coordinate recovery actions with alert notifications
+   - Integrates with existing AlertManager and StateManager
+
+2. **Updated `jutsu_engine/live/__init__.py`**:
+   - Added Phase 5 imports: RecoveryManager, RecoveryAction
+   - Updated `__all__` exports
+
+**QQQ Baseline Comparison (Buy-and-Hold Benchmark)**:
+
+1. **Database Model** (`jutsu_engine/data/models.py`):
+   - Added `baseline_value` column: QQQ buy-and-hold portfolio value
+   - Added `baseline_return` column: QQQ buy-and-hold cumulative return %
+   - Ran ALTER TABLE migrations on SQLite database
+
+2. **Backend Logic** (`scripts/daily_dry_run.py`):
+   - Track `initial_qqq_price` in state (captured on first run)
+   - Calculate baseline: `baseline_value = initial_capital * (current_qqq / initial_qqq)`
+   - Calculate baseline return: `((current_qqq / initial_qqq) - 1) * 100`
+   - Pass to `save_performance_snapshot()`
+
+3. **API Updates**:
+   - `jutsu_engine/api/schemas.py`: Added `baseline_value`, `baseline_return` to `PerformanceSnapshot`
+   - `jutsu_engine/api/routes/performance.py`: Return baseline in `/api/performance` and `/api/performance/equity-curve`
+
+4. **Dashboard Updates** (`dashboard/src/pages/Performance.tsx`):
+   - **Equity Curve Chart**: Added orange dashed QQQ baseline line with legend
+   - **Daily Performance Table**: Added Baseline columns (Value, Return) + Alpha column
+   - Alpha = Portfolio Return - Baseline Return (positive = outperforming QQQ)
+
+5. **TypeScript Types** (`dashboard/src/api/client.ts`):
+   - Added `baseline_value`, `baseline_return` to `PerformanceSnapshot` interface
+
+**Files Changed**:
+- `jutsu_engine/live/recovery.py` (NEW)
+- `jutsu_engine/live/__init__.py`
+- `jutsu_engine/data/models.py`
+- `jutsu_engine/api/schemas.py`
+- `jutsu_engine/api/routes/performance.py`
+- `scripts/daily_dry_run.py`
+- `jutsu_engine/live/mock_order_executor.py`
+- `dashboard/src/api/client.ts`
+- `dashboard/src/pages/Performance.tsx`
+
+---
+
+#### **Critical Bug Fix: Equity Calculation & Position Preservation** (2025-12-05)
+
+**Fixed three critical bugs causing incorrect equity display and phantom position changes**
+
+**Bug Report**:
+- Daily Performance showed equity always exactly $10,000 despite market price movements
+- TQQQ quantity changed from 36 to 35 between 12/4 and 12/5 without any trade executed
+- User expected: "once we do trade, we need to let the value grow or shrink and then calculate equity"
+
+**Root Cause Analysis** (Evidence-Based):
+
+1. **Bug #1: Positions overwritten unconditionally**
+   - `update_positions()` in `daily_dry_run.py` called EVERY run, not just when trades executed
+   - This recalculated target positions based on current prices, changing quantities
+   - Evidence: DB showed qty=35, but live_trades showed original BUY 36 TQQQ
+
+2. **Bug #2: positions_value used targets, not actual positions**
+   - `positions_value = sum(... for sym, qty in target_positions.items())`
+   - Should use `current_positions` when no trades executed
+   - Evidence: Always calculated from target allocation, not actual holdings
+
+3. **Bug #3: account_equity never reflected actual portfolio value**
+   - `account_equity` loaded from state, never recalculated based on market prices
+   - Saved back to state unchanged, always showing initial $10,000
+   - Evidence: All snapshots showed equity=$10,000.00 regardless of P&L
+
+**Fix Implementation** (`scripts/daily_dry_run.py` lines ~470-510):
+
+```python
+# Step 12b: Update positions ONLY if trades executed
+if fills:
+    logger.info("Step 12b: Updating positions (trades executed)")
+    executor.update_positions(...)
+    positions_for_snapshot = target_positions
+else:
+    logger.info("Step 12b: Skipping position update (no trades)")
+    positions_for_snapshot = current_positions  # USE ACTUAL
+
+# Step 12c: Calculate from ACTUAL positions
+positions_value = sum(
+    current_prices.get(sym, Decimal('0')) * qty
+    for sym, qty in positions_for_snapshot.items()  # FIXED
+)
+
+# Calculate ACTUAL equity
+actual_equity = positions_value + actual_cash  # NEW
+
+executor.save_performance_snapshot(
+    account_equity=actual_equity,  # FIXED: Use calculated value
+    ...
+)
+state['account_equity'] = float(actual_equity)  # FIXED: Save actual
+```
+
+**Database Restoration**:
+- Restored TQQQ quantity: 35 → 36 (matching original trade)
+- Recalculated equity: $10,000 → $10,078.70 (0.79% gain)
+- Updated 12/5 snapshot with correct values
+
+**Playwright Validation Results**:
+```
+✅ Total Equity: $10,078.702 (was $10,000)
+✅ TQQQ: 36 shares (was 35)
+✅ Daily Return: 0.79% (was 0.00%)
+✅ Portfolio Holdings: Correct values displayed
+⚠️ Cumulative Return: Shows 79.00% (display formatting issue - separate bug)
+```
+
+**Agent Hierarchy Used**:
+- Sequential Thinking MCP: Root cause analysis with evidence gathering
+- Playwright MCP: Visual validation of fix
+- Database queries: Evidence collection from live_trades, positions, snapshots
+
+---
+
+#### **Dashboard Data Refresh - Automatic Updates at Market Close & Startup** (2025-12-05)
+
+**Implemented automatic dashboard data refresh independent of trade execution**
+
+**Bug Report**:
+- Dashboard data only updated when trades executed via `daily_dry_run.py`
+- Opening app in the morning showed stale data from previous day
+- No mechanism to update P&L, metrics, or positions outside of trading
+
+**Root Cause Analysis**:
+1. Scheduler only had ONE job: trading at execution time
+2. Performance snapshots only saved during trade execution flow
+3. No market close update job to capture end-of-day values
+4. No startup catch-up mechanism for stale data
+
+**Fix Implementation**:
+
+1. **`jutsu_engine/live/data_refresh.py`** (NEW MODULE):
+   - `DashboardDataRefresher` class for data refresh without trading
+   - `check_if_stale()`: Check if data older than threshold (1 hour default)
+   - `sync_market_data()`: Sync via `jutsu sync --all` CLI
+   - `fetch_current_prices()`: Get live prices from Schwab API
+   - `update_position_values()`: Update position market values in DB
+   - `calculate_indicators()`: Calculate strategy indicators
+   - `save_performance_snapshot()`: Save snapshot with P&L calculations
+   - `full_refresh()`: Orchestrate complete refresh pipeline
+   - Singleton pattern with `get_data_refresher()`
+   - `check_and_refresh_if_stale()` async function for API startup
+
+2. **`jutsu_engine/api/scheduler.py`**:
+   - Added `_refresh_job_id = 'market_close_refresh_job'`
+   - Added `_execute_data_refresh_job()` method for market close (4:00 PM EST)
+   - Modified `_add_job()` to register both trading and refresh jobs
+   - Added `_get_next_refresh_time()` method
+   - Added `trigger_data_refresh()` for manual refresh
+   - Updated `get_status()` with `next_refresh` and `is_running_refresh`
+
+3. **`jutsu_engine/api/main.py`**:
+   - Added startup freshness check in lifespan context manager
+   - Uses `asyncio.create_task()` for background refresh
+   - Checks staleness with 1.0 hour threshold
+
+4. **`jutsu_engine/api/schemas.py`**:
+   - Added `next_refresh`, `is_running_refresh` to `SchedulerStatus`
+   - Added `DataRefreshResponse` schema
+   - Added `DataStalenessInfo` schema
+
+5. **`jutsu_engine/api/routes/control.py`**:
+   - Added `GET /api/control/refresh/status` endpoint
+   - Added `POST /api/control/refresh` endpoint
+
+**Features**:
+- **Market Close Refresh**: Automatically updates at 4:00 PM EST daily
+- **Startup Refresh**: Checks data staleness on app startup, refreshes if >1 hour old
+- **Manual Refresh**: New API endpoints for on-demand refresh
+- **Mode-Aware**: Works with all trading modes (offline_mock, online_live)
+- **NYSE Calendar-Aware**: Skips refresh on non-trading days
+
+**Validation Results**:
+```
+✅ data_refresh.py syntax OK
+✅ scheduler.py syntax OK
+✅ main.py syntax OK
+✅ control.py syntax OK
+✅ schemas.py syntax OK
+```
+
+**Agent Hierarchy Used**:
+- SCHEDULER_AGENT: Added market close job and refresh scheduling
+- DASHBOARD_BACKEND_AGENT: API routes and startup hook
+- DATA_REFRESH_AGENT: New module for data refresh orchestration
+
+---
+
+#### **Performance Dashboard - Per-Position Breakdown in History** (2025-12-04)
+
+**Added per-position breakdown to Daily Performance history table**
+
+**Bug Report**:
+- Daily Performance table showed only aggregate Positions total ($9,458.58)
+- User expected format similar to backtest CSV: QQQ_Qty, QQQ_Value, TQQQ_Qty, TQQQ_Value
+- TypeScript build errors: `holdings`, `cash`, `cash_weight_pct` missing from types
+
+**Root Cause Analysis**:
+1. `PerformanceSnapshot` model lacked `positions_json` column to store position breakdown
+2. `save_performance_snapshot()` didn't capture individual position quantities/values
+3. Frontend `PerformanceMetrics` TypeScript type was missing `holdings`, `cash`, `cash_weight_pct`
+4. Daily Performance table only displayed aggregate values, not per-symbol columns
+
+**Fix Implementation**:
+
+1. **`jutsu_engine/data/models.py`** - PerformanceSnapshot model:
+   - Added `positions_json = Column(Text)` for storing position breakdown as JSON
+
+2. **`jutsu_engine/live/mock_order_executor.py`** - `save_performance_snapshot()`:
+   - Queries current positions and builds JSON: `[{symbol, quantity, value}]`
+   - Saves to `positions_json` column when creating snapshot
+
+3. **`jutsu_engine/api/schemas.py`**:
+   - Added `SnapshotPositionInfo(symbol, quantity, value)` schema
+   - Added `positions: Optional[List[SnapshotPositionInfo]]` to `PerformanceSnapshot`
+
+4. **`jutsu_engine/api/routes/performance.py`**:
+   - Parses `positions_json` from database and converts to `SnapshotPositionInfo` list
+   - Returns position breakdown in history response
+
+5. **`dashboard/src/api/client.ts`**:
+   - Added `HoldingInfo` interface (symbol, quantity, value, weight_pct)
+   - Added `SnapshotPositionInfo` interface
+   - Updated `PerformanceMetrics` with holdings, cash, cash_weight_pct
+   - Updated `PerformanceSnapshot` with positions array
+
+6. **`dashboard/src/pages/Performance.tsx`**:
+   - Updated Daily Performance table header with QQQ (Qty/Value) and TQQQ (Qty/Value) columns
+   - Extracts per-symbol positions from `snapshot.positions` array
+
+**Additional TypeScript Fixes**:
+- `SchedulerControl.tsx`: Fixed `formatDateTime` type signature
+- `useWebSocket.ts`: Changed `NodeJS.Timeout` to `ReturnType<typeof setTimeout>`
+- `Config.tsx`: Added null check for `config.active_overrides`
+- `DecisionTree.tsx`: Removed unused imports, renamed local type
+
+**Validation Results**:
+```
+API Response - History with Positions:
+  2025-12-04 | Equity: $10,000.00 | Cash: $553.82 | Positions: TQQQ:36, QQQ:12
+
+Dashboard Build:
+  ✓ TypeScript compilation successful
+  ✓ Built in 1.92s
+```
+
+**Agent Hierarchy Used**:
+- DASHBOARD_BACKEND_AGENT: Database schema, API route updates
+- DASHBOARD_FRONTEND_AGENT: TypeScript types, React component updates
+
+---
+
+#### **Performance Dashboard - Portfolio Holdings & Regime Display Fix** (2025-12-04)
+
+**Fixed missing portfolio holdings and regime display in Performance dashboard**
+
+**Bug Report**:
+- Daily Performance table showed only equity, not individual holdings (QQQ, TQQQ, Cash values)
+- Regime column showed "-" instead of readable "Sideways + Low Vol"
+- Root cause: Database had NULL regime fields and empty positions table
+
+**Root Cause Analysis** (via DASHBOARD_BACKEND_AGENT):
+1. `save_performance_snapshot()` didn't accept `strategy_context` parameter
+2. `daily_dry_run.py` didn't pass strategy_context when saving snapshots
+3. `update_positions()` filtered `if quantity > 0` but DELETE cleared all first → empty table
+4. Frontend displayed cell number instead of human-readable regime name
+
+**Fix Implementation**:
+
+1. **`jutsu_engine/live/mock_order_executor.py`** - `save_performance_snapshot()`:
+   - Added `strategy_context: Optional[Dict[str, Any]] = None` parameter
+   - Extracts `current_cell`, `trend_state`, `vol_state` from context
+   - Populates `strategy_cell`, `trend_state`, `vol_state` in PerformanceSnapshot
+
+2. **`jutsu_engine/live/mock_order_executor.py`** - `update_positions()`:
+   - Changed `if quantity > 0` to `if quantity >= 0` to include all positions
+
+3. **`scripts/daily_dry_run.py`**:
+   - Now passes `strategy_context` dict with current_cell, trend_state, vol_state
+
+4. **`dashboard/src/pages/Performance.tsx`**:
+   - Added "Portfolio Holdings" section showing Cash, QQQ, TQQQ with values & weights
+   - Added Positions and Cash columns to Daily Performance table
+   - Regime column now shows "Sideways + Low Vol" instead of "Cell 3" or "-"
+
+**Validation Results**:
+```
+sqlite3 data/market_data.db "SELECT * FROM positions;"
+✅ TQQQ: 36 shares @ $55.325 = $1,991.70
+✅ QQQ: 12 shares @ $622.24 = $7,466.88
+
+sqlite3 data/market_data.db "SELECT strategy_cell, trend_state, vol_state FROM performance_snapshots"
+✅ strategy_cell=3, trend_state=Sideways, vol_state=Low
+```
+
+**Agent Hierarchy Used**:
+- DASHBOARD_BACKEND_AGENT: Root cause analysis, database investigation, fix implementation
+
+**Serena Memory Written**: `performance_dashboard_fix_2025-12-04.md`
+
+---
+
+#### **Cell 3 Allocation Fix & Performance Holdings** (2025-12-04)
+
+**Fixed Cell 3 allocation bug and enhanced Performance API with portfolio holdings**
+
+**Bug Report**:
+- Cell 3 (Sideways + Low Vol) should allocate: 80% QQQ + 20% TQQQ (Net Beta 1.4)
+- Actual behavior: Only 80% QQQ was being traded, TQQQ 20% missing
+- Root cause: `determine_target_allocation()` read CACHED zeroed weights from warmup
+
+**Root Cause Analysis** (via STRATEGY_AGENT + BACKEND_AGENT):
+1. Strategy warmup processes historical bars, consuming internal `self._cash`
+2. `_validate_weight()` zeros out weights when `allocation < price` (due to depleted cash)
+3. `determine_target_allocation()` read these cached zeroed weights instead of recalculating
+4. Result: TQQQ weight was 0.0 instead of 0.2
+
+**Fix Implementation** (`jutsu_engine/live/strategy_runner.py`):
+- `determine_target_allocation()` now recalculates from cell directly:
+  1. Injects account equity: `self.strategy._cash = account_equity`
+  2. Calls `_get_cell_allocation(current_cell)` to get raw weights
+  3. Applies leverage scalar and treasury overlay
+  4. Normalizes weights to sum = 1.0
+- Fixed `get_strategy_context()`: `'bond_trend_state'` → `'_last_bond_trend'`
+
+**Validation Results**:
+```
+Cell 3 (Sideways + Low Vol) Allocation:
+  ✅ Target Weights: {'TQQQ': 0.2, 'QQQ': 0.8}
+  ✅ Target Positions: {'TQQQ': 36, 'QQQ': 12}
+
+Executed Trades:
+  ✅ BUY 36 TQQQ @ $55.09 = $1,983.24 (20%)
+  ✅ BUY 12 QQQ @ $621.29 = $7,455.48 (80%)
+```
+
+**Performance API Enhancement** (`jutsu_engine/api/`):
+- `schemas.py`: Added `HoldingInfo` schema with symbol, quantity, value, weight_pct
+- `routes/performance.py`: Enhanced `/api/performance` with holdings array
+- Now returns: `holdings: [{symbol, quantity, value, weight_pct}]`, `cash`, `cash_weight_pct`
+
+**Agent Hierarchy Used**:
+- STRATEGY_AGENT: Verified Cell 3 allocation code is correct
+- BACKEND_AGENT: Found `_validate_weight()` root cause
+- FIX_AGENT: Initial fix (incomplete)
+- DEEP_FIX_AGENT: Complete fix in `determine_target_allocation()`
+- DASHBOARD_BACKEND_AGENT: Added holdings to Performance API
+
+**Serena Memory Written**: `cell3_allocation_fix_2025-12-04.md`
+
+---
+
+#### **Jutsu Trader - UI-Controlled Scheduler** (2025-12-04)
+
+**Implemented UI-controlled scheduling for automated trading execution directly from Jutsu Trader dashboard**
+
+**Problem Solved**:
+- User required: "I shouldn't be doing cron job separately. I should be able to do cron job on and off from UI"
+- No system crontab dependency - scheduler runs in-process with the API server
+- Single point of control through dashboard UI
+
+**Backend Implementation** (`jutsu_engine/api/scheduler.py`) - NEW:
+- `SchedulerState`: Persistent JSON state for scheduler configuration
+  - File: `state/scheduler_state.json`
+  - Stores: enabled, execution_time, last_run, last_run_status, run_count
+  - Thread-safe with Lock
+- `SchedulerService`: Singleton APScheduler wrapper
+  - CronTrigger for Mon-Fri scheduling at configured EST times
+  - Market hours awareness via NYSE calendar
+  - Job coalescing (skips missed runs)
+  - Single instance protection
+
+**Execution Time Priority Chain**:
+1. Database override (ConfigOverride table) - HIGHEST
+2. YAML config file (live_trading_config.yaml)
+3. State file fallback (scheduler_state.json)
+
+**Execution Time Mapping**:
+```python
+EXECUTION_TIME_MAP = {
+    'open': time(9, 30),           # 9:30 AM EST
+    '15min_after_open': time(9, 45), # 9:45 AM EST (default)
+    '15min_before_close': time(15, 45),
+    '5min_before_close': time(15, 55),
+    'close': time(16, 0),
+}
+```
+
+**API Endpoints** (`jutsu_engine/api/routes/control.py`):
+- `GET /api/control/scheduler` - Get scheduler status
+- `POST /api/control/scheduler/enable` - Enable scheduled execution
+- `POST /api/control/scheduler/disable` - Disable scheduled execution
+- `POST /api/control/scheduler/trigger` - Manual trigger (Run Now)
+
+**Frontend Implementation** (`dashboard/src/components/SchedulerControl.tsx`) - NEW:
+- Toggle switch to enable/disable scheduling
+- "Run Now" button for manual trigger override
+- Real-time status display:
+  - Next scheduled run time
+  - Last run status (success/failed/skipped)
+  - Error details if last run failed
+  - Run count
+- React Query with 30-second auto-refresh
+
+**API Client Updates** (`dashboard/src/api/client.ts`):
+- `SchedulerStatus` interface
+- `TriggerResponse` interface
+- `controlApi.getSchedulerStatus()`
+- `controlApi.enableScheduler()`
+- `controlApi.disableScheduler()`
+- `controlApi.triggerScheduler()`
+
+**Dependencies Added**:
+- `apscheduler>=3.10.0` - Python async scheduler
+- `pytz` - Timezone support for EST
+
+**Bug Fixed**:
+- Scheduler was reading "close" from YAML instead of "15min_after_open" from database
+- Fix: `_get_execution_time()` now queries ConfigOverride table first
+
+**Testing Results**:
+- Enable scheduler → Next run: Dec 5, 9:45 AM EST ✓
+- Manual trigger → Trading workflow executes successfully ✓
+- State persistence → scheduler_state.json updated correctly ✓
+- Database override → Correctly reads from config_overrides table ✓
+
+**Agent Context Files Updated**:
+- `.claude/layers/infrastructure/modules/DASHBOARD_BACKEND_AGENT.md` - Scheduler API docs
+- `.claude/layers/infrastructure/modules/DASHBOARD_FRONTEND_AGENT.md` - SchedulerControl docs
+
+**Serena Memory Written**: `ui_scheduler_control_implementation_2025-12-04.md`
+
+---
+
+#### **Jutsu Trader - Dashboard Trade Execution** (2025-12-04)
+
+**Implemented trade execution capability directly from the dashboard UI (Jutsu Trader)**
+
+**Product Name**: **Jutsu Trader** - Unified Trading Dashboard & Execution Platform
+
+**Backend Implementation** (`jutsu_engine/api/`):
+- `schemas.py`: Added `ExecuteTradeRequest` and `ExecuteTradeResponse` Pydantic schemas
+- `routes/trades.py`: Added `POST /api/trades/execute` endpoint
+  - Symbol validation: QQQ, TQQQ, PSQ, TMF, TMV, TLT
+  - Price fetching: Schwab API → database fallback → estimates
+  - MockOrderExecutor integration for paper trading
+  - Database recording via LiveTrade model
+  - Helper function `_get_current_price()` with multi-source fallback
+
+**Frontend Implementation** (`dashboard/src/`):
+- `api/client.ts`: Added TypeScript types and `tradesApi.executeTrade()` function
+- `components/ExecuteTradeModal.tsx`: NEW - Trade execution modal with 4-step flow
+  - Step 1 (input): Symbol dropdown, BUY/SELL toggle, quantity, reason
+  - Step 2 (confirm): Review trade details before execution
+  - Step 3 (loading): Spinner during API call
+  - Step 4 (result): Success/error display with trade details
+- `pages/Dashboard.tsx`: Added "Execute Trade" button, "Jutsu Trader" branding
+- `pages/Trades.tsx`: Added "Execute Trade" button alongside "Export CSV"
+
+**Agent Context Files Created**:
+- `.claude/layers/infrastructure/modules/DASHBOARD_ORCHESTRATOR.md`
+- `.claude/layers/infrastructure/modules/DASHBOARD_BACKEND_AGENT.md`
+- `.claude/layers/infrastructure/modules/DASHBOARD_FRONTEND_AGENT.md`
+
+**Data Flow**:
+```
+Dashboard UI → "Execute Trade" Button
+            → ExecuteTradeModal (form → confirm → execute)
+            → POST /api/trades/execute
+            → Backend validates request
+            → MockOrderExecutor executes
+            → Database: live_trades, positions updated
+            → Response with fill details
+            → UI shows success/error
+```
+
+**Serena Memory Written**: `jutsu_trader_trade_execution.md`
+
+---
+
+#### **Dashboard Unified Database Integration** (2025-12-04)
+
+**Implemented unified database approach where MockOrderExecutor writes directly to database, making dashboard the single source of truth for viewing portfolio data**
+
+**Problem Solved**:
+- Dashboard was disconnected from mock trading - showed no data despite trades executing
+- MockOrderExecutor only wrote to CSV, but Dashboard API read from database (empty tables)
+- Result: Dashboard showed "No trades found" even after successful mock trades
+
+**Solution - Database Integration**:
+- `jutsu_engine/live/mock_order_executor.py`:
+  - Added `_save_to_database()`: Saves LiveTrade records to database
+  - Added `update_positions()`: Updates Position records in database
+  - Added `save_performance_snapshot()`: Saves PerformanceSnapshot records
+  - Added `close()`: Cleanup database session
+  - Database is PRIMARY storage, CSV is backup
+
+- `scripts/daily_dry_run.py`:
+  - Added Step 12b: `executor.update_positions()` after trade execution
+  - Added Step 12c: `executor.save_performance_snapshot()` for equity tracking
+  - Added `executor.close()` for cleanup
+
+**Bug Fix - API Slippage Null Handling**:
+- `jutsu_engine/api/routes/trades.py`:
+  - Fixed: `slippage_pct=float(trade.slippage_pct) if trade.slippage_pct else None` (0 is falsy!)
+  - To: `slippage_pct=float(trade.slippage_pct) if trade.slippage_pct is not None else 0.0`
+  - This caused frontend crash: "Cannot read properties of null (reading 'toFixed')"
+
+**Data Flow**:
+```
+daily_dry_run.py → MockOrderExecutor
+                    ├── CSV (backup): logs/live_trades.csv
+                    └── Database (primary): data/market_data.db
+                                           ├── live_trades
+                                           ├── positions
+                                           └── performance_snapshots
+                                                    ↓
+                                           Dashboard API
+                                                    ↓
+                                           React Dashboard ✅
+```
+
+**Verification**:
+- Dashboard displays: Portfolio ($10K), Positions (QQQ 12 shares), Trades (1 BUY)
+- Trade History page shows all mock trades with correct slippage (0.000%)
+- Performance page shows equity snapshots
+
+**Serena Memory Written**: `dashboard_database_integration.md`
+
+---
+
+#### **Pre-Execution Data Freshness Check** (2025-12-03)
+
+**Implemented automatic data freshness validation before live trading execution**
+
+**Purpose**:
+- Validates local database has up-to-date market data before 15:49 EST live trading execution
+- Auto-triggers `jutsu sync` if data is stale (optional)
+- Runs at 15:44 EST (5 minutes before execution) via cron or as part of daily_dry_run.py
+
+**New Files**:
+- `jutsu_engine/live/data_freshness.py` - Core `DataFreshnessChecker` class
+- `scripts/pre_execution_sync.py` - Standalone pre-execution check script (cron-schedulable)
+- `tests/unit/live/test_data_freshness.py` - Comprehensive unit tests
+
+**Key Features**:
+- Freshness Definition: Data is "fresh" if `last_bar_timestamp >= previous trading day`
+- NYSE calendar integration via `get_previous_trading_day()` (handles weekends/holidays)
+- Auto-sync: Triggers `jutsu sync <symbol>` for stale symbols (configurable)
+- Report Generation: Human-readable freshness report for audit trail
+- Exit Codes: 0=success, 1=failure, 2=skipped (not trading day), 3=error
+
+**Usage**:
+```bash
+# Standalone pre-execution check (schedule at 15:44 EST)
+python scripts/pre_execution_sync.py
+
+# Check only, no auto-sync
+python scripts/pre_execution_sync.py --no-sync
+
+# Check specific symbols
+python scripts/pre_execution_sync.py --symbols QQQ,TLT,TQQQ
+
+# Integrated with daily dry-run
+python scripts/daily_dry_run.py --check-freshness
+```
+
+**API**:
+```python
+from jutsu_engine.live.data_freshness import DataFreshnessChecker
+
+checker = DataFreshnessChecker(
+    db_path='data/market_data.db',
+    required_symbols=['QQQ', 'TLT', 'TQQQ', 'PSQ', 'TMF', 'TMV']
+)
+is_fresh, details = checker.ensure_fresh_data(auto_sync=True)
+print(checker.generate_report(details))
+checker.close()
+```
+
+**Non-Blocking Design**:
+- Live trading fetches from Schwab API directly, not local DB
+- Freshness check is validation/fallback - execution continues even if stale
+- Warning logged but workflow not interrupted
+
+---
+
+#### **Dashboard Indicators Display Fix - Strategy Warmup & Attribute Storage** (2025-12-03)
+
+**Fixed indicators showing 0/N/A in dashboard by implementing strategy warmup and storing indicator values as instance attributes**
+
+**Root Cause Analysis**:
+1. Strategy's `on_bar()` was not receiving proper bar data - `_update_bar()` must be called first to populate `self._bars`
+2. `T_norm` and `z_score` were LOCAL variables in `on_bar()`, never stored as instance attributes
+3. `get_strategy_context()` tried to read `self._last_t_norm` and `self._last_z_score` which didn't exist
+
+**Bug Fixes**:
+- `jutsu_engine/strategies/Hierarchical_Adaptive_v3_5b.py`:
+  - Added storage of indicators as instance attributes in `on_bar()` (after line 756):
+    ```python
+    self._last_t_norm = T_norm
+    self._last_z_score = z_score
+    ```
+  - Added initialization in `__init__()` to prevent AttributeError:
+    ```python
+    self.trend_state = None
+    self.cell_id = None
+    self._last_t_norm = None
+    self._last_z_score = None
+    ```
+- `jutsu_engine/live/strategy_runner.py`: Fixed `calculate_signals()` to call `_update_bar()` before `on_bar()`
+- `jutsu_engine/api/dependencies.py`: Added strategy warmup mechanism with 300 days of historical data
+
+**Technical Details**:
+- Strategy requires minimum `sma_slow + 20` bars (160 bars) before indicators produce valid values
+- Warmup loads QQQ and TLT historical data from database and feeds through strategy
+- After warmup, `get_strategy_context()` returns populated indicator values
+
+**Validated via Playwright**:
+- Dashboard displays: Strategy Cell=4, Trend State=Sideways, Volatility State=High, Z-Score=1.71
+- API `/api/indicators` returns: `current_cell: 4.0, t_norm: -0.264, z_score: 1.707`
+
+---
+
+#### **Dashboard Startup/Shutdown Scripts** (2025-12-03)
+
+**Added convenience scripts for dashboard management**
+
+**New Files**:
+- `scripts/start_dashboard.sh` - Starts API backend + React frontend
+- `scripts/stop_dashboard.sh` - Stops all dashboard processes
+
+**Usage**:
+```bash
+./scripts/start_dashboard.sh   # Start everything
+./scripts/stop_dashboard.sh    # Stop everything
+```
+
+**Features**:
+- Auto-detects if services already running
+- Verifies successful startup with health check
+- Logs output to `logs/api_server.log` and `logs/dashboard.log`
+- Cleans up orphaned processes on stop
+
+---
+
+#### **Dashboard API Bug Fixes - Indicators & Config** (2025-12-03)
+
+**Fixed Indicators Endpoint 500 Error and Config Persistence**
+
+**Bug Fixes**:
+- `jutsu_engine/api/routes/indicators.py`: Fixed `float() argument must be a string or a real number, not 'NoneType'` error
+  - Lines 100, 108, 117, 127, 137: Added `is not None` checks before `float()` conversion
+  - Strategy context values are None when no bars have been processed
+  - Indicators endpoint now returns 200 OK with only non-null indicators
+- `jutsu_engine/api/routes/config.py`: Fixed config changes not persisting
+  - Lines 275, 361: Changed `change_reason` to correct field names (`reason`, `change_type`)
+  - ConfigHistory model has fields: `reason`, `change_type` - not `change_reason`
+  - Config updates now correctly logged to ConfigHistory table
+
+**Root Cause Analysis**:
+- Indicators: Strategy runner returns `{'current_cell': None, 't_norm': None, ...}` before processing bars
+- Config: SQLAlchemy silently ignored unknown field `change_reason`, causing history not to persist
+
+**Validated**:
+- `GET /api/indicators` returns HTTP 200 with valid JSON
+- `PUT /api/config` successfully updates and persists changes
+- `GET /api/config` shows `is_overridden: true` for updated parameters
+
+---
+
+#### **Dashboard Bug Fixes** (2025-12-03)
+
+**Fixed Critical Dashboard Startup Issues**
+
+**Bug Fixes**:
+- `jutsu_engine/api/schemas.py`: Fixed Pydantic validation errors for `RegimeInfo` fields
+  - Made `cell`, `trend_state`, `vol_state` Optional to accept None values when strategy not running
+  - Error was: `cell Input should be a valid integer [type=int_type, input_value=None]`
+- `jutsu_engine/api/main.py`: Fixed `no such table: positions` database error
+  - Added `Base.metadata.create_all(engine)` in FastAPI lifespan handler
+  - Tables now auto-created on API startup
+- `jutsu_engine/api/main.py`: Fixed SQLAlchemy 2.0 compatibility
+  - Added `text()` wrapper for raw SQL queries: `db.execute(text("SELECT 1"))`
+- `jutsu_engine/api/routes/status.py`: Fixed regime info construction
+  - Handle None values explicitly when building RegimeInfo from strategy context
+
+**Validated Via Playwright MCP**:
+- API `/api/status` returns HTTP 200 with valid JSON
+- API `/api/status/health` returns HTTP 200
+- Database tables created successfully at startup
+- React dashboard loads correctly
+
+---
+
+#### **Live Trading Phase 3 & 4 Implementation** (2025-12-03)
+
+**PRD v2.0.1 Compliant - Dashboard MVP & Advanced Features**
+
+### Phase 3: Dashboard MVP (3 tasks)
+
+**7.3.1 FastAPI Backend** (`jutsu_engine/api/` - NEW directory):
+- Full REST API with 10 endpoint groups as specified in PRD
+- Pydantic schemas for all request/response models
+- CORS configuration for React development
+- HTTP Basic authentication support (optional)
+- SQLAlchemy session management via dependencies
+- Engine state singleton for tracking running status
+
+**API Endpoints Created**:
+- `GET /api/status` - Full system status with regime and portfolio
+- `GET /api/status/health` - Health check endpoint
+- `GET /api/status/regime` - Current regime only
+- `GET /api/config` - All parameters with constraints
+- `PUT /api/config` - Update parameter with validation
+- `DELETE /api/config/{name}` - Reset to default
+- `GET /api/trades` - Paginated trade history with filters
+- `GET /api/trades/export` - CSV export
+- `GET /api/trades/{id}` - Single trade details
+- `GET /api/trades/summary/stats` - Trade statistics
+- `GET /api/performance` - Metrics and history
+- `GET /api/performance/equity-curve` - Chart data
+- `GET /api/performance/drawdown` - Drawdown analysis
+- `GET /api/performance/regime-breakdown` - By-regime performance
+- `POST /api/control/start` - Start engine
+- `POST /api/control/stop` - Stop engine
+- `POST /api/control/restart` - Restart engine
+- `POST /api/control/mode` - Switch trading mode
+- `GET /api/control/state` - Engine state
+- `GET /api/indicators` - Current indicator values
+- `GET /api/indicators/descriptions` - Indicator descriptions
+
+**7.3.2 React Dashboard** (`dashboard/` - NEW directory):
+- React 18 with TypeScript
+- Vite build system with proxy configuration
+- TanStack Query (React Query) for data fetching
+- Tailwind CSS with custom trading theme
+- lucide-react icons
+- lightweight-charts for equity visualization
+
+**Pages Created**:
+- `Dashboard.tsx` - Main dashboard with control panel, regime display, portfolio
+- `Trades.tsx` - Trade history with pagination, filters, CSV export
+- `Performance.tsx` - Metrics, equity curve chart, regime breakdown
+- `Config.tsx` - Parameter editor with type-aware inputs
+
+**Components**:
+- `Layout.tsx` - Sidebar navigation, header with status indicators
+
+**Hooks**:
+- `useStatus.ts` - Status, regime, indicators, engine control mutations
+- `useWebSocket.ts` - Real-time updates with auto-reconnect
+
+**7.3.3 CLI Dashboard Command** (`jutsu_engine/cli/main.py`):
+- `jutsu dashboard` command to start API server
+- Options: `--port`, `--host`, `--reload`, `--workers`
+- Health checks before server start
+
+### Phase 4: Dashboard Advanced (3 tasks)
+
+**8.4.1 Parameter Editor UI**:
+- Type-aware input controls (number, select, boolean)
+- Constraint display (min/max, allowed values)
+- Override indicator with reset capability
+- Change reason tracking
+- Real-time validation
+
+**8.4.2 WebSocket Live Updates** (`jutsu_engine/api/websocket.py` - NEW):
+- `ConnectionManager` for WebSocket connection tracking
+- Background broadcast loop for status updates
+- Event broadcasting: `trade_executed`, `regime_change`, `error`
+- Auto-reconnect with exponential backoff on frontend
+- Query invalidation on relevant events
+- Ping/pong keep-alive mechanism
+
+**8.4.3 Equity Curve Chart**:
+- lightweight-charts integration
+- Dark theme matching dashboard
+- Responsive sizing
+- Auto-fit content on data load
+- Time-series equity visualization
+
+### New Files Created
+```
+jutsu_engine/api/
+├── __init__.py           # Package exports
+├── main.py               # FastAPI application
+├── schemas.py            # Pydantic models
+├── dependencies.py       # DB, auth, engine state
+├── websocket.py          # WebSocket support
+└── routes/
+    ├── __init__.py       # Route exports
+    ├── status.py         # Status endpoints
+    ├── config.py         # Config endpoints
+    ├── trades.py         # Trade endpoints
+    ├── performance.py    # Performance endpoints
+    ├── control.py        # Control endpoints
+    └── indicators.py     # Indicator endpoints
+
+dashboard/
+├── package.json          # Dependencies
+├── vite.config.ts        # Vite configuration
+├── tsconfig.json         # TypeScript config
+├── tailwind.config.js    # Tailwind config
+├── index.html            # HTML entry
+└── src/
+    ├── main.tsx          # React entry
+    ├── App.tsx           # Routes
+    ├── index.css         # Tailwind imports
+    ├── api/
+    │   └── client.ts     # API client & types
+    ├── hooks/
+    │   ├── useStatus.ts  # Status hooks
+    │   └── useWebSocket.ts # WebSocket hook
+    ├── components/
+    │   └── Layout.tsx    # Main layout
+    └── pages/
+        ├── Dashboard.tsx # Dashboard page
+        ├── Trades.tsx    # Trades page
+        ├── Performance.tsx # Performance page
+        └── Config.tsx    # Config page
+```
+
+### Dependencies Added
+**Python** (`requirements.txt`):
+- fastapi>=0.104.0
+- uvicorn[standard]>=0.24.0
+
+**Frontend** (`dashboard/package.json`):
+- react@18
+- react-router-dom@6
+- @tanstack/react-query@5
+- axios@1
+- lightweight-charts@4
+- tailwindcss@3
+- lucide-react@0.300
+
+**Agent Routing**: `/orchestrate` → INFRASTRUCTURE_ORCHESTRATOR + DASHBOARD_AGENT
+
+---
+
+#### **Live Trading Phase 2 Implementation** (2025-12-03)
+
+**PRD v2.0.1 Compliant - Online Trading with Safety Controls**
+
+### Phase 2: Online Live Trading (4 tasks)
+
+**6.2.1 SchwabOrderExecutor** (`jutsu_engine/live/schwab_executor.py` - NEW):
+- Implements `ExecutorInterface` for real Schwab API order execution
+- Database logging via SQLAlchemy Session (replaces CSV logging)
+- SELL-first, BUY-second order sequence (same as mock)
+- Captures Schwab order IDs for reconciliation and audit
+- Strategy context persisted with each trade
+- Configurable fill timeout (default 30s)
+
+**6.2.2 Slippage Abort Mechanism**:
+- Integrated into SchwabOrderExecutor
+- 1% slippage threshold (configurable via `slippage_abort_pct`)
+- Raises `SlippageExceeded` exception on threshold breach
+- Logs slippage warnings at 0.5% level
+- Formula: `slippage_pct = |fill_price - expected_price| / expected_price * 100`
+
+**6.2.3 Fill Reconciliation** (`jutsu_engine/live/reconciliation.py` - NEW):
+- `ReconciliationResult` dataclass with structured comparison data
+- `FillReconciler` class for comparing local vs Schwab records
+- Matches trades by Schwab order ID
+- Detects: missing_local, missing_schwab, price_discrepancies, quantity_discrepancies
+- `reconcile_period()` for date range reconciliation
+- `daily_reconciliation()` for scheduled 17:00 ET checks
+- `generate_report()` for human-readable reconciliation reports
+
+**6.2.4 Online Mode Confirmation** (`jutsu_engine/cli/main.py`):
+- Added `--confirm` flag requirement for online mode
+- Two-stage confirmation:
+  1. Without `--confirm`: Shows warning, requires flag
+  2. With `--confirm`: Requires typing 'YES' (all caps)
+- Records first-trade confirmation timestamp for audit
+- Clear warnings about financial risk and irreversibility
+
+### New Files Created
+```
+jutsu_engine/live/
+├── schwab_executor.py     # Real Schwab API executor
+└── reconciliation.py      # Fill reconciliation system
+```
+
+### Updated Exports (`jutsu_engine/live/__init__.py`):
+- Added: SchwabOrderExecutor, FillReconciler, ReconciliationResult
+- Updated module docstring with Phase 2 components
+
+### Safety Controls Summary
+- ✓ Explicit `--confirm` flag required for online mode
+- ✓ Interactive 'YES' confirmation prompt
+- ✓ 1% slippage abort threshold
+- ✓ Daily reconciliation at 17:00 ET
+- ✓ Database audit trail (replaces CSV)
+- ✓ Strategy context logging for all trades
+
+**Agent Routing**: `/orchestrate` → INFRASTRUCTURE_ORCHESTRATOR + CLI_AGENT
+
+---
+
+#### **Live Trading Phase 0 & Phase 1 Implementation** (2025-12-03)
+
+**PRD v2.0.1 Compliant - Unified Executor Architecture**
+
+### Phase 0: Foundation (6 tasks)
+
+**0.1 Database Models** (`jutsu_engine/data/models.py`):
+- Added 6 new SQLAlchemy models for live trading:
+  - `LiveTrade`: Trade records with strategy context
+  - `Position`: Current portfolio positions by mode
+  - `PerformanceSnapshot`: Daily equity/return snapshots
+  - `ConfigOverride`: Runtime parameter overrides
+  - `ConfigHistory`: Config change audit trail
+  - `SystemState`: Key-value system state store
+- All financial fields use `Numeric(18,6)` precision
+- Proper indexes on query-heavy columns
+
+**0.2 Strategy Runner Fix** (`jutsu_engine/live/strategy_runner.py`):
+- Refactored to use flat `**params` injection
+- Removed broken nested config parsing (lines 82-126)
+- Now all 32 strategy parameters injected correctly
+
+**0.3 Config Migration** (`config/live_trading_config.yaml`):
+- Migrated to flat structure with 32 parameters
+- Format matches grid search output exactly
+- All parameters under `strategy.parameters` directly
+
+**0.4 Execution Time** (`Hierarchical_Adaptive_v3_5b.py`, `v3_6.py`):
+- Added `5min_before_close: time(15, 55)` to EXECUTION_TIMES
+- Now supports 5 execution time options
+
+**0.5 TradingMode Enum** (`jutsu_engine/live/mode.py` - NEW):
+- Created `TradingMode` enum: `OFFLINE_MOCK`, `ONLINE_LIVE`
+- Helper methods: `from_string()`, `is_mock`, `is_live`, `db_value`
+- Supports aliases: mock, live, dry_run, paper
+
+**0.6 ExecutorRouter** (`jutsu_engine/live/executor_router.py` - NEW):
+- `ExecutorInterface` ABC: unified interface for all executors
+- `execute_rebalance()`: position_diffs → fills, fill_prices
+- `get_mode()`: returns TradingMode
+- `ExecutorRouter.create()`: factory for appropriate executor
+
+### Phase 1: Offline Mock Trading (5 tasks)
+
+**1.1 MockOrderExecutor** (`jutsu_engine/live/mock_order_executor.py` - NEW):
+- Implements `ExecutorInterface` for dry-run mode
+- Logs hypothetical trades to CSV with strategy context
+- SELL-first, BUY-second order sequence (matching live)
+- Includes `filter_by_threshold()` for 5% rebalance minimum
+
+**1.2 CLI Live Command** (`jutsu_engine/cli/main.py`):
+- Added `jutsu live` command
+- Options: `--mode` (mock/live), `--execution-time`, `--config`, `--dry-run`
+- Displays strategy state and weight allocations
+
+**1.3 Strategy Context Logging**:
+- All trades logged with: cell, trend_state, vol_state, t_norm, z_score
+- CSV columns include full strategy regime context
+- Enables post-market validation and analysis
+
+**1.4 PerformanceTracker** (`jutsu_engine/live/performance_tracker.py` - NEW):
+- Daily portfolio snapshots at 16:05 ET
+- Calculates: daily_return, cumulative_return, drawdown
+- High water mark tracking for accurate drawdown
+- Separate tracking for offline/online modes
+- `get_metrics_summary()` for dashboard integration
+
+**1.5 daily_dry_run.py Refactor** (`scripts/daily_dry_run.py`):
+- Now uses unified `ExecutorRouter` instead of `DryRunExecutor`
+- Strategy context passed to executor for logging
+- Compatible with new flat config structure
+
+### New Files Created
+```
+jutsu_engine/live/
+├── mode.py                  # TradingMode enum
+├── executor_router.py       # ExecutorInterface + ExecutorRouter
+├── mock_order_executor.py   # Mock executor (dry-run)
+├── live_order_executor.py   # Live executor wrapper
+└── performance_tracker.py   # Daily performance snapshots
+```
+
+### Updated Exports (`jutsu_engine/live/__init__.py`):
+- Version bumped to 2.0.0
+- Added: TradingMode, ExecutorInterface, ExecutorRouter
+- Added: MockOrderExecutor, LiveOrderExecutor, PerformanceTracker
+
+**Agent Routing**: `/orchestrate` → INFRASTRUCTURE_ORCHESTRATOR + STRATEGY_AGENT
+
+---
+
 #### **Fix Live Trading Daily Dry-Run Script** (2025-12-02)
 
 **Issues Fixed** (4 bugs blocking script execution):

@@ -1,0 +1,207 @@
+"""
+WebSocket support for live updates.
+
+Provides real-time streaming of:
+- Status updates (running state, uptime)
+- Regime changes (cell, trend, volatility)
+- Portfolio updates (positions, equity)
+- Trade executions
+- Indicator values
+"""
+
+import asyncio
+import json
+import logging
+from datetime import datetime, timezone
+from typing import Set, Optional
+from fastapi import WebSocket, WebSocketDisconnect
+
+logger = logging.getLogger("API.WEBSOCKET")
+
+
+class ConnectionManager:
+    """Manages WebSocket connections and broadcasts."""
+
+    def __init__(self):
+        self.active_connections: Set[WebSocket] = set()
+        self._broadcast_task: Optional[asyncio.Task] = None
+        self._running = False
+
+    async def connect(self, websocket: WebSocket):
+        """Accept and track new WebSocket connection."""
+        await websocket.accept()
+        self.active_connections.add(websocket)
+        logger.info(f"WebSocket connected. Total connections: {len(self.active_connections)}")
+
+    def disconnect(self, websocket: WebSocket):
+        """Remove WebSocket connection from tracking."""
+        self.active_connections.discard(websocket)
+        logger.info(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
+
+    async def broadcast(self, message: dict):
+        """Broadcast message to all connected clients."""
+        if not self.active_connections:
+            return
+
+        data = json.dumps(message)
+        disconnected = set()
+
+        for connection in self.active_connections:
+            try:
+                await connection.send_text(data)
+            except Exception as e:
+                logger.warning(f"Failed to send to WebSocket: {e}")
+                disconnected.add(connection)
+
+        # Clean up disconnected clients
+        for conn in disconnected:
+            self.active_connections.discard(conn)
+
+    async def send_personal_message(self, message: dict, websocket: WebSocket):
+        """Send message to specific WebSocket connection."""
+        try:
+            await websocket.send_text(json.dumps(message))
+        except Exception as e:
+            logger.warning(f"Failed to send personal message: {e}")
+
+    def start_broadcast_loop(self, get_status_func, interval: float = 1.0):
+        """Start background task to broadcast status updates."""
+        if self._running:
+            return
+
+        self._running = True
+        self._broadcast_task = asyncio.create_task(
+            self._broadcast_loop(get_status_func, interval)
+        )
+        logger.info("WebSocket broadcast loop started")
+
+    def stop_broadcast_loop(self):
+        """Stop background broadcast task."""
+        self._running = False
+        if self._broadcast_task:
+            self._broadcast_task.cancel()
+            self._broadcast_task = None
+        logger.info("WebSocket broadcast loop stopped")
+
+    async def _broadcast_loop(self, get_status_func, interval: float):
+        """Background loop that broadcasts status at regular intervals."""
+        while self._running:
+            try:
+                if self.active_connections:
+                    status = get_status_func()
+                    if status:
+                        await self.broadcast({
+                            "type": "status_update",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "data": status
+                        })
+
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Broadcast loop error: {e}")
+                await asyncio.sleep(interval)
+
+
+# Global connection manager instance
+manager = ConnectionManager()
+
+
+async def websocket_endpoint(websocket: WebSocket):
+    """
+    WebSocket endpoint handler.
+
+    Messages sent by server:
+    - status_update: Regular status broadcasts
+    - trade_executed: When a trade executes
+    - regime_change: When regime changes
+    - error: Error notifications
+
+    Messages accepted from client:
+    - subscribe: Subscribe to specific update types
+    - unsubscribe: Unsubscribe from update types
+    - ping: Keep-alive ping (server responds with pong)
+    """
+    await manager.connect(websocket)
+
+    try:
+        # Send initial connection acknowledgment
+        await manager.send_personal_message({
+            "type": "connected",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "message": "WebSocket connection established"
+        }, websocket)
+
+        # Handle incoming messages
+        while True:
+            try:
+                data = await websocket.receive_text()
+                message = json.loads(data)
+
+                msg_type = message.get("type", "")
+
+                if msg_type == "ping":
+                    await manager.send_personal_message({
+                        "type": "pong",
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }, websocket)
+
+                elif msg_type == "subscribe":
+                    # Subscription handling (future enhancement)
+                    await manager.send_personal_message({
+                        "type": "subscribed",
+                        "channels": message.get("channels", [])
+                    }, websocket)
+
+                elif msg_type == "unsubscribe":
+                    await manager.send_personal_message({
+                        "type": "unsubscribed",
+                        "channels": message.get("channels", [])
+                    }, websocket)
+
+                else:
+                    await manager.send_personal_message({
+                        "type": "error",
+                        "message": f"Unknown message type: {msg_type}"
+                    }, websocket)
+
+            except json.JSONDecodeError:
+                await manager.send_personal_message({
+                    "type": "error",
+                    "message": "Invalid JSON"
+                }, websocket)
+
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        manager.disconnect(websocket)
+
+
+# Utility functions for broadcasting specific events
+async def broadcast_trade_executed(trade_data: dict):
+    """Broadcast trade execution event."""
+    await manager.broadcast({
+        "type": "trade_executed",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "data": trade_data
+    })
+
+
+async def broadcast_regime_change(regime_data: dict):
+    """Broadcast regime change event."""
+    await manager.broadcast({
+        "type": "regime_change",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "data": regime_data
+    })
+
+
+async def broadcast_error(error_message: str):
+    """Broadcast error notification."""
+    await manager.broadcast({
+        "type": "error",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "message": error_message
+    })

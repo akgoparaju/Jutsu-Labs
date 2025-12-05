@@ -43,3 +43,12 @@ passlib[bcrypt]>=1.7.4
 
 # Form data
 python-multipart>=0.0.6
+
+# Scheduling
+apscheduler>=3.10.0
+
+# Timezone handling
+pytz>=2023.3
+
+# Market Calendar
+pandas-market-calendars>=4.0.0

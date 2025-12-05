@@ -1,0 +1,637 @@
+"""
+Scheduler Service for Jutsu Trading Dashboard
+
+Provides UI-controlled scheduling for automated trading execution.
+Uses APScheduler for job management with persistence.
+
+Features:
+- Enable/disable scheduled execution from UI
+- Manual trigger override
+- Market hours awareness (NYSE calendar)
+- Persistent state across API restarts
+- Configurable execution times
+
+Execution Time Mapping:
+- 'open': 9:30 AM EST
+- '15min_after_open': 9:45 AM EST
+- '15min_before_close': 3:45 PM EST
+- '5min_before_close': 3:55 PM EST
+- 'close': 4:00 PM EST
+"""
+
+import json
+import logging
+import asyncio
+from datetime import datetime, time, timezone, timedelta
+from pathlib import Path
+from typing import Optional, Dict, Any, Callable
+from threading import Lock
+
+import pytz
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.jobstores.memory import MemoryJobStore
+from apscheduler.triggers.cron import CronTrigger
+
+logger = logging.getLogger('API.SCHEDULER')
+
+# Eastern timezone for market hours
+EASTERN = pytz.timezone('US/Eastern')
+
+# Execution time to EST time mapping
+EXECUTION_TIME_MAP: Dict[str, time] = {
+    'open': time(9, 30),
+    '15min_after_open': time(9, 45),
+    '15min_before_close': time(15, 45),
+    '5min_before_close': time(15, 55),
+    'close': time(16, 0),
+}
+
+
+class SchedulerState:
+    """
+    Persistent scheduler state.
+
+    Stores scheduler configuration that survives API restarts.
+    Uses a JSON file for simple persistence.
+    """
+
+    def __init__(self, state_file: Path = Path('state/scheduler_state.json')):
+        self.state_file = state_file
+        self._lock = Lock()
+        self._state: Dict[str, Any] = {
+            'enabled': False,
+            'execution_time': '15min_after_open',
+            'last_run': None,
+            'last_run_status': None,
+            'last_error': None,
+            'run_count': 0,
+        }
+        self._load_state()
+
+    def _load_state(self):
+        """Load state from file if exists."""
+        if self.state_file.exists():
+            try:
+                with open(self.state_file, 'r') as f:
+                    loaded = json.load(f)
+                    self._state.update(loaded)
+                logger.info(f"Scheduler state loaded from {self.state_file}")
+            except Exception as e:
+                logger.warning(f"Failed to load scheduler state: {e}")
+
+    def _save_state(self):
+        """Save state to file."""
+        try:
+            # Ensure directory exists
+            self.state_file.parent.mkdir(parents=True, exist_ok=True)
+
+            # Write to temp file then rename (atomic)
+            temp_file = self.state_file.with_suffix('.tmp')
+            with open(temp_file, 'w') as f:
+                json.dump(self._state, f, indent=2, default=str)
+            temp_file.rename(self.state_file)
+
+            logger.debug(f"Scheduler state saved to {self.state_file}")
+        except Exception as e:
+            logger.error(f"Failed to save scheduler state: {e}")
+
+    @property
+    def enabled(self) -> bool:
+        return self._state.get('enabled', False)
+
+    @enabled.setter
+    def enabled(self, value: bool):
+        with self._lock:
+            self._state['enabled'] = value
+            self._save_state()
+
+    @property
+    def execution_time(self) -> str:
+        return self._state.get('execution_time', '15min_after_open')
+
+    @execution_time.setter
+    def execution_time(self, value: str):
+        if value not in EXECUTION_TIME_MAP:
+            raise ValueError(f"Invalid execution_time: {value}. Must be one of {list(EXECUTION_TIME_MAP.keys())}")
+        with self._lock:
+            self._state['execution_time'] = value
+            self._save_state()
+
+    @property
+    def last_run(self) -> Optional[str]:
+        return self._state.get('last_run')
+
+    @property
+    def last_run_status(self) -> Optional[str]:
+        return self._state.get('last_run_status')
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._state.get('last_error')
+
+    @property
+    def run_count(self) -> int:
+        return self._state.get('run_count', 0)
+
+    def record_run(self, status: str, error: Optional[str] = None):
+        """Record a scheduler run."""
+        with self._lock:
+            self._state['last_run'] = datetime.now(timezone.utc).isoformat()
+            self._state['last_run_status'] = status
+            self._state['last_error'] = error
+            self._state['run_count'] = self._state.get('run_count', 0) + 1
+            self._save_state()
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return state as dictionary."""
+        return self._state.copy()
+
+
+class SchedulerService:
+    """
+    Scheduler service for automated trading execution.
+
+    Manages APScheduler jobs for scheduled daily trading runs and data refresh.
+    Respects market hours and trading days.
+    
+    Jobs:
+    1. Trading Job: Runs at execution time (e.g., 9:45 AM EST) - full trading workflow
+    2. Data Refresh Job: Runs at market close (4:00 PM EST) - price/P&L updates only
+    """
+
+    _instance: Optional['SchedulerService'] = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(
+        self,
+        state_file: Optional[Path] = None,
+        config_loader: Optional[Callable[[], Dict]] = None,
+    ):
+        if self._initialized:
+            return
+
+        self.state = SchedulerState(
+            state_file=state_file or Path('state/scheduler_state.json')
+        )
+        self._config_loader = config_loader
+        self._scheduler: Optional[AsyncIOScheduler] = None
+        self._job_id = 'daily_trading_job'
+        self._refresh_job_id = 'market_close_refresh_job'  # NEW: Market close refresh job
+        self._is_running_job = False
+        self._is_running_refresh = False  # NEW: Track refresh job state
+        self._initialized = True
+
+        logger.info("SchedulerService initialized")
+
+    def _get_execution_time(self) -> str:
+        """
+        Get execution time from config with database overrides.
+
+        Priority:
+        1. Database override (if active)
+        2. YAML config file
+        3. State file fallback
+        """
+        # Check database overrides first (highest priority)
+        try:
+            from jutsu_engine.api.dependencies import SessionLocal
+            from jutsu_engine.data.models import ConfigOverride
+
+            db = SessionLocal()
+            try:
+                override = db.query(ConfigOverride).filter(
+                    ConfigOverride.parameter_name == 'execution_time',
+                    ConfigOverride.is_active == True
+                ).first()
+
+                if override:
+                    logger.debug(f"Using execution_time from database override: {override.override_value}")
+                    return override.override_value
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"Failed to check database overrides: {e}")
+
+        # Fall back to config file
+        if self._config_loader:
+            try:
+                config = self._config_loader()
+                strategy_params = config.get('strategy', {}).get('parameters', {})
+                return strategy_params.get('execution_time', self.state.execution_time)
+            except Exception as e:
+                logger.warning(f"Failed to load execution_time from config: {e}")
+
+        return self.state.execution_time
+
+    def _get_cron_trigger(self, execution_time_key: str) -> CronTrigger:
+        """
+        Create a CronTrigger for the given execution time.
+
+        Runs Monday-Friday at the specified EST time.
+        """
+        est_time = EXECUTION_TIME_MAP.get(execution_time_key)
+        if not est_time:
+            logger.warning(f"Unknown execution_time '{execution_time_key}', defaulting to 15min_after_open")
+            est_time = EXECUTION_TIME_MAP['15min_after_open']
+
+        return CronTrigger(
+            hour=est_time.hour,
+            minute=est_time.minute,
+            day_of_week='mon-fri',
+            timezone=EASTERN,
+        )
+
+    async def _execute_trading_job(self):
+        """
+        Execute the daily trading job.
+
+        Checks market hours and calls the daily_dry_run main function.
+        """
+        if self._is_running_job:
+            logger.warning("Job already running, skipping")
+            return
+
+        self._is_running_job = True
+
+        try:
+            logger.info("=" * 60)
+            logger.info("Scheduled Trading Job Starting")
+            logger.info("=" * 60)
+
+            # Check if it's a trading day
+            from jutsu_engine.live.market_calendar import is_trading_day
+
+            if not is_trading_day():
+                logger.info("Not a trading day - skipping execution")
+                self.state.record_run('skipped', 'Not a trading day')
+                return
+
+            # Import and run the daily dry run main function
+            try:
+                # Import inside to avoid circular imports
+                import sys
+                from pathlib import Path
+
+                # Ensure scripts directory is in path
+                scripts_path = Path(__file__).parent.parent.parent / 'scripts'
+                if str(scripts_path) not in sys.path:
+                    sys.path.insert(0, str(scripts_path))
+
+                from scripts.daily_dry_run import main as daily_dry_run_main
+
+                # Run the trading workflow
+                # Note: This runs synchronously - for production, consider
+                # running in a thread pool to avoid blocking the event loop
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(
+                    None,
+                    lambda: daily_dry_run_main(check_freshness=True)
+                )
+
+                logger.info("Scheduled trading job completed successfully")
+                self.state.record_run('success')
+
+            except Exception as e:
+                logger.error(f"Trading job failed: {e}", exc_info=True)
+                self.state.record_run('failed', str(e))
+
+        finally:
+            self._is_running_job = False
+
+    async def _execute_data_refresh_job(self):
+        """
+        Execute the market close data refresh job.
+        
+        Updates position prices, calculates P&L, and saves performance snapshot
+        WITHOUT running the trading strategy or executing any trades.
+        
+        This runs at market close (4:00 PM EST) regardless of whether
+        trades happened during the day.
+        """
+        if self._is_running_refresh:
+            logger.warning("Refresh job already running, skipping")
+            return
+        
+        self._is_running_refresh = True
+        
+        try:
+            logger.info("=" * 60)
+            logger.info("Market Close Data Refresh Starting")
+            logger.info("=" * 60)
+            
+            # Check if it's a trading day
+            from jutsu_engine.live.market_calendar import is_trading_day
+            
+            if not is_trading_day():
+                logger.info("Not a trading day - skipping data refresh")
+                return
+            
+            try:
+                from jutsu_engine.live.data_refresh import get_data_refresher
+                
+                refresher = get_data_refresher()
+                
+                # Perform full refresh (sync data, update prices, save snapshot)
+                results = await refresher.full_refresh(
+                    sync_data=True,
+                    calculate_ind=True,
+                )
+                
+                if results['success']:
+                    logger.info("Market close data refresh completed successfully")
+                else:
+                    logger.warning(f"Data refresh completed with errors: {results['errors']}")
+                
+            except Exception as e:
+                logger.error(f"Data refresh job failed: {e}", exc_info=True)
+        
+        finally:
+            self._is_running_refresh = False
+
+    def start(self):
+        """Start the scheduler."""
+        if self._scheduler is not None and self._scheduler.running:
+            logger.info("Scheduler already running")
+            return
+
+        self._scheduler = AsyncIOScheduler(
+            jobstores={'default': MemoryJobStore()},
+            timezone=EASTERN,
+        )
+
+        # Add job if scheduler is enabled
+        if self.state.enabled:
+            self._add_job()
+
+        self._scheduler.start()
+        logger.info("Scheduler started")
+
+    def stop(self):
+        """Stop the scheduler."""
+        if self._scheduler is not None:
+            self._scheduler.shutdown(wait=False)
+            self._scheduler = None
+            logger.info("Scheduler stopped")
+
+    def _add_job(self):
+        """Add the trading job and data refresh job to the scheduler."""
+        if self._scheduler is None:
+            return
+
+        # Remove existing jobs if present
+        self._remove_job()
+
+        # Add trading job at execution time
+        execution_time = self._get_execution_time()
+        trigger = self._get_cron_trigger(execution_time)
+
+        self._scheduler.add_job(
+            self._execute_trading_job,
+            trigger=trigger,
+            id=self._job_id,
+            name='Daily Trading Execution',
+            replace_existing=True,
+            coalesce=True,  # Skip missed runs
+            max_instances=1,  # Only one instance at a time
+        )
+
+        logger.info(f"Trading job scheduled: {execution_time} EST (Mon-Fri)")
+        
+        # Add market close refresh job at 4:00 PM EST
+        close_trigger = self._get_cron_trigger('close')
+        
+        self._scheduler.add_job(
+            self._execute_data_refresh_job,
+            trigger=close_trigger,
+            id=self._refresh_job_id,
+            name='Market Close Data Refresh',
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
+        
+        logger.info("Data refresh job scheduled: 4:00 PM EST (Mon-Fri)")
+
+    def _remove_job(self):
+        """Remove the trading job and data refresh job from the scheduler."""
+        if self._scheduler is None:
+            return
+
+        try:
+            self._scheduler.remove_job(self._job_id)
+            logger.info("Trading job removed from scheduler")
+        except Exception:
+            pass  # Job may not exist
+        
+        try:
+            self._scheduler.remove_job(self._refresh_job_id)
+            logger.info("Data refresh job removed from scheduler")
+        except Exception:
+            pass  # Job may not exist
+
+    def enable(self) -> Dict[str, Any]:
+        """
+        Enable scheduled execution.
+
+        Returns:
+            Status dict with enabled state and next run time
+        """
+        self.state.enabled = True
+
+        if self._scheduler is not None and self._scheduler.running:
+            self._add_job()
+
+        logger.info("Scheduler enabled")
+        return self.get_status()
+
+    def disable(self) -> Dict[str, Any]:
+        """
+        Disable scheduled execution.
+
+        Returns:
+            Status dict with disabled state
+        """
+        self.state.enabled = False
+        self._remove_job()
+
+        logger.info("Scheduler disabled")
+        return self.get_status()
+
+    async def trigger_now(self) -> Dict[str, Any]:
+        """
+        Manually trigger execution immediately.
+
+        Returns:
+            Result dict with execution status
+        """
+        logger.info("Manual trigger requested")
+
+        if self._is_running_job:
+            return {
+                'success': False,
+                'message': 'A job is already running',
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+            }
+
+        # Execute the job
+        await self._execute_trading_job()
+
+        return {
+            'success': True,
+            'message': 'Trading job triggered manually',
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'status': self.state.last_run_status,
+            'error': self.state.last_error,
+        }
+
+    def get_next_run_time(self) -> Optional[str]:
+        """Get the next scheduled run time."""
+        if self._scheduler is None or not self.state.enabled:
+            return None
+
+        try:
+            job = self._scheduler.get_job(self._job_id)
+            if job and job.next_run_time:
+                return job.next_run_time.isoformat()
+        except Exception as e:
+            logger.warning(f"Failed to get next run time: {e}")
+
+        return None
+
+    def get_status(self) -> Dict[str, Any]:
+        """
+        Get scheduler status.
+
+        Returns:
+            Complete status dict including:
+            - enabled: Whether scheduler is enabled
+            - execution_time: Configured execution time key
+            - execution_time_est: Human-readable EST time
+            - next_run: Next scheduled run (ISO format)
+            - next_refresh: Next market close refresh (ISO format)
+            - last_run: Last execution time (ISO format)
+            - last_run_status: success, failed, skipped
+            - last_error: Error message if last run failed
+            - run_count: Total number of runs
+            - is_running: Whether a job is currently executing
+            - is_running_refresh: Whether data refresh is running
+        """
+        execution_time = self._get_execution_time()
+        est_time = EXECUTION_TIME_MAP.get(execution_time, time(9, 45))
+
+        return {
+            'enabled': self.state.enabled,
+            'execution_time': execution_time,
+            'execution_time_est': est_time.strftime('%I:%M %p EST'),
+            'next_run': self.get_next_run_time(),
+            'next_refresh': self._get_next_refresh_time(),
+            'last_run': self.state.last_run,
+            'last_run_status': self.state.last_run_status,
+            'last_error': self.state.last_error,
+            'run_count': self.state.run_count,
+            'is_running': self._is_running_job,
+            'is_running_refresh': self._is_running_refresh,
+            'valid_execution_times': list(EXECUTION_TIME_MAP.keys()),
+        }
+    
+    def _get_next_refresh_time(self) -> Optional[str]:
+        """Get the next scheduled data refresh time."""
+        if self._scheduler is None or not self.state.enabled:
+            return None
+        
+        try:
+            job = self._scheduler.get_job(self._refresh_job_id)
+            if job and job.next_run_time:
+                return job.next_run_time.isoformat()
+        except Exception as e:
+            logger.warning(f"Failed to get next refresh time: {e}")
+        
+        return None
+    
+    async def trigger_data_refresh(self) -> Dict[str, Any]:
+        """
+        Manually trigger a data refresh immediately.
+        
+        Updates prices, P&L, and saves performance snapshot
+        WITHOUT running the trading strategy.
+        
+        Returns:
+            Result dict with refresh status
+        """
+        logger.info("Manual data refresh triggered")
+        
+        if self._is_running_refresh:
+            return {
+                'success': False,
+                'message': 'A refresh is already running',
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+            }
+        
+        try:
+            from jutsu_engine.live.data_refresh import get_data_refresher
+            
+            refresher = get_data_refresher()
+            results = await refresher.full_refresh(
+                sync_data=True,
+                calculate_ind=True,
+            )
+            
+            return {
+                'success': results['success'],
+                'message': 'Data refresh completed' if results['success'] else 'Data refresh had errors',
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'details': results,
+            }
+            
+        except Exception as e:
+            logger.error(f"Manual data refresh failed: {e}", exc_info=True)
+            return {
+                'success': False,
+                'message': str(e),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+            }
+
+    def update_execution_time(self, execution_time: str) -> Dict[str, Any]:
+        """
+        Update the execution time.
+
+        Args:
+            execution_time: One of the valid execution time keys
+
+        Returns:
+            Updated status dict
+        """
+        if execution_time not in EXECUTION_TIME_MAP:
+            raise ValueError(
+                f"Invalid execution_time: {execution_time}. "
+                f"Must be one of {list(EXECUTION_TIME_MAP.keys())}"
+            )
+
+        self.state.execution_time = execution_time
+
+        # Reschedule if enabled
+        if self.state.enabled and self._scheduler is not None:
+            self._add_job()
+
+        logger.info(f"Execution time updated to: {execution_time}")
+        return self.get_status()
+
+
+# Singleton instance getter
+_scheduler_service: Optional[SchedulerService] = None
+
+
+def get_scheduler_service() -> SchedulerService:
+    """Get the singleton scheduler service instance."""
+    global _scheduler_service
+
+    if _scheduler_service is None:
+        from jutsu_engine.api.dependencies import load_config
+        _scheduler_service = SchedulerService(config_loader=load_config)
+
+    return _scheduler_service

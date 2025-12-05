@@ -1,49 +1,102 @@
 # Live Trading Configuration - Jutsu Labs
-# Version: 1.0
+# Version: 2.0 (Flat Structure - PRD v2.0.1 Compliant)
 # Strategy: Hierarchical Adaptive v3.5b ("Titan Config")
+#
+# IMPORTANT: This config uses FLAT parameter structure.
+# All 32 strategy parameters are directly under 'parameters' key.
+# This matches grid search output format and strategy __init__ signature.
 
 # ==============================================================================
 # ENVIRONMENT SETTINGS
 # ==============================================================================
-version: "1.0"
+version: "2.0"
 environment: "dry_run"  # Options: dry_run, paper, live
 
 # ==============================================================================
-# STRATEGY PARAMETERS (Titan Config from PRD)
+# PORTFOLIO SETTINGS
+# ==============================================================================
+portfolio:
+  initial_capital: 10000  # Starting capital in USD (default: $10,000)  # Options: dry_run, paper, live
+
+# ==============================================================================
+# STRATEGY CONFIGURATION (32 FLAT PARAMETERS)
 # ==============================================================================
 strategy:
   name: "Hierarchical_Adaptive_v3_5b"
 
-  # Trading Universe
-  universe:
-    signal_symbol: "QQQ"     # Equity trend signal
-    bull_symbol: "TQQQ"      # 3x leveraged QQQ
-    bond_signal: "TLT"       # Bond trend signal
-    bull_bond: "TMF"         # 3x leveraged TLT
-    bear_bond: "TMV"         # 3x inverse TLT
+  # All parameters FLAT - matches strategy __init__ signature exactly
+  parameters:
+    # ------------------------------------------------------------------
+    # KALMAN TREND PARAMETERS (6 parameters)
+    # ------------------------------------------------------------------
+    measurement_noise: 3000.0
+    process_noise_1: 0.01
+    process_noise_2: 0.01
+    osc_smoothness: 15
+    strength_smoothness: 15
+    T_max: 50.0
 
-  # Trend Detection Engine
-  trend_engine:
-    equity_fast_sma: 40      # Fast equity SMA period
-    equity_slow_sma: 140     # Slow equity SMA period
-    bond_fast_sma: 20        # Fast bond SMA period
-    bond_slow_sma: 60        # Slow bond SMA period
-    kalman_model: "velocity_v3.5"  # Kalman filter model version
+    # ------------------------------------------------------------------
+    # STRUCTURAL TREND PARAMETERS (4 parameters)
+    # ------------------------------------------------------------------
+    sma_fast: 40
+    sma_slow: 140
+    t_norm_bull_thresh: 0.05
+    t_norm_bear_thresh: -0.3
 
-  # Volatility Regime Engine
-  volatility_engine:
-    short_window: 21         # Short volatility window (1 month)
-    long_window: 126         # Long volatility window (6 months)
-    z_upper: 1.0             # Upper threshold for regime change
-    z_lower: 0.2             # Lower threshold for regime change
-    vol_crush_threshold: -0.15  # Spike drop detection
+    # ------------------------------------------------------------------
+    # VOLATILITY Z-SCORE PARAMETERS (4 parameters)
+    # ------------------------------------------------------------------
+    realized_vol_window: 21
+    vol_baseline_window: 160
+    upper_thresh_z: 1.0
+    lower_thresh_z: 0.2
 
-  # Allocation Engine
-  allocation:
-    leverage_scalar: 1.0     # Leverage multiplier (1.0 = no extra leverage)
-    inverse_hedge: false     # Enable inverse ETF hedging
-    safe_haven_active: true  # Enable safe-haven bond allocation
-    max_bond_weight: 0.40    # Max bond allocation (40%)
+    # ------------------------------------------------------------------
+    # VOL-CRUSH OVERRIDE (2 parameters)
+    # ------------------------------------------------------------------
+    vol_crush_threshold: -0.15
+    vol_crush_lookback: 5
+
+    # ------------------------------------------------------------------
+    # ALLOCATION PARAMETERS (1 parameter)
+    # ------------------------------------------------------------------
+    leverage_scalar: 1.0
+
+    # ------------------------------------------------------------------
+    # INSTRUMENT TOGGLES (2 parameters)
+    # ------------------------------------------------------------------
+    use_inverse_hedge: false
+    w_PSQ_max: 0.5
+
+    # ------------------------------------------------------------------
+    # TREASURY OVERLAY PARAMETERS (5 parameters)
+    # ------------------------------------------------------------------
+    allow_treasury: true
+    bond_sma_fast: 20
+    bond_sma_slow: 60
+    max_bond_weight: 0.4
+    treasury_trend_symbol: "TLT"
+
+    # ------------------------------------------------------------------
+    # REBALANCING CONTROL (1 parameter)
+    # ------------------------------------------------------------------
+    rebalance_threshold: 0.025
+
+    # ------------------------------------------------------------------
+    # EXECUTION TIMING (1 parameter)
+    # ------------------------------------------------------------------
+    execution_time: "close"  # Options: open, 15min_after_open, 15min_before_close, 5min_before_close, close
+
+    # ------------------------------------------------------------------
+    # SYMBOL CONFIGURATION (6 parameters)
+    # ------------------------------------------------------------------
+    signal_symbol: "QQQ"
+    core_long_symbol: "QQQ"
+    leveraged_long_symbol: "TQQQ"
+    inverse_hedge_symbol: "PSQ"
+    bull_bond_symbol: "TMF"
+    bear_bond_symbol: "TMV"
 
 # ==============================================================================
 # EXECUTION SETTINGS
@@ -96,12 +149,6 @@ state:
   backup_path: "state/backups/"
   reconciliation_threshold_pct: 2.0  # Warn if state drift >2%
 
-  # State file structure (for reference)
-  schema:
-    last_run: "ISO-8601 timestamp"
-    vol_state: "int (hysteresis state: 0-2)"
-    current_positions: "Dict[str, int] (symbol: shares)"
-
 # ==============================================================================
 # ALERTS (Phase 3)
 # ==============================================================================
@@ -138,6 +185,14 @@ schwab:
     trading_per_second: 1
 
 # ==============================================================================
+# DATABASE CONFIGURATION
+# ==============================================================================
+database:
+  url: "sqlite:///data/live_trading.db"  # Separate DB for live trading
+  echo: false
+  pool_size: 5
+
+# ==============================================================================
 # LOGGING
 # ==============================================================================
 logging:
@@ -160,7 +215,7 @@ logging:
 validation:
   backtest_rerun_enabled: true
   price_drift_threshold_pct: 0.5     # Warn if 15:55 vs 16:00 >0.5%
-  logic_match_threshold_pct: 95      # Require ≥95% logic match over 20 days
+  logic_match_threshold_pct: 95      # Require >=95% logic match over 20 days
 
   # Corporate action detection
   corporate_action:
@@ -218,15 +273,15 @@ health:
 # ==============================================================================
 # NOTES
 # ==============================================================================
-# This configuration implements the "Titan Config" from the PRD.
+# Version 2.0 Changes (PRD v2.0.1 Compliance):
+# - Converted nested strategy params to FLAT structure
+# - All 32 parameters directly under strategy.parameters
+# - Parameter names match strategy __init__ signature exactly
+# - Added 5min_before_close as valid execution_time option
+# - Added database configuration section
 #
 # Key User Requirements:
 # 1. NO FRACTIONAL SHARES - All position calculations round DOWN
 # 2. CONFIGURABLE SLIPPAGE - max_slippage_pct = 0.5% (default)
 # 3. ATOMIC STATE WRITES - Temp file + rename pattern
 # 4. CORPORATE ACTION DETECTION - >20% price drop triggers abort
-#
-# Phase 0: Foundation (authentication, market calendar)
-# Phase 1: Dry-Run Mode (no real orders)
-# Phase 2: Paper Trading (real orders in paper account)
-# Phase 3: Production Hardening (alerts, health monitoring)

@@ -66,6 +66,7 @@ EXECUTION_TIMES = {
     "open": time(9, 30),               # 9:30 AM ET
     "15min_after_open": time(9, 45),   # 9:45 AM ET
     "15min_before_close": time(15, 45), # 3:45 PM ET
+    "5min_before_close": time(15, 55),  # 3:55 PM ET
     "close": time(16, 0),               # 4:00 PM ET
 }
 

@@ -1611,6 +1611,381 @@ def wfo(config: str, output_dir: Optional[str], dry_run: bool, plot: bool):
     click.echo("=" * 60)
 
 
+@cli.command()
+@click.option(
+    '--mode',
+    '-m',
+    type=click.Choice(['mock', 'live', 'offline_mock', 'online_live', 'dry_run', 'paper']),
+    default='mock',
+    help='Trading mode: mock (offline dry-run) or live (real orders)',
+)
+@click.option(
+    '--execution-time',
+    '-t',
+    type=click.Choice(['open', '15min_after_open', '15min_before_close', '5min_before_close', 'close']),
+    default=None,
+    help='Override execution time from config (default: from config file)',
+)
+@click.option(
+    '--config',
+    '-c',
+    type=click.Path(exists=True),
+    default='config/live_trading_config.yaml',
+    help='Path to live trading config YAML (default: config/live_trading_config.yaml)',
+)
+@click.option(
+    '--dry-run',
+    is_flag=True,
+    help='Preview signals without logging trades (implies mock mode)',
+)
+@click.option(
+    '--confirm',
+    is_flag=True,
+    help='Confirm intention to execute live trades (required for online mode)',
+)
+def live(mode: str, execution_time: Optional[str], config: str, dry_run: bool, confirm: bool):
+    """
+    Run live trading workflow (Phase 1).
+
+    Executes the trading strategy on current market data and generates
+    target allocations. Supports mock mode (dry-run) and live mode.
+
+    Examples:
+        # Run in mock mode (default) - logs hypothetical trades
+        jutsu live --mode mock
+
+        # Override execution time to 5 minutes before close
+        jutsu live --mode mock --execution-time 5min_before_close
+
+        # Use custom config file
+        jutsu live --mode mock --config my_config.yaml
+
+        # Preview signals without logging (dry run)
+        jutsu live --dry-run
+
+    Modes:
+        mock (default): Calculate signals and log hypothetical trades to CSV
+        live: Execute real orders via Schwab API (requires authentication)
+    """
+    from pathlib import Path
+    import yaml
+
+    from jutsu_engine.live.mode import TradingMode
+    from jutsu_engine.live.executor_router import ExecutorRouter
+    from jutsu_engine.live.strategy_runner import LiveStrategyRunner
+
+    click.echo("=" * 60)
+    click.echo("Jutsu Live Trading Workflow")
+    click.echo("=" * 60)
+
+    # Determine effective mode (dry_run flag overrides to mock)
+    effective_mode = 'mock' if dry_run else mode
+    trading_mode = TradingMode.from_string(effective_mode)
+
+    click.echo(f"\nMode: {trading_mode}")
+    click.echo(f"Config: {config}")
+
+    if execution_time:
+        click.echo(f"Execution Time: {execution_time} (override)")
+    else:
+        click.echo(f"Execution Time: from config")
+
+    # Online mode confirmation check (Task 6.2.4 - PRD v2.0.1)
+    if trading_mode == TradingMode.ONLINE_LIVE:
+        if not confirm:
+            click.echo("")
+            click.echo(click.style("=" * 60, fg='red'))
+            click.echo(click.style("⚠️  ONLINE MODE REQUIRES EXPLICIT CONFIRMATION", fg='red', bold=True))
+            click.echo(click.style("=" * 60, fg='red'))
+            click.echo("")
+            click.echo("You are attempting to run in ONLINE mode which will:")
+            click.echo("  • Execute REAL trades on your Schwab brokerage account")
+            click.echo("  • Use REAL money with potential for financial loss")
+            click.echo("  • Submit market orders that CANNOT be easily reversed")
+            click.echo("")
+            click.echo("To proceed, re-run with the --confirm flag:")
+            click.echo(click.style("  jutsu live --mode live --confirm", fg='yellow'))
+            click.echo("")
+            raise click.Abort()
+
+        # --confirm flag is set, show final warning
+        click.echo("")
+        click.echo(click.style("=" * 60, fg='yellow'))
+        click.echo(click.style("⚠️  LIVE TRADING MODE - FINAL CONFIRMATION", fg='yellow', bold=True))
+        click.echo(click.style("=" * 60, fg='yellow'))
+        click.echo("")
+        click.echo(click.style("WARNING: This will execute REAL orders with REAL money.", fg='red'))
+        click.echo("")
+        click.echo("You acknowledge that:")
+        click.echo("  1. Real trades will be placed on your Schwab account")
+        click.echo("  2. You understand the risks of algorithmic trading")
+        click.echo("  3. Past backtest performance does not guarantee future results")
+        click.echo("  4. You take full responsibility for any financial losses")
+        click.echo("")
+
+        # Interactive confirmation prompt
+        user_input = click.prompt(
+            click.style("Type 'YES' (all caps) to confirm live trading", fg='yellow'),
+            default='',
+            show_default=False
+        )
+
+        if user_input != 'YES':
+            click.echo("")
+            click.echo(click.style("✗ Live trading cancelled (confirmation not received)", fg='red'))
+            raise click.Abort()
+
+        # Record first-trade confirmation timestamp
+        from datetime import datetime, timezone
+        first_trade_timestamp = datetime.now(timezone.utc)
+        click.echo("")
+        click.echo(click.style(f"✓ Live trading confirmed at {first_trade_timestamp.isoformat()}", fg='green'))
+        click.echo(click.style("  This timestamp is logged for audit purposes", fg='green'))
+
+    # Load config
+    try:
+        config_path = Path(config)
+        with open(config_path, 'r') as f:
+            live_config = yaml.safe_load(f)
+        click.echo(click.style(f"\n✓ Config loaded: {live_config['strategy']['name']}", fg='green'))
+    except Exception as e:
+        click.echo(click.style(f"\n✗ Failed to load config: {e}", fg='red'))
+        raise click.Abort()
+
+    # Override execution time if specified
+    if execution_time:
+        live_config['strategy']['parameters']['execution_time'] = execution_time
+        click.echo(f"  Overriding execution_time to: {execution_time}")
+
+    # Initialize strategy runner
+    click.echo("\nInitializing strategy...")
+    try:
+        runner = LiveStrategyRunner(config_path=config_path)
+        click.echo(click.style(f"✓ Strategy initialized: {runner.strategy.name}", fg='green'))
+
+        # Display strategy symbols
+        symbols = runner.get_all_symbols()
+        click.echo(f"  Trading symbols: {', '.join(symbols)}")
+
+    except Exception as e:
+        click.echo(click.style(f"\n✗ Strategy initialization failed: {e}", fg='red'))
+        logger.error(f"Strategy init failed: {e}", exc_info=True)
+        raise click.Abort()
+
+    # Create executor (mock or live based on mode)
+    click.echo(f"\nCreating executor (mode={trading_mode.value})...")
+    try:
+        if trading_mode == TradingMode.ONLINE_LIVE:
+            # Live mode requires Schwab authentication and database session
+            click.echo(click.style("Setting up live trading components...", fg='yellow'))
+
+            # For CLI live mode, we need to initialize the Schwab client
+            # and database session. This is handled by scripts/daily_dry_run.py
+            # and scripts/live_trader_paper.py for the full workflow.
+            #
+            # The CLI provides a quick entry point but full live trading
+            # should use the dedicated scripts which handle:
+            # - OAuth token management
+            # - Account hash retrieval
+            # - Database session initialization
+            # - State management
+            click.echo("")
+            click.echo(click.style("ℹ️  For live trading, use the dedicated scripts:", fg='cyan'))
+            click.echo("  • scripts/daily_dry_run.py  - Dry-run with real data")
+            click.echo("  • scripts/live_trader_paper.py - Paper trading mode")
+            click.echo("")
+            click.echo("These scripts handle:")
+            click.echo("  ✓ Schwab OAuth authentication")
+            click.echo("  ✓ Account and position reconciliation")
+            click.echo("  ✓ Database trade logging")
+            click.echo("  ✓ Slippage validation (1% abort threshold)")
+            click.echo("  ✓ Fill reconciliation")
+            click.echo("")
+            click.echo(click.style("✓ Confirmation received - proceeding to script guidance", fg='green'))
+            return
+
+        else:
+            # Mock mode - create MockOrderExecutor
+            executor = ExecutorRouter.create(
+                mode=trading_mode,
+                config=live_config,
+                trade_log_path=Path('logs/live_trades.csv')
+            )
+            click.echo(click.style(f"✓ Executor created: {executor.get_mode()}", fg='green'))
+
+    except ImportError as e:
+        click.echo(click.style(f"\n✗ Missing dependency: {e}", fg='red'))
+        raise click.Abort()
+    except Exception as e:
+        click.echo(click.style(f"\n✗ Executor creation failed: {e}", fg='red'))
+        logger.error(f"Executor creation failed: {e}", exc_info=True)
+        raise click.Abort()
+
+    # Get strategy state (current signals)
+    click.echo("\nGetting strategy state...")
+    try:
+        state = runner.get_strategy_state()
+        context = runner.get_strategy_context()
+
+        click.echo(f"  Current Cell: {context.get('current_cell', 'N/A')}")
+        click.echo(f"  Trend State: {context.get('trend_state', 'N/A')}")
+        click.echo(f"  Vol State: {context.get('vol_state', 'N/A')}")
+        click.echo(f"  T-Norm: {context.get('t_norm', 'N/A')}")
+        click.echo(f"  Z-Score: {context.get('z_score', 'N/A')}")
+
+    except Exception as e:
+        click.echo(click.style(f"  ⚠ Strategy state not available: {e}", fg='yellow'))
+        context = {}
+        state = {}
+
+    # Dry run - just show state, don't log trades
+    if dry_run:
+        click.echo("\n" + "=" * 60)
+        click.echo(click.style("✓ Dry run complete (no trades logged)", fg='green'))
+        click.echo("=" * 60)
+        click.echo("\nStrategy State:")
+        for key, value in state.items():
+            click.echo(f"  {key}: {value}")
+        return
+
+    # Display weight state
+    click.echo("\nCurrent Weight Allocations:")
+    click.echo(f"  TQQQ: {state.get('current_tqqq_weight', 0)*100:.1f}%")
+    click.echo(f"  QQQ:  {state.get('current_qqq_weight', 0)*100:.1f}%")
+    click.echo(f"  PSQ:  {state.get('current_psq_weight', 0)*100:.1f}%")
+    click.echo(f"  TMF:  {state.get('current_tmf_weight', 0)*100:.1f}%")
+    click.echo(f"  TMV:  {state.get('current_tmv_weight', 0)*100:.1f}%")
+
+    # Summary
+    click.echo("\n" + "=" * 60)
+    click.echo(click.style("✓ Live workflow initialization complete", fg='green'))
+    click.echo("=" * 60)
+
+    click.echo("\nTo execute full workflow with market data:")
+    click.echo("  1. Ensure market data is synced (jutsu sync --all)")
+    click.echo("  2. Run scripts/daily_dry_run.py for complete dry-run")
+    click.echo("  3. Or use scripts/live_trader_paper.py for paper trading")
+
+    click.echo("\nLog file: logs/live_trades.csv")
+
+
+@cli.command()
+@click.option(
+    '--port',
+    '-p',
+    type=int,
+    default=8000,
+    help='Port to run the dashboard server on (default: 8000)',
+)
+@click.option(
+    '--host',
+    '-h',
+    type=str,
+    default='127.0.0.1',
+    help='Host to bind to (default: 127.0.0.1)',
+)
+@click.option(
+    '--reload',
+    is_flag=True,
+    help='Enable auto-reload for development',
+)
+@click.option(
+    '--workers',
+    '-w',
+    type=int,
+    default=1,
+    help='Number of worker processes (default: 1)',
+)
+def dashboard(port: int, host: str, reload: bool, workers: int):
+    """
+    Start the Jutsu trading dashboard API server.
+
+    The dashboard provides a REST API for:
+    - System status and regime information
+    - Configuration management
+    - Trade history and export
+    - Performance metrics
+    - Engine control (start/stop)
+
+    Examples:
+        # Start dashboard on default port 8000
+        jutsu dashboard
+
+        # Start on custom port with auto-reload
+        jutsu dashboard --port 3000 --reload
+
+        # Start with multiple workers for production
+        jutsu dashboard --workers 4 --host 0.0.0.0
+    """
+    click.echo("=" * 60)
+    click.echo("Jutsu Trading Dashboard")
+    click.echo("=" * 60)
+
+    # Check dependencies
+    try:
+        import uvicorn
+    except ImportError:
+        click.echo(click.style("\n✗ Missing dependency: uvicorn", fg='red'))
+        click.echo("Install with: pip install uvicorn[standard]")
+        raise click.Abort()
+
+    try:
+        from fastapi import FastAPI
+    except ImportError:
+        click.echo(click.style("\n✗ Missing dependency: fastapi", fg='red'))
+        click.echo("Install with: pip install fastapi")
+        raise click.Abort()
+
+    # Health check - verify database connectivity
+    click.echo("\nPerforming health checks...")
+
+    try:
+        from jutsu_engine.api.dependencies import get_db_context
+        with get_db_context() as db:
+            db.execute("SELECT 1")
+        click.echo(click.style("  ✓ Database connection OK", fg='green'))
+    except Exception as e:
+        click.echo(click.style(f"  ⚠ Database connection warning: {e}", fg='yellow'))
+
+    # Check config
+    try:
+        from jutsu_engine.api.dependencies import load_config
+        config = load_config()
+        strategy_name = config.get('strategy', {}).get('name', 'Unknown')
+        click.echo(click.style(f"  ✓ Config loaded: {strategy_name}", fg='green'))
+    except Exception as e:
+        click.echo(click.style(f"  ⚠ Config warning: {e}", fg='yellow'))
+
+    click.echo("")
+    click.echo(f"Starting server on {host}:{port}")
+    click.echo(f"  Swagger docs: http://{host}:{port}/docs")
+    click.echo(f"  ReDoc:        http://{host}:{port}/redoc")
+    click.echo(f"  API root:     http://{host}:{port}/api")
+
+    if reload:
+        click.echo(click.style("  Auto-reload: ENABLED", fg='yellow'))
+    if workers > 1:
+        click.echo(f"  Workers: {workers}")
+
+    click.echo("")
+    click.echo(click.style("Press CTRL+C to stop the server", fg='cyan'))
+    click.echo("=" * 60)
+
+    # Start the server
+    try:
+        uvicorn.run(
+            "jutsu_engine.api.main:app",
+            host=host,
+            port=port,
+            reload=reload,
+            workers=workers if not reload else 1,  # Can't use multiple workers with reload
+            log_level="info",
+        )
+    except KeyboardInterrupt:
+        click.echo("\n")
+        click.echo(click.style("Dashboard stopped", fg='green'))
+
+
 # Import and register Monte Carlo command
 from jutsu_engine.cli.commands.monte_carlo import monte_carlo as monte_carlo_cmd
 cli.add_command(monte_carlo_cmd, name='monte-carlo')

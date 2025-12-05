@@ -55,6 +55,7 @@ EXECUTION_TIMES = {
     "open": time(9, 30),               # 9:30 AM ET
     "15min_after_open": time(9, 45),   # 9:45 AM ET
     "15min_before_close": time(15, 45), # 3:45 PM ET
+    "5min_before_close": time(15, 55),  # 3:55 PM ET
     "close": time(16, 0),               # 4:00 PM ET
 }
 
@@ -374,6 +375,20 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         self.current_tqqq_weight = Decimal("0")
         self.current_qqq_weight = Decimal("0")
         self.current_psq_weight = Decimal("0")
+
+        # Initialize regime state for external access (LiveStrategyRunner, RegimePerformanceAnalyzer)
+        self.trend_state = None
+        self.cell_id = None
+        self._last_t_norm = None
+        self._last_z_score = None
+
+        # Initialize decision tree tracking attributes (for dashboard API)
+        self._last_sma_fast = None
+        self._last_sma_slow = None
+        self._last_vol_crush_triggered = False
+        self._last_bond_sma_fast = None
+        self._last_bond_sma_slow = None
+        self._last_bond_trend = None
 
         logger.info(
             f"Initialized {self.name} (v3.5b) with hysteresis state: {self.vol_state}"
@@ -758,9 +773,16 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         cell_id = self._get_cell_id(trend_state, self.vol_state)
         w_TQQQ, w_QQQ, w_PSQ, w_cash = self._get_cell_allocation(cell_id)
 
-        # Store regime state for external access (RegimePerformanceAnalyzer)
+        # Store regime state for external access (RegimePerformanceAnalyzer, LiveStrategyRunner)
         self.trend_state = trend_state
         self.cell_id = cell_id
+        self._last_t_norm = T_norm
+        self._last_z_score = z_score
+
+        # Store SMA values and vol-crush for decision tree (dashboard API)
+        self._last_sma_fast = sma_fast_val
+        self._last_sma_slow = sma_slow_val
+        self._last_vol_crush_triggered = vol_crush_triggered
 
         # 8.5. Apply Treasury Overlay to defensive cells (if enabled)
         w_TMF = Decimal("0")
@@ -1188,6 +1210,10 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
                 f"Insufficient TLT data ({len(tlt_history_series) if tlt_history_series is not None else 0} bars, "
                 f"need {self.bond_sma_slow}), falling back to Cash"
             )
+            # Reset bond tracking since we're not using bonds
+            self._last_bond_sma_fast = None
+            self._last_bond_sma_slow = None
+            self._last_bond_trend = None
             return {"CASH": current_defensive_weight_decimal}
 
         # Calculate indicators
@@ -1197,22 +1223,32 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         # Check for NaN
         if pd.isna(sma_fast) or pd.isna(sma_slow):
             logger.warning("Bond SMA calculation returned NaN, falling back to Cash")
+            # Reset bond tracking since we're not using bonds
+            self._last_bond_sma_fast = None
+            self._last_bond_sma_slow = None
+            self._last_bond_trend = None
             return {"CASH": current_defensive_weight_decimal}
 
         # Convert to Decimal
         sma_fast_val = Decimal(str(sma_fast))
         sma_slow_val = Decimal(str(sma_slow))
 
+        # Store bond SMA values for decision tree (dashboard API)
+        self._last_bond_sma_fast = sma_fast_val
+        self._last_bond_sma_slow = sma_slow_val
+
         # Determine instrument
         # TMF (+3x Bonds) for Deflation/Safety (Rates Falling)
         # TMV (-3x Bonds) for Inflation/Rate Shock (Rates Rising)
         if sma_fast_val > sma_slow_val:
             selected_ticker = self.bull_bond_symbol  # Default: "TMF"
+            self._last_bond_trend = "Bull"
             logger.debug(
                 f"Bond trend: BULL (SMA_fast={sma_fast_val:.2f} > SMA_slow={sma_slow_val:.2f}) → {selected_ticker}"
             )
         else:
             selected_ticker = self.bear_bond_symbol  # Default: "TMV"
+            self._last_bond_trend = "Bear"
             logger.debug(
                 f"Bond trend: BEAR (SMA_fast={sma_fast_val:.2f} < SMA_slow={sma_slow_val:.2f}) → {selected_ticker}"
             )
