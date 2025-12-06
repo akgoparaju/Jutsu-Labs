@@ -63,9 +63,10 @@ fi
 echo ""
 echo "=================================================="
 echo "Starting Jutsu Trading Dashboard..."
-echo "  - Frontend: http://localhost:80"
-echo "  - API Docs: http://localhost:80/docs"
-echo "  - WebSocket: ws://localhost:80/ws"
+echo "  - Frontend: http://localhost:8080"
+echo "  - API Docs: http://localhost:8080/docs"
+echo "  - WebSocket: ws://localhost:8080/ws"
+echo "Note: Container uses port 8080 internally (non-root)"
 echo "=================================================="
 echo ""
 

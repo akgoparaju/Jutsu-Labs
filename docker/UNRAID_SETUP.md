@@ -81,7 +81,8 @@ cp token.json /mnt/user/appdata/jutsu/
 - **Console shell command:** `bash`
 
 **Port Mappings:**
-- Container Port: `80` → Host Port: `8080` (or your preferred port)
+- Container Port: `8080` → Host Port: `8080` (or your preferred host port)
+  - Note: Container uses port 8080 internally (non-root user cannot bind to port 80)
 
 **Path Mappings:**
 - Container Path: `/app/data` → Host Path: `/mnt/user/appdata/jutsu/data`

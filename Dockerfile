@@ -89,12 +89,13 @@ COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY docker/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# Expose port 80 (nginx serves both static files and proxies API)
-EXPOSE 80
+# Expose port 8080 (nginx serves both static files and proxies API)
+# Note: Using 8080 instead of 80 because container runs as non-root user
+EXPOSE 8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:80/api/status || exit 1
+    CMD curl -f http://localhost:8080/api/status || exit 1
 
 # Switch to non-root user
 USER jutsu
