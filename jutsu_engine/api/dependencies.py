@@ -1,10 +1,15 @@
 """
 FastAPI dependencies for database sessions, authentication, and shared resources.
+
+Supports:
+- SQLite (local) and PostgreSQL (server) databases via DATABASE_TYPE
+- JWT authentication for dashboard access
+- HTTP Basic authentication (legacy, optional)
 """
 
 import os
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Generator, Optional
 from pathlib import Path
 from contextlib import contextmanager
@@ -13,8 +18,25 @@ import pandas as pd
 from sqlalchemy import create_engine, and_
 from sqlalchemy.orm import sessionmaker, Session
 from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.security import HTTPBasic, HTTPBasicCredentials, OAuth2PasswordBearer
 import secrets
+
+# JWT and password hashing imports
+try:
+    from jose import JWTError, jwt
+    import bcrypt  # Using bcrypt directly instead of passlib (bcrypt 5.0+ compatibility)
+    JWT_AVAILABLE = True
+except ImportError:
+    JWT_AVAILABLE = False
+
+from jutsu_engine.utils.config import (
+    get_database_url,
+    get_database_type,
+    is_sqlite,
+    is_postgresql,
+    DATABASE_TYPE_SQLITE,
+    DATABASE_TYPE_POSTGRES,
+)
 
 logger = logging.getLogger('API.DEPS')
 
@@ -22,49 +44,16 @@ logger = logging.getLogger('API.DEPS')
 # DATABASE CONFIGURATION
 # ==============================================================================
 
-def _normalize_sqlite_url(db_url: str) -> str:
-    """
-    Normalize SQLite URL to use correct slash format.
-
-    sqlite:///app/... should be sqlite:////app/... (4 slashes for absolute)
-    """
-    import re
-    if re.match(r'^sqlite:///app/', db_url):
-        normalized = db_url.replace('sqlite:///app/', 'sqlite:////app/', 1)
-        logger.info(f"Normalized database URL: {db_url} -> {normalized}")
-        return normalized
-    return db_url
-
-
-def _get_database_url() -> str:
-    """
-    Get database URL with proper absolute path handling.
-
-    SQLite URL format: sqlite:///relative/path OR sqlite:////absolute/path
-    (Note: 4 slashes for absolute paths on Unix)
-    """
-    db_url = os.getenv('DATABASE_URL')
-
-    if db_url:
-        # Normalize 3-slash paths to 4-slash for absolute /app paths
-        return _normalize_sqlite_url(db_url)
-
-    # Default: Check if running in Docker (/app exists) or local
-    if Path('/app/data').exists():
-        # Docker environment - use absolute path
-        return 'sqlite:////app/data/market_data.db'
-    else:
-        # Local development - use relative path from project root
-        return 'sqlite:///data/market_data.db'
-
-
 def _ensure_database_exists(db_url: str) -> None:
     """
-    Ensure the database file and directory exist.
+    Ensure the database file and directory exist (SQLite only).
     Creates empty database with schema if it doesn't exist.
+    PostgreSQL databases should be created externally.
     """
     if not db_url.startswith('sqlite'):
-        return  # Only handle SQLite
+        # PostgreSQL: Log connection info but don't try to create
+        logger.info(f"Using PostgreSQL database")
+        return
 
     # Parse SQLite path (sqlite:/// or sqlite:////)
     if db_url.startswith('sqlite:////'):
@@ -97,21 +86,48 @@ def _ensure_database_exists(db_url: str) -> None:
             logger.warning(f"Could not create database: {e}")
 
 
-# Get database URL (handles Docker vs local automatically)
-DATABASE_URL = _get_database_url()
+def _create_engine(db_url: str):
+    """
+    Create SQLAlchemy engine with appropriate settings for database type.
 
-# Ensure database exists before creating engine
+    Args:
+        db_url: Database connection URL
+
+    Returns:
+        SQLAlchemy engine instance
+    """
+    if db_url.startswith('sqlite'):
+        # SQLite: Need check_same_thread=False for FastAPI async
+        return create_engine(
+            db_url,
+            connect_args={'check_same_thread': False},
+            echo=False,
+            pool_pre_ping=True,
+        )
+    else:
+        # PostgreSQL: Connection pooling settings
+        return create_engine(
+            db_url,
+            echo=False,
+            pool_size=5,
+            max_overflow=10,
+            pool_pre_ping=True,
+            pool_recycle=3600,  # Recycle connections after 1 hour
+        )
+
+
+# Get database URL from centralized config (handles SQLite/PostgreSQL, Docker/local)
+DATABASE_URL = get_database_url()
+DATABASE_TYPE = get_database_type()
+
+logger.info(f"Database type: {DATABASE_TYPE}")
+logger.info(f"Database URL: {DATABASE_URL[:50]}..." if len(DATABASE_URL) > 50 else f"Database URL: {DATABASE_URL}")
+
+# Ensure database exists before creating engine (SQLite only)
 _ensure_database_exists(DATABASE_URL)
 
-# Create engine with appropriate settings
-if DATABASE_URL.startswith('sqlite'):
-    engine = create_engine(
-        DATABASE_URL,
-        connect_args={'check_same_thread': False},  # SQLite specific
-        echo=False
-    )
-else:
-    engine = create_engine(DATABASE_URL, echo=False)
+# Create engine with appropriate settings for database type
+engine = _create_engine(DATABASE_URL)
 
 # Session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -151,19 +167,197 @@ def get_db_context() -> Generator[Session, None, None]:
 
 
 # ==============================================================================
-# AUTHENTICATION (Optional - for production)
+# AUTHENTICATION
 # ==============================================================================
 
+# HTTP Basic auth (legacy, for backward compatibility)
 security = HTTPBasic(auto_error=False)
 
-# API credentials from environment
+# OAuth2 bearer token for JWT
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login", auto_error=False)
+
+# API credentials from environment (HTTP Basic - legacy)
 API_USERNAME = os.getenv('JUTSU_API_USERNAME', '')
 API_PASSWORD = os.getenv('JUTSU_API_PASSWORD', '')
+
+# JWT configuration
+SECRET_KEY = os.getenv('SECRET_KEY', 'default-dev-secret-change-in-production')
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_DAYS = 7  # 7-day persistent sessions
+
+# Password hashing using bcrypt directly (bcrypt 5.0+ compatible)
+# Note: passlib 1.7.4 is incompatible with bcrypt 5.0+ due to __about__ attribute removal
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a password against its hash using bcrypt directly."""
+    if not JWT_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication not available. Install: pip install python-jose[cryptography] bcrypt"
+        )
+    try:
+        # Handle both bytes and string hash formats
+        if isinstance(hashed_password, str):
+            hashed_password = hashed_password.encode('utf-8')
+        return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password)
+    except Exception as e:
+        logger.error(f"Password verification error: {e}")
+        return False
+
+
+def get_password_hash(password: str) -> str:
+    """Hash a password for storage using bcrypt directly."""
+    if not JWT_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication not available. Install: pip install python-jose[cryptography] bcrypt"
+        )
+    # Generate salt and hash the password
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
+    return hashed.decode('utf-8')  # Return as string for database storage
+
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    """
+    Create a JWT access token.
+
+    Args:
+        data: Token payload (e.g., {"sub": username})
+        expires_delta: Token expiry (default: ACCESS_TOKEN_EXPIRE_DAYS)
+
+    Returns:
+        Encoded JWT token string
+    """
+    if not JWT_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="JWT not available. Install: pip install python-jose[cryptography]"
+        )
+
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(days=ACCESS_TOKEN_EXPIRE_DAYS)
+
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+
+def decode_access_token(token: str) -> Optional[dict]:
+    """
+    Decode and validate a JWT access token.
+
+    Args:
+        token: JWT token string
+
+    Returns:
+        Token payload if valid, None if invalid/expired
+    """
+    if not JWT_AVAILABLE:
+        return None
+
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except JWTError:
+        return None
+
+
+def get_user_from_token(db: Session, token: str) -> Optional["User"]:
+    """
+    Get user from JWT token.
+
+    Args:
+        db: Database session
+        token: JWT token string
+
+    Returns:
+        User object if token valid and user exists, None otherwise
+    """
+    from jutsu_engine.data.models import User
+
+    payload = decode_access_token(token)
+    if payload is None:
+        return None
+
+    username: str = payload.get("sub")
+    if username is None:
+        return None
+
+    user = db.query(User).filter(User.username == username).first()
+    return user
+
+
+async def get_current_user(
+    db: Session = Depends(get_db),
+    token: Optional[str] = Depends(oauth2_scheme)
+) -> Optional["User"]:
+    """
+    FastAPI dependency to get current authenticated user.
+
+    If AUTH_REQUIRED=false (default for local), returns None without error.
+    If AUTH_REQUIRED=true, requires valid JWT token.
+
+    Args:
+        db: Database session
+        token: JWT token from Authorization header
+
+    Returns:
+        User object if authenticated, None if auth disabled
+
+    Raises:
+        HTTPException: If auth required but token invalid
+    """
+    auth_required = os.getenv('AUTH_REQUIRED', 'false').lower() == 'true'
+
+    if not auth_required:
+        return None  # Auth disabled, allow access
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user = get_user_from_token(db, token)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User account disabled",
+        )
+
+    return user
+
+
+async def require_auth(
+    user: Optional["User"] = Depends(get_current_user)
+) -> Optional["User"]:
+    """
+    Dependency that requires authentication when AUTH_REQUIRED=true.
+
+    Use this for protected endpoints that should only be accessible
+    when authentication is enabled and user is logged in.
+
+    For local development (AUTH_REQUIRED=false), allows access without login.
+    """
+    return user
 
 
 def verify_credentials(credentials: Optional[HTTPBasicCredentials] = Depends(security)) -> bool:
     """
-    Verify HTTP Basic credentials.
+    Verify HTTP Basic credentials (legacy - for backward compatibility).
 
     If JUTSU_API_USERNAME and JUTSU_API_PASSWORD are not set,
     authentication is disabled (returns True).
@@ -192,6 +386,63 @@ def verify_credentials(credentials: Optional[HTTPBasicCredentials] = Depends(sec
         )
 
     return True
+
+
+def create_default_user(db: Session, username: str = "admin", password: str = None) -> "User":
+    """
+    Create the default admin user if it doesn't exist.
+
+    Args:
+        db: Database session
+        username: Admin username (default: "admin")
+        password: Admin password (default: from ADMIN_PASSWORD env or "admin")
+
+    Returns:
+        User object (existing or newly created)
+    """
+    from jutsu_engine.data.models import User
+
+    # Check if user exists
+    existing = db.query(User).filter(User.username == username).first()
+    if existing:
+        return existing
+
+    # Get password from environment or use default
+    if password is None:
+        password = os.getenv('ADMIN_PASSWORD', 'admin')
+
+    # Create user
+    user = User(
+        username=username,
+        password_hash=get_password_hash(password),
+        is_active=True,
+        is_admin=True,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    logger.info(f"Created default admin user: {username}")
+    return user
+
+
+def ensure_admin_user_exists():
+    """
+    Ensure the admin user exists in the database.
+    Called during application startup when AUTH_REQUIRED=true.
+    """
+    auth_required = os.getenv('AUTH_REQUIRED', 'false').lower() == 'true'
+    if not auth_required:
+        return
+
+    if not JWT_AVAILABLE:
+        logger.warning("JWT authentication not available. Install: pip install python-jose[cryptography] bcrypt")
+        return
+
+    try:
+        with get_db_context() as db:
+            create_default_user(db)
+    except Exception as e:
+        logger.error(f"Failed to create admin user: {e}")
 
 
 # ==============================================================================

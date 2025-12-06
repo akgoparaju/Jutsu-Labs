@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 
 from jutsu_engine.api.websocket import websocket_endpoint, manager
 from jutsu_engine.api.routes import (
+    auth_router,
     status_router,
     config_router,
     trades_router,
@@ -61,6 +62,13 @@ async def lifespan(app: FastAPI):
         logger.info("Database connection verified")
     except Exception as e:
         logger.warning(f"Database connection check failed: {e}")
+
+    # Create default admin user if auth is enabled
+    try:
+        from jutsu_engine.api.dependencies import ensure_admin_user_exists
+        ensure_admin_user_exists()
+    except Exception as e:
+        logger.warning(f"Failed to ensure admin user: {e}")
 
     # Start WebSocket broadcast loop
     def get_ws_status():
@@ -159,6 +167,7 @@ def create_app(
 
         ## Features
 
+        - **Auth**: JWT-based authentication for dashboard access
         - **Status**: System status, regime, and portfolio information
         - **Config**: Configuration management with runtime overrides
         - **Trades**: Trade history with filtering and CSV export
@@ -168,8 +177,22 @@ def create_app(
 
         ## Authentication
 
-        Set `JUTSU_API_USERNAME` and `JUTSU_API_PASSWORD` environment variables
-        to enable HTTP Basic authentication. If not set, API is open.
+        **JWT Authentication (Recommended)**:
+        Set `AUTH_REQUIRED=true` to enable JWT authentication.
+        - Login: POST /auth/login with username/password
+        - Use returned token in Authorization header: `Bearer <token>`
+        - Tokens expire after 7 days
+
+        **HTTP Basic (Legacy)**:
+        Set `JUTSU_API_USERNAME` and `JUTSU_API_PASSWORD` for basic auth.
+
+        **No Auth (Development)**:
+        If neither is configured, API is open (default for local development).
+
+        ## Database
+
+        - **SQLite (default)**: Local file-based database for development
+        - **PostgreSQL**: Server-based database for production (set `DATABASE_TYPE=postgresql`)
 
         ## Modes
 
@@ -201,6 +224,7 @@ def create_app(
     )
 
     # Include routers
+    app.include_router(auth_router)  # Authentication endpoints
     app.include_router(status_router)
     app.include_router(config_router)
     app.include_router(trades_router)

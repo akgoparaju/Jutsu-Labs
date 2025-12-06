@@ -1,20 +1,30 @@
-import { Outlet, NavLink } from 'react-router-dom'
+import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard,
   TrendingUp,
   History,
   Settings,
-  Activity,
   Wifi,
   WifiOff,
   GitBranch,
+  LogOut,
+  User,
 } from 'lucide-react'
+import logoImg from '../assets/logo.png'
 import { useStatus } from '../hooks/useStatus'
 import { useLiveUpdates } from '../hooks/useWebSocket'
+import { useAuth } from '../contexts/AuthContext'
 
 function Layout() {
   const { data: status, isLoading } = useStatus()
   const { isConnected: wsConnected } = useLiveUpdates()
+  const { user, isAuthRequired, logout } = useAuth()
+  const navigate = useNavigate()
+
+  const handleLogout = () => {
+    logout()
+    navigate('/login')
+  }
 
   return (
     <div className="min-h-screen bg-slate-900 text-white">
@@ -23,7 +33,11 @@ function Layout() {
         <div className="max-w-7xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <Activity className="w-8 h-8 text-blue-400" />
+              <img
+                src={logoImg}
+                alt="Jutsu Trading Logo"
+                className="w-10 h-10 object-contain"
+              />
               <h1 className="text-xl font-bold">Jutsu Trading</h1>
             </div>
 
@@ -76,6 +90,23 @@ function Layout() {
                     )}
                   </div>
                 </>
+              )}
+
+              {/* User info and logout (only show when auth is enabled) */}
+              {isAuthRequired && user && (
+                <div className="flex items-center gap-3 ml-4 pl-4 border-l border-slate-600">
+                  <div className="flex items-center gap-2 text-sm text-gray-300">
+                    <User className="w-4 h-4" />
+                    <span>{user.username}</span>
+                  </div>
+                  <button
+                    onClick={handleLogout}
+                    className="flex items-center gap-1 px-3 py-1 text-sm text-gray-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors"
+                    title="Sign out"
+                  >
+                    <LogOut className="w-4 h-4" />
+                  </button>
+                </div>
               )}
             </div>
           </div>

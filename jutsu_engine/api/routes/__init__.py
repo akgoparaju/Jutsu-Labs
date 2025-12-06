@@ -2,6 +2,7 @@
 API Routes Package
 
 Contains all FastAPI route modules:
+- auth: JWT authentication endpoints
 - status: System status and regime information
 - config: Configuration management
 - trades: Trade history and export
@@ -10,6 +11,7 @@ Contains all FastAPI route modules:
 - indicators: Current indicator values
 """
 
+from jutsu_engine.api.routes.auth import router as auth_router
 from jutsu_engine.api.routes.status import router as status_router
 from jutsu_engine.api.routes.config import router as config_router
 from jutsu_engine.api.routes.trades import router as trades_router
@@ -18,6 +20,7 @@ from jutsu_engine.api.routes.control import router as control_router
 from jutsu_engine.api.routes.indicators import router as indicators_router
 
 __all__ = [
+    'auth_router',
     'status_router',
     'config_router',
     'trades_router',

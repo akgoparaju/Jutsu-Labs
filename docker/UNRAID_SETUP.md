@@ -92,13 +92,34 @@ cp token.json /mnt/user/appdata/jutsu/
 - Container Path: `/app/token.json` → Host Path: `/mnt/user/appdata/jutsu/token.json` (Read-only, if exists)
 
 **Environment Variables:**
+
+*Schwab API Configuration:*
 - `SCHWAB_APP_KEY` = `your_app_key_here`
 - `SCHWAB_APP_SECRET` = `your_app_secret_here`
 - `SCHWAB_CALLBACK_URL` = `https://127.0.0.1`
-- `DATABASE_URL` = `sqlite:////app/data/market_data.db`
+
+*Database Configuration (choose one):*
+
+Option A - SQLite (default, simpler):
+- `DATABASE_TYPE` = `sqlite`
+
+Option B - PostgreSQL (recommended for production):
+- `DATABASE_TYPE` = `postgresql`
+- `POSTGRES_HOST` = `your_postgres_host` (e.g., `tower.local` or IP)
+- `POSTGRES_PORT` = `5432`
+- `POSTGRES_USER` = `jutsu`
+- `POSTGRES_PASSWORD` = `your_password_here` (special characters like @ are auto-encoded)
+- `POSTGRES_DATABASE` = `jutsu_labs`
+
+*Application Settings:*
 - `LOG_LEVEL` = `INFO`
 - `TZ` = `America/New_York`
 - `TRADING_MODE` = `offline_mock` (or `online_live` for real trading)
+
+*Authentication (recommended for remote access):*
+- `AUTH_REQUIRED` = `true` (set to `false` to disable login)
+- `ADMIN_PASSWORD` = `your_secure_password_here`
+- `SECRET_KEY` = `your_random_secret_key_here` (generate with: `openssl rand -hex 32`)
 
 **Advanced Settings:**
 - CPU Limit: `2.0` (2 cores)
@@ -121,17 +142,49 @@ cp token.json /mnt/user/appdata/jutsu/
 
 ## Environment Variables Reference
 
+### Schwab API Configuration
+
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `SCHWAB_APP_KEY` | Yes (for live trading) | - | Schwab API application key |
 | `SCHWAB_APP_SECRET` | Yes (for live trading) | - | Schwab API application secret |
 | `SCHWAB_CALLBACK_URL` | Yes (for live trading) | `https://127.0.0.1` | OAuth callback URL |
-| `DATABASE_URL` | No | `sqlite:////app/data/market_data.db` | Database connection string |
+
+### Database Configuration
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATABASE_TYPE` | No | `sqlite` | Database type: `sqlite` or `postgresql` |
+| `SQLITE_DATABASE` | No | `data/market_data.db` | SQLite database path (when DATABASE_TYPE=sqlite) |
+| `POSTGRES_HOST` | Yes (if postgresql) | - | PostgreSQL server hostname or IP |
+| `POSTGRES_PORT` | No | `5432` | PostgreSQL server port |
+| `POSTGRES_USER` | Yes (if postgresql) | - | PostgreSQL username |
+| `POSTGRES_PASSWORD` | Yes (if postgresql) | - | PostgreSQL password (special chars auto-encoded) |
+| `POSTGRES_DATABASE` | No | `jutsu_labs` | PostgreSQL database name |
+
+### Authentication Configuration
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `AUTH_REQUIRED` | No | `false` | Enable JWT authentication (`true`/`false`) |
+| `ADMIN_PASSWORD` | Yes (if auth enabled) | `admin` | Admin user password for dashboard login |
+| `SECRET_KEY` | Yes (if auth enabled) | - | JWT signing key (generate: `openssl rand -hex 32`) |
+
+### Application Settings
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
 | `LOG_LEVEL` | No | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 | `TZ` | No | `America/New_York` | Container timezone |
 | `TRADING_MODE` | No | `offline_mock` | Trading mode (offline_mock, online_live) |
-| `JUTSU_API_USERNAME` | No | - | Optional API authentication username |
-| `JUTSU_API_PASSWORD` | No | - | Optional API authentication password |
+
+### Legacy Settings (Deprecated)
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATABASE_URL` | No | - | Legacy database URL (use DATABASE_TYPE instead) |
+| `JUTSU_API_USERNAME` | No | - | Legacy HTTP Basic auth (use JWT instead) |
+| `JUTSU_API_PASSWORD` | No | - | Legacy HTTP Basic auth (use JWT instead) |
 
 ## Volume Paths Reference
 
@@ -257,34 +310,64 @@ ls -t "$BACKUP_DIR"/jutsu_backup_*.tar.gz | tail -n +8 | xargs -r rm
 
 For better performance with large datasets:
 
-1. Switch to PostgreSQL:
+1. **Switch to PostgreSQL (recommended):**
    ```bash
-   # Install PostgreSQL container in Unraid
-   # Update DATABASE_URL environment variable
-   DATABASE_URL=postgresql://user:pass@postgres:5432/jutsu
+   # In Unraid Docker template, set these environment variables:
+   DATABASE_TYPE=postgresql
+   POSTGRES_HOST=tower.local      # Your PostgreSQL server
+   POSTGRES_PORT=5432
+   POSTGRES_USER=jutsu
+   POSTGRES_PASSWORD=your_password  # Special chars like @ are auto-encoded
+   POSTGRES_DATABASE=jutsu_labs
    ```
+   
+   To set up PostgreSQL on Unraid:
+   - Install PostgreSQL from Community Applications
+   - Create database: `CREATE DATABASE jutsu_labs;`
+   - Create user: `CREATE USER jutsu WITH PASSWORD 'your_password';`
+   - Grant permissions: `GRANT ALL PRIVILEGES ON DATABASE jutsu_labs TO jutsu;`
 
-2. Enable WAL mode for SQLite:
+2. **Enable WAL mode for SQLite** (if using SQLite):
    ```bash
    docker exec jutsu-trading-dashboard sqlite3 /app/data/market_data.db "PRAGMA journal_mode=WAL;"
    ```
 
 ## Security Recommendations
 
-1. **Enable API authentication:**
-   - Set `JUTSU_API_USERNAME` and `JUTSU_API_PASSWORD`
+1. **Enable JWT authentication (recommended):**
+   ```bash
+   AUTH_REQUIRED=true
+   ADMIN_PASSWORD=your_secure_password_here
+   SECRET_KEY=$(openssl rand -hex 32)
+   ```
+   - Login at `http://YOUR_IP:8080/auth/login` with username `admin`
+   - Tokens expire after 7 days for enhanced security
 
-2. **Use reverse proxy:**
+2. **Use PostgreSQL for production:**
+   ```bash
+   DATABASE_TYPE=postgresql
+   POSTGRES_HOST=tower.local  # or your database server
+   POSTGRES_PORT=5432
+   POSTGRES_USER=jutsu
+   POSTGRES_PASSWORD=your_db_password
+   POSTGRES_DATABASE=jutsu_labs
+   ```
+   - Better performance and reliability than SQLite
+   - Supports concurrent access from multiple services
+
+3. **Use reverse proxy:**
    - Set up nginx proxy manager or swag
    - Enable HTTPS with Let's Encrypt
+   - Protect dashboard with SSL/TLS encryption
 
-3. **Restrict network access:**
+4. **Restrict network access:**
    - Use Unraid firewall rules
    - Limit container network to local subnet only
 
-4. **Protect sensitive files:**
+5. **Protect sensitive files:**
    - Ensure `token.json` has restricted permissions
    - Use Unraid's encrypted user shares if needed
+   - Never commit `.env` files or tokens to git
 
 ## Support
 

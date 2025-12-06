@@ -16,26 +16,56 @@ if [ -n "$TZ" ]; then
     # The TZ environment variable is sufficient for Python datetime operations
 fi
 
-# Set default DATABASE_URL if not provided (use absolute path for Docker)
-if [ -z "$DATABASE_URL" ]; then
-    export DATABASE_URL="sqlite:////app/data/market_data.db"
-else
-    # Normalize 3-slash paths to 4-slash for absolute paths in Docker
-    # sqlite:///app/... should be sqlite:////app/... (4 slashes = 3 for protocol + 1 for root)
-    if echo "$DATABASE_URL" | grep -q "^sqlite:///app/"; then
-        # Has only 3 slashes but starts with /app - needs to be absolute path
-        export DATABASE_URL=$(echo "$DATABASE_URL" | sed 's|^sqlite:///app/|sqlite:////app/|')
-        echo "Normalized DATABASE_URL to absolute path format"
+# Determine database configuration based on DATABASE_TYPE
+DATABASE_TYPE="${DATABASE_TYPE:-sqlite}"
+
+if [ "$DATABASE_TYPE" = "postgresql" ]; then
+    # PostgreSQL configuration
+    if [ -n "$POSTGRES_HOST" ] && [ -n "$POSTGRES_USER" ]; then
+        echo "PostgreSQL database configuration detected"
+        # Note: The Python application handles URL encoding for special characters in passwords
+    else
+        echo "WARNING: DATABASE_TYPE=postgresql but POSTGRES_HOST or POSTGRES_USER not set"
+        echo "  - Falling back to SQLite"
+        DATABASE_TYPE="sqlite"
+    fi
+fi
+
+if [ "$DATABASE_TYPE" = "sqlite" ]; then
+    # Set default DATABASE_URL if not provided (use absolute path for Docker)
+    if [ -z "$DATABASE_URL" ]; then
+        export DATABASE_URL="sqlite:////app/data/market_data.db"
+    else
+        # Normalize 3-slash paths to 4-slash for absolute paths in Docker
+        # sqlite:///app/... should be sqlite:////app/... (4 slashes = 3 for protocol + 1 for root)
+        if echo "$DATABASE_URL" | grep -q "^sqlite:///app/"; then
+            # Has only 3 slashes but starts with /app - needs to be absolute path
+            export DATABASE_URL=$(echo "$DATABASE_URL" | sed 's|^sqlite:///app/|sqlite:////app/|')
+            echo "Normalized DATABASE_URL to absolute path format"
+        fi
     fi
 fi
 
 # Display configuration
 echo ""
 echo "Configuration:"
-echo "  - Database: ${DATABASE_URL}"
+if [ "$DATABASE_TYPE" = "postgresql" ]; then
+    echo "  - Database: PostgreSQL @ ${POSTGRES_HOST}:${POSTGRES_PORT:-5432}/${POSTGRES_DATABASE:-jutsu_labs}"
+else
+    echo "  - Database: ${DATABASE_URL}"
+fi
 echo "  - Log Level: ${LOG_LEVEL:-INFO}"
 echo "  - Timezone: ${TZ:-America/New_York}"
 echo "  - Mode: ${TRADING_MODE:-offline_mock}"
+
+# Display authentication settings
+AUTH_REQUIRED="${AUTH_REQUIRED:-false}"
+if [ "$AUTH_REQUIRED" = "true" ]; then
+    echo "  - Authentication: ENABLED (JWT)"
+    echo "    - Login at /auth/login with username: admin"
+else
+    echo "  - Authentication: DISABLED (open access)"
+fi
 echo ""
 
 # Check for Schwab credentials
@@ -69,52 +99,86 @@ if [ ! -w "/app/state" ]; then
     exit 1
 fi
 
-# Initialize database if it doesn't exist
+# Initialize database
 echo "Initializing database..."
 python3 -c "
 from pathlib import Path
-from sqlalchemy import create_engine
 import os
 import re
+from urllib.parse import quote_plus
 
-db_url = os.environ.get('DATABASE_URL', 'sqlite:////app/data/market_data.db')
+database_type = os.environ.get('DATABASE_TYPE', 'sqlite')
 
-# Normalize 3-slash paths to 4-slash for absolute paths
-# sqlite:///app/... should be sqlite:////app/... (4 slashes)
-if re.match(r'^sqlite:///app/', db_url):
-    db_url = db_url.replace('sqlite:///app/', 'sqlite:////app/', 1)
-    print(f'  Normalized to: {db_url}')
-
-print(f'  Database URL: {db_url}')
-
-# Parse path from SQLite URL - handle both 3 and 4 slash formats
-if db_url.startswith('sqlite:////'):
-    # Absolute path (4 slashes = sqlite:/// + /absolute/path)
-    db_path = Path(db_url.replace('sqlite:////', '/'))
-elif db_url.startswith('sqlite:///'):
-    # Relative path (3 slashes = sqlite:/// + relative/path)
-    db_path = Path(db_url.replace('sqlite:///', ''))
+if database_type == 'postgresql':
+    # PostgreSQL configuration
+    host = os.environ.get('POSTGRES_HOST', 'localhost')
+    port = os.environ.get('POSTGRES_PORT', '5432')
+    user = os.environ.get('POSTGRES_USER', 'jutsu')
+    password = os.environ.get('POSTGRES_PASSWORD', '')
+    database = os.environ.get('POSTGRES_DATABASE', 'jutsu_labs')
+    
+    # URL-encode password to handle special characters (like @)
+    encoded_password = quote_plus(password) if password else ''
+    
+    db_url = f'postgresql://{user}:{encoded_password}@{host}:{port}/{database}'
+    print(f'  Database: PostgreSQL @ {host}:{port}/{database}')
+    
+    try:
+        from sqlalchemy import create_engine
+        from jutsu_engine.data.models import Base
+        
+        engine = create_engine(db_url)
+        # Test connection
+        with engine.connect() as conn:
+            pass
+        print('  PostgreSQL connection verified')
+        
+        # Create tables if they don't exist
+        Base.metadata.create_all(engine)
+        engine.dispose()
+        print('  Database schema verified/created')
+    except Exception as e:
+        print(f'  WARNING: PostgreSQL initialization failed: {e}')
+        print('  The application will retry on startup')
 else:
-    db_path = None
-
-if db_path:
-    # Ensure parent directory exists
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if db_path.exists():
-        print(f'  Database exists: {db_path}')
+    # SQLite configuration
+    db_url = os.environ.get('DATABASE_URL', 'sqlite:////app/data/market_data.db')
+    
+    # Normalize 3-slash paths to 4-slash for absolute paths
+    # sqlite:///app/... should be sqlite:////app/... (4 slashes)
+    if re.match(r'^sqlite:///app/', db_url):
+        db_url = db_url.replace('sqlite:///app/', 'sqlite:////app/', 1)
+        print(f'  Normalized to: {db_url}')
+    
+    print(f'  Database URL: {db_url}')
+    
+    # Parse path from SQLite URL - handle both 3 and 4 slash formats
+    if db_url.startswith('sqlite:////'):
+        # Absolute path (4 slashes = sqlite:/// + /absolute/path)
+        db_path = Path(db_url.replace('sqlite:////', '/'))
+    elif db_url.startswith('sqlite:///'):
+        # Relative path (3 slashes = sqlite:/// + relative/path)
+        db_path = Path(db_url.replace('sqlite:///', ''))
     else:
-        print(f'  Creating database: {db_path}')
-        try:
-            from jutsu_engine.data.models import Base
-            engine = create_engine(db_url, connect_args={'check_same_thread': False})
-            Base.metadata.create_all(engine)
-            engine.dispose()
-            print('  Database schema created successfully')
-        except Exception as e:
-            print(f'  WARNING: Could not create database: {e}')
-else:
-    print('  Non-SQLite database, skipping initialization')
+        db_path = None
+    
+    if db_path:
+        # Ensure parent directory exists
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        if db_path.exists():
+            print(f'  Database exists: {db_path}')
+        else:
+            print(f'  Creating database: {db_path}')
+            try:
+                from sqlalchemy import create_engine
+                from jutsu_engine.data.models import Base
+                engine = create_engine(db_url, connect_args={'check_same_thread': False})
+                Base.metadata.create_all(engine)
+                engine.dispose()
+                print('  Database schema created successfully')
+            except Exception as e:
+                print(f'  WARNING: Could not create database: {e}')
 "
 
 # Display startup summary

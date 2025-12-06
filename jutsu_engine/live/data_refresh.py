@@ -40,7 +40,7 @@ from jutsu_engine.live.market_calendar import (
     is_trading_day,
     get_previous_trading_day,
 )
-from jutsu_engine.utils.config import get_database_url, get_database_path
+from jutsu_engine.utils.config import get_database_url, get_database_path, is_postgresql
 
 logger = logging.getLogger('LIVE.DATA_REFRESH')
 
@@ -79,18 +79,24 @@ class DashboardDataRefresher:
         # Use centralized utility for database path detection
         if db_path is None:
             db_url = get_database_url()
-            db_path = get_database_path()
+            db_path = get_database_path()  # None for PostgreSQL
         else:
             db_url = f'sqlite:///{db_path}'
 
         self._db_path = db_path
+        self._db_url = db_url
         self._mode = mode
+        self._is_postgresql = is_postgresql()
 
         # Initialize database connection
-        self._engine = create_engine(
-            db_url,
-            connect_args={'check_same_thread': False}
-        )
+        # Note: check_same_thread is SQLite-only, don't use for PostgreSQL
+        if self._is_postgresql:
+            self._engine = create_engine(db_url)
+        else:
+            self._engine = create_engine(
+                db_url,
+                connect_args={'check_same_thread': False}
+            )
         self._SessionLocal = sessionmaker(
             autocommit=False,
             autoflush=False,
@@ -98,7 +104,9 @@ class DashboardDataRefresher:
         )
         self._session: Optional[Session] = None
 
-        logger.info(f"DashboardDataRefresher initialized: db={db_path}, mode={mode.value}")
+        # Log with appropriate identifier (URL for PostgreSQL, path for SQLite)
+        db_identifier = db_path if db_path else db_url.split('@')[1] if '@' in db_url else 'postgresql'
+        logger.info(f"DashboardDataRefresher initialized: db={db_identifier}, mode={mode.value}")
     
     def _get_session(self) -> Session:
         """Get or create database session."""

@@ -2,14 +2,26 @@
 Configuration management for the Jutsu Labs backtesting engine.
 
 Loads configuration from environment variables and YAML files.
+Supports both SQLite (local) and PostgreSQL (server) databases.
 """
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 from decimal import Decimal
+from urllib.parse import quote_plus
 import yaml
 from dotenv import load_dotenv
+
+
+# Load .env file at module level so all functions have access to environment variables
+# This ensures get_database_type(), is_postgresql(), etc. work correctly when imported
+load_dotenv()
+
+
+# Database type constants
+DATABASE_TYPE_SQLITE = "sqlite"
+DATABASE_TYPE_POSTGRES = "postgresql"
 
 
 class Config:
@@ -227,19 +239,77 @@ def get_config() -> Config:
     return _config
 
 
-def get_database_url() -> str:
+def get_database_type() -> str:
     """
-    Get database URL with proper Docker/local path detection.
+    Get the configured database type.
 
-    This is the centralized utility for database URL resolution.
-    All modules should use this function instead of hardcoding paths.
+    Returns:
+        Database type: 'sqlite' or 'postgresql'
+
+    Example:
+        from jutsu_engine.utils.config import get_database_type
+
+        db_type = get_database_type()
+        # 'sqlite' (default) or 'postgresql'
+    """
+    return os.getenv('DATABASE_TYPE', DATABASE_TYPE_SQLITE).lower()
+
+
+def get_postgresql_url() -> str:
+    """
+    Build PostgreSQL connection URL from environment variables.
+
+    Required environment variables:
+    - POSTGRES_HOST: Database host (default: localhost)
+    - POSTGRES_PORT: Database port (default: 5432)
+    - POSTGRES_USER: Database user (default: jutsu)
+    - POSTGRES_PASSWORD: Database password (required)
+    - POSTGRES_DATABASE: Database name (default: jutsu_labs)
+
+    Note: Password and username are URL-encoded to handle special characters
+    like @, #, %, etc. safely in the connection URL.
+
+    Returns:
+        PostgreSQL connection URL string
+
+    Raises:
+        ValueError: If POSTGRES_PASSWORD is not set
+
+    Example:
+        from jutsu_engine.utils.config import get_postgresql_url
+
+        db_url = get_postgresql_url()
+        # 'postgresql://jutsu:password@localhost:5432/jutsu_labs'
+    """
+    host = os.getenv('POSTGRES_HOST', 'localhost')
+    port = os.getenv('POSTGRES_PORT', '5432')
+    user = os.getenv('POSTGRES_USER', 'jutsu')
+    password = os.getenv('POSTGRES_PASSWORD')
+    database = os.getenv('POSTGRES_DATABASE', 'jutsu_labs')
+
+    if not password:
+        raise ValueError(
+            "POSTGRES_PASSWORD environment variable is required when DATABASE_TYPE=postgresql. "
+            "Please set it in your .env file or environment."
+        )
+
+    # URL-encode user and password to handle special characters (@, #, %, etc.)
+    encoded_user = quote_plus(user)
+    encoded_password = quote_plus(password)
+
+    return f"postgresql://{encoded_user}:{encoded_password}@{host}:{port}/{database}"
+
+
+def get_sqlite_url() -> str:
+    """
+    Get SQLite database URL with proper Docker/local path detection.
 
     SQLite URL format:
     - sqlite:///relative/path (3 slashes = relative path from cwd)
     - sqlite:////absolute/path (4 slashes = absolute path, e.g., /app/data/)
 
     Logic:
-    1. Read DATABASE_URL environment variable
+    1. Read DATABASE_URL environment variable (if set and is SQLite)
     2. Normalize 3-slash to 4-slash for /app/ paths (Docker)
     3. If no env var, auto-detect Docker (/app/data exists) vs local
 
@@ -247,15 +317,15 @@ def get_database_url() -> str:
         SQLite database URL string
 
     Example:
-        from jutsu_engine.utils.config import get_database_url
+        from jutsu_engine.utils.config import get_sqlite_url
 
-        db_url = get_database_url()
+        db_url = get_sqlite_url()
         # Docker: 'sqlite:////app/data/market_data.db'
         # Local:  'sqlite:///data/market_data.db'
     """
     db_url = os.getenv('DATABASE_URL')
 
-    if db_url:
+    if db_url and db_url.startswith('sqlite'):
         # Normalize 3-slash paths to 4-slash for absolute /app paths
         # sqlite:///app/... should be sqlite:////app/... (4 slashes for absolute)
         if re.match(r'^sqlite:///app/', db_url):
@@ -271,19 +341,56 @@ def get_database_url() -> str:
         return 'sqlite:///data/market_data.db'
 
 
-def get_database_path() -> str:
+def get_database_url() -> str:
+    """
+    Get database URL based on DATABASE_TYPE configuration.
+
+    This is the centralized utility for database URL resolution.
+    All modules should use this function instead of hardcoding paths.
+
+    Supports:
+    - SQLite (DATABASE_TYPE=sqlite, default): Local file-based database
+    - PostgreSQL (DATABASE_TYPE=postgresql): Server-based database
+
+    Returns:
+        Database connection URL string
+
+    Example:
+        from jutsu_engine.utils.config import get_database_url
+
+        db_url = get_database_url()
+        # SQLite:     'sqlite:///data/market_data.db'
+        # PostgreSQL: 'postgresql://jutsu:password@localhost:5432/jutsu_labs'
+    """
+    db_type = get_database_type()
+
+    if db_type == DATABASE_TYPE_POSTGRES:
+        return get_postgresql_url()
+    else:
+        return get_sqlite_url()
+
+
+def get_database_path() -> Optional[str]:
     """
     Get database file path (without sqlite:// prefix).
 
+    Note: Only applicable for SQLite databases. Returns None for PostgreSQL.
+
     Returns:
-        Database file path string
+        Database file path string for SQLite, None for PostgreSQL
 
     Example:
         path = get_database_path()
-        # Docker: '/app/data/market_data.db'
-        # Local:  'data/market_data.db'
+        # SQLite Docker: '/app/data/market_data.db'
+        # SQLite Local:  'data/market_data.db'
+        # PostgreSQL:    None
     """
-    db_url = get_database_url()
+    db_type = get_database_type()
+
+    if db_type == DATABASE_TYPE_POSTGRES:
+        return None
+
+    db_url = get_sqlite_url()
 
     if db_url.startswith('sqlite:////'):
         # Absolute path (4 slashes)
@@ -292,8 +399,42 @@ def get_database_path() -> str:
         # Relative path (3 slashes)
         return db_url.replace('sqlite:///', '')
     else:
-        # Non-SQLite URL, return as-is
+        # Unexpected format
         return db_url
+
+
+def is_postgresql() -> bool:
+    """
+    Check if using PostgreSQL database.
+
+    Returns:
+        True if DATABASE_TYPE is postgresql, False otherwise
+
+    Example:
+        from jutsu_engine.utils.config import is_postgresql
+
+        if is_postgresql():
+            # PostgreSQL-specific logic
+            pass
+    """
+    return get_database_type() == DATABASE_TYPE_POSTGRES
+
+
+def is_sqlite() -> bool:
+    """
+    Check if using SQLite database.
+
+    Returns:
+        True if DATABASE_TYPE is sqlite (or unset), False otherwise
+
+    Example:
+        from jutsu_engine.utils.config import is_sqlite
+
+        if is_sqlite():
+            # SQLite-specific logic
+            pass
+    """
+    return get_database_type() == DATABASE_TYPE_SQLITE
 
 
 def reload_config():

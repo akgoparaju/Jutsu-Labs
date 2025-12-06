@@ -1,3 +1,170 @@
+#### **Dashboard: Custom Logo & GitHub Actions for serverdB** (2025-12-06)
+
+**Added custom Jutsu Trading logo to dashboard and enabled CI/CD testing on serverdB branch**
+
+**Changes**:
+
+1. **Dashboard UI**
+   - Replaced generic Activity icon with custom Jutsu Trading logo in header
+   - Updated favicon from Vite default to custom Jutsu Trading icon
+   - Added Apple touch icon support for iOS home screen
+   - Created `dashboard/src/assets/` folder for logo import
+   - Created `dashboard/public/` folder for favicon and static assets
+   - Added TypeScript declarations for image imports (`vite-env.d.ts`)
+
+2. **GitHub Actions**
+   - Enabled Docker build workflow on `serverdB` branch for pre-production testing
+   - Builds and pushes Docker image with branch name tag (`serverdB`)
+   - Allows testing Docker images before merging to main
+
+**Files Modified**:
+- `dashboard/src/components/Layout.tsx` - Updated header to use custom logo
+- `dashboard/index.html` - Updated favicon and apple-touch-icon references
+- `dashboard/src/vite-env.d.ts` - Added image module type declarations
+- `.github/workflows/docker-publish.yml` - Added serverdB branch trigger
+
+**New Folders**:
+- `dashboard/src/assets/` - For logo.png (header logo)
+- `dashboard/public/` - For favicon.png (browser tab icon)
+
+---
+
+#### **Docker: PostgreSQL & JWT Authentication Support** (2025-12-06)
+
+**Updated Docker configuration to support PostgreSQL database and JWT authentication for production deployments**
+
+**Changes**:
+
+1. **docker-compose.yml**
+   - Added `DATABASE_TYPE` variable to switch between sqlite and postgresql
+   - Added PostgreSQL configuration: `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DATABASE`
+   - Added JWT authentication: `AUTH_REQUIRED`, `ADMIN_PASSWORD`, `SECRET_KEY`
+   - Deprecated legacy `JUTSU_API_USERNAME`/`JUTSU_API_PASSWORD` (still supported for backward compatibility)
+
+2. **docker/docker-entrypoint.sh**
+   - Added PostgreSQL detection and connection verification
+   - Added authentication status display in startup output
+   - Improved database initialization for both SQLite and PostgreSQL
+   - Special characters in passwords (like `@`) are automatically URL-encoded
+
+3. **docker/UNRAID_SETUP.md**
+   - Reorganized environment variables into logical sections
+   - Added PostgreSQL configuration instructions
+   - Added JWT authentication setup guide
+   - Updated Security Recommendations with modern best practices
+
+**New Environment Variables for Unraid**:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_TYPE` | `sqlite` | Database type: `sqlite` or `postgresql` |
+| `POSTGRES_HOST` | - | PostgreSQL server hostname |
+| `POSTGRES_PORT` | `5432` | PostgreSQL server port |
+| `POSTGRES_USER` | - | PostgreSQL username |
+| `POSTGRES_PASSWORD` | - | PostgreSQL password (special chars auto-encoded) |
+| `POSTGRES_DATABASE` | `jutsu_labs` | PostgreSQL database name |
+| `AUTH_REQUIRED` | `false` | Enable JWT authentication |
+| `ADMIN_PASSWORD` | `admin` | Admin password for dashboard login |
+| `SECRET_KEY` | - | JWT signing key |
+
+---
+
+#### **Fix: bcrypt 5.0 Compatibility for Authentication** (2025-12-06)
+
+**Fixed passlib/bcrypt incompatibility that prevented authentication with special characters in passwords**
+
+**Root Cause**:
+- `passlib 1.7.4` is incompatible with `bcrypt 5.0+` due to removed `__about__` attribute
+- This caused password hashing to fail with a confusing "password cannot be longer than 72 bytes" error
+- Affected all passwords, not just those with special characters
+
+**Solution**:
+- Replaced passlib-based password hashing with direct bcrypt usage
+- bcrypt 5.0+ works correctly for both hashing and verification
+- Updated error messages to reflect new bcrypt dependency (instead of passlib)
+
+**Files Modified**:
+- `jutsu_engine/api/dependencies.py` - Switched from passlib.CryptContext to direct bcrypt.hashpw/checkpw
+- `jutsu_engine/api/routes/auth.py` - Updated error message for missing dependencies
+
+**Testing**:
+- Password hashing: ✅ Works with special characters (`@`, `#`, `%`, etc.)
+- Admin user creation: ✅ `ensure_admin_user_exists()` succeeds
+- Password verification: ✅ Login flow works correctly
+- Wrong password rejection: ✅ Invalid passwords are rejected
+
+---
+
+#### **PostgreSQL Database Support & JWT Authentication** (2025-12-06)
+
+**Added dual database support (SQLite/PostgreSQL) and JWT-based authentication for server deployments**
+
+**New Features**:
+
+1. **Dual Database Support**
+   - **SQLite (default)**: Local file-based database for development
+   - **PostgreSQL**: Server-based database for production deployments
+   - **Configuration**: Set `DATABASE_TYPE=postgresql` in `.env` to use PostgreSQL
+   - **Auto-detection**: System automatically detects Docker vs local environment
+
+2. **JWT Authentication**
+   - **Token-based auth**: 7-day persistent JWT tokens for dashboard access
+   - **Conditional**: Enable with `AUTH_REQUIRED=true` in `.env` (disabled by default)
+   - **Admin user**: Auto-created on first startup when auth is enabled
+   - **Frontend**: Login page with protected routes
+
+3. **Data Migration Script**
+   - **Location**: `scripts/migrate_to_postgres.py`
+   - **Features**: Migrates all tables from SQLite to PostgreSQL
+   - **Usage**: `python scripts/migrate_to_postgres.py [--dry-run]`
+
+**Files Created/Modified**:
+
+- **Backend**:
+  - `jutsu_engine/utils/config.py` - Added PostgreSQL URL builder with URL encoding for special characters (`@`, `#`, `%`, etc.), `get_database_type()`, `is_postgresql()`, `is_sqlite()`
+  - `jutsu_engine/api/dependencies.py` - Dual database engine support, JWT authentication functions
+  - `jutsu_engine/api/routes/auth.py` - New auth router with `/login`, `/logout`, `/me`, `/refresh`, `/status`
+  - `jutsu_engine/data/models.py` - Added `User` model for authentication
+  - `jutsu_engine/api/main.py` - Added auth router, admin user creation on startup
+
+- **Frontend (React)**:
+  - `dashboard/src/contexts/AuthContext.tsx` - Authentication state management
+  - `dashboard/src/pages/Login.tsx` - Login page component
+  - `dashboard/src/components/ProtectedRoute.tsx` - Route protection wrapper
+  - `dashboard/src/components/Layout.tsx` - Added logout button
+  - `dashboard/src/App.tsx` - Integrated auth provider and protected routes
+
+- **Configuration**:
+  - `.env.example` - Added `AUTH_REQUIRED`, `ADMIN_PASSWORD` variables
+
+**Environment Variables**:
+```bash
+# Database (choose one)
+DATABASE_TYPE=sqlite           # Local development (default)
+DATABASE_TYPE=postgresql       # Server deployment
+
+# PostgreSQL configuration (when DATABASE_TYPE=postgresql)
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_USER=jutsu
+POSTGRES_PASSWORD=your_password
+POSTGRES_DATABASE=jutsu_labs
+
+# Authentication (optional)
+AUTH_REQUIRED=false            # Set to 'true' to require login
+ADMIN_PASSWORD=admin           # Default admin password
+SECRET_KEY=your_jwt_secret     # JWT signing key
+```
+
+**Migration Steps (SQLite to PostgreSQL)**:
+1. Set up PostgreSQL database and user
+2. Update `.env` with PostgreSQL credentials
+3. Run: `python scripts/migrate_to_postgres.py --dry-run` (preview)
+4. Run: `python scripts/migrate_to_postgres.py` (execute)
+5. Set `DATABASE_TYPE=postgresql` to switch
+
+---
+
 #### **Weekend Snapshot Protection & Dashboard Baseline Fix** (2025-12-06)
 
 **Fixed baseline values showing N/A and weekend data appearing in dashboard**

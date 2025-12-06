@@ -395,3 +395,47 @@ class SystemState(Base):
 
     def __repr__(self):
         return f"<SystemState({self.key}={self.value[:50] if self.value else None}...)>"
+
+
+# ==============================================================================
+# USER AUTHENTICATION MODELS
+# ==============================================================================
+
+
+class User(Base):
+    """
+    User account for dashboard authentication.
+
+    Stores user credentials and session information for JWT-based
+    authentication. Passwords are stored as bcrypt hashes.
+
+    Design decisions:
+    - Single user mode by default (admin user)
+    - JWT tokens with 7-day expiry for persistent sessions
+    - Email optional (not required for single user mode)
+
+    Indexes:
+        - username for fast login lookups
+    """
+
+    __tablename__ = 'users'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Authentication
+    username = Column(String(50), nullable=False, unique=True, index=True)
+    password_hash = Column(String(255), nullable=False)  # bcrypt hash
+
+    # Optional profile info
+    email = Column(String(255), unique=True, nullable=True)
+
+    # Account state
+    is_active = Column(Boolean, default=True)  # Can disable without deleting
+    is_admin = Column(Boolean, default=True)  # Admin flag (all users admin for now)
+
+    # Session tracking
+    last_login = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<User(username={self.username}, active={self.is_active})>"

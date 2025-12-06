@@ -20,14 +20,32 @@ services:
       - SCHWAB_CALLBACK_URL=${SCHWAB_CALLBACK_URL:-https://127.0.0.1}
 
       # Database configuration
-      - DATABASE_URL=sqlite:////app/data/market_data.db
+      # Use DATABASE_TYPE to switch between sqlite (default) and postgresql
+      - DATABASE_TYPE=${DATABASE_TYPE:-sqlite}
+      
+      # SQLite configuration (default for development)
+      - SQLITE_DATABASE=${SQLITE_DATABASE:-data/market_data.db}
+      
+      # PostgreSQL configuration (for production)
+      # Note: Special characters in password (like @) are automatically URL-encoded
+      - POSTGRES_HOST=${POSTGRES_HOST:-}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_USER=${POSTGRES_USER:-}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-}
+      - POSTGRES_DATABASE=${POSTGRES_DATABASE:-jutsu_labs}
 
       # Application settings
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - TZ=${TZ:-America/New_York}
       - TRADING_MODE=${TRADING_MODE:-offline_mock}
 
-      # Optional API authentication
+      # JWT Authentication (recommended)
+      # Set AUTH_REQUIRED=true to require login before accessing dashboard
+      - AUTH_REQUIRED=${AUTH_REQUIRED:-false}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
+      - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
+
+      # Legacy API authentication (deprecated, use JWT instead)
       - JUTSU_API_USERNAME=${JUTSU_API_USERNAME:-}
       - JUTSU_API_PASSWORD=${JUTSU_API_PASSWORD:-}
 
