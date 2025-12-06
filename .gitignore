@@ -36,9 +36,10 @@ venv.bak/
 # Project-specific
 logs/
 !logs/.gitkeep
-data/
+/data/
 !data/.gitkeep
-*.db
+!jutsu_engine/data/
+jutsu_engine/data/*.db
 *.sqlite
 *.sqlite3
 .env

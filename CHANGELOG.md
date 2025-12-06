@@ -4,12 +4,18 @@
 
 **Issues Resolved**:
 
-1. **Nginx Config Syntax Error** (Latest)
+1. **Missing jutsu_engine.data Module** (Latest)
+   - **Error**: `ModuleNotFoundError: No module named 'jutsu_engine.data'`
+   - **Root Cause**: `.gitignore` had `data/` which matched `jutsu_engine/data/` directory
+   - **Fix**: Changed to `/data/` (root only) and added `!jutsu_engine/data/` exception
+   - **Files Added**: 12 Python files in `jutsu_engine/data/` now tracked in git
+
+2. **Nginx Config Syntax Error**
    - **Error**: `"client_body_temp_path" directive is not allowed here in /etc/nginx/nginx.conf:10`
    - **Root Cause**: Temp path directives were in "main" context (outside blocks)
    - **Fix**: Moved all temp path directives inside the `http {}` block where they're valid
 
-2. **Timezone Permission Error**
+3. **Timezone Permission Error**
    - **Error**: `ln: failed to create symbolic link '/etc/localtime': Permission denied`
    - **Root Cause**: Entrypoint tried to create symlink requiring root access
    - **Fix**: Removed `ln` command, use TZ environment variable instead
