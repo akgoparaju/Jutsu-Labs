@@ -189,12 +189,27 @@ If you don't have a `token.json` file yet:
 
 ### Dashboard Not Loading
 
-1. Check nginx is running:
+1. **⚠️ VERIFY PORT MAPPING (Most Common Issue)**:
+   - Container Port MUST be `8080` (not `80`)
+   - The container runs as non-root user and cannot bind to port 80
+   - In Unraid Docker settings, ensure:
+     - Container Port: `8080`
+     - Host Port: Your choice (e.g., `8787`, `8080`)
+   - **Wrong**: `Container Port: 80` → **Will NOT work**
+   - **Correct**: `Container Port: 8080` → Works
+
+2. Check nginx is running:
    ```bash
    docker exec jutsu-trading-dashboard ps aux | grep nginx
    ```
-2. Verify port mapping in Unraid Docker settings
-3. Check browser console for errors
+
+3. Verify services are listening on correct ports:
+   ```bash
+   docker exec jutsu-trading-dashboard netstat -tlnp
+   # Should show nginx on port 8080
+   ```
+
+4. Check browser console for errors
 
 ## Upgrading
 
