@@ -40,6 +40,7 @@ from jutsu_engine.live.market_calendar import (
     is_trading_day,
     get_previous_trading_day,
 )
+from jutsu_engine.utils.config import get_database_url, get_database_path
 
 logger = logging.getLogger('LIVE.DATA_REFRESH')
 
@@ -65,21 +66,27 @@ class DashboardDataRefresher:
     
     def __init__(
         self,
-        db_path: str = 'data/market_data.db',
+        db_path: Optional[str] = None,
         mode: TradingMode = TradingMode.OFFLINE_MOCK,
     ):
         """
         Initialize the data refresher.
-        
+
         Args:
-            db_path: Path to the SQLite database
+            db_path: Path to the SQLite database (auto-detected if None)
             mode: Trading mode to filter positions/snapshots
         """
+        # Use centralized utility for database path detection
+        if db_path is None:
+            db_url = get_database_url()
+            db_path = get_database_path()
+        else:
+            db_url = f'sqlite:///{db_path}'
+
         self._db_path = db_path
         self._mode = mode
-        
+
         # Initialize database connection
-        db_url = f'sqlite:///{db_path}'
         self._engine = create_engine(
             db_url,
             connect_args={'check_same_thread': False}
@@ -90,7 +97,7 @@ class DashboardDataRefresher:
             bind=self._engine
         )
         self._session: Optional[Session] = None
-        
+
         logger.info(f"DashboardDataRefresher initialized: db={db_path}, mode={mode.value}")
     
     def _get_session(self) -> Session:

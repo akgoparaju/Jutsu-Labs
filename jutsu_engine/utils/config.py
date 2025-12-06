@@ -4,6 +4,7 @@ Configuration management for the Jutsu Labs backtesting engine.
 Loads configuration from environment variables and YAML files.
 """
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 from decimal import Decimal
@@ -144,8 +145,16 @@ class Config:
 
     @property
     def database_url(self) -> str:
-        """Get database URL."""
-        return self.get('DATABASE_URL', 'sqlite:///data/market_data.db')
+        """
+        Get database URL with Docker/local auto-detection.
+
+        Handles SQLite URL formats:
+        - sqlite:///relative/path (3 slashes = relative path)
+        - sqlite:////absolute/path (4 slashes = absolute path)
+
+        In Docker, paths like /app/data/ require 4 slashes.
+        """
+        return get_database_url()
 
     @property
     def schwab_api_key(self) -> Optional[str]:
@@ -216,6 +225,75 @@ def get_config() -> Config:
     if _config is None:
         _config = Config()
     return _config
+
+
+def get_database_url() -> str:
+    """
+    Get database URL with proper Docker/local path detection.
+
+    This is the centralized utility for database URL resolution.
+    All modules should use this function instead of hardcoding paths.
+
+    SQLite URL format:
+    - sqlite:///relative/path (3 slashes = relative path from cwd)
+    - sqlite:////absolute/path (4 slashes = absolute path, e.g., /app/data/)
+
+    Logic:
+    1. Read DATABASE_URL environment variable
+    2. Normalize 3-slash to 4-slash for /app/ paths (Docker)
+    3. If no env var, auto-detect Docker (/app/data exists) vs local
+
+    Returns:
+        SQLite database URL string
+
+    Example:
+        from jutsu_engine.utils.config import get_database_url
+
+        db_url = get_database_url()
+        # Docker: 'sqlite:////app/data/market_data.db'
+        # Local:  'sqlite:///data/market_data.db'
+    """
+    db_url = os.getenv('DATABASE_URL')
+
+    if db_url:
+        # Normalize 3-slash paths to 4-slash for absolute /app paths
+        # sqlite:///app/... should be sqlite:////app/... (4 slashes for absolute)
+        if re.match(r'^sqlite:///app/', db_url):
+            return db_url.replace('sqlite:///app/', 'sqlite:////app/', 1)
+        return db_url
+
+    # Default: Check if running in Docker (/app exists) or local
+    if Path('/app/data').exists():
+        # Docker environment - use absolute path (4 slashes)
+        return 'sqlite:////app/data/market_data.db'
+    else:
+        # Local development - use relative path (3 slashes)
+        return 'sqlite:///data/market_data.db'
+
+
+def get_database_path() -> str:
+    """
+    Get database file path (without sqlite:// prefix).
+
+    Returns:
+        Database file path string
+
+    Example:
+        path = get_database_path()
+        # Docker: '/app/data/market_data.db'
+        # Local:  'data/market_data.db'
+    """
+    db_url = get_database_url()
+
+    if db_url.startswith('sqlite:////'):
+        # Absolute path (4 slashes)
+        return db_url.replace('sqlite:////', '/')
+    elif db_url.startswith('sqlite:///'):
+        # Relative path (3 slashes)
+        return db_url.replace('sqlite:///', '')
+    else:
+        # Non-SQLite URL, return as-is
+        return db_url
 
 
 def reload_config():

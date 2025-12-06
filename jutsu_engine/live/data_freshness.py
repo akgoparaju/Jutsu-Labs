@@ -14,7 +14,8 @@ PRD Compliance:
 Usage:
     from jutsu_engine.live.data_freshness import DataFreshnessChecker
 
-    checker = DataFreshnessChecker(db_path='data/market_data.db')
+    # Auto-detects database path (Docker vs local)
+    checker = DataFreshnessChecker()
     is_fresh, stale_symbols = checker.check_freshness(['QQQ', 'TLT'])
     if not is_fresh:
         checker.trigger_sync()
@@ -31,6 +32,7 @@ from sqlalchemy.orm import sessionmaker
 
 from jutsu_engine.data.models import DataMetadata, MarketData
 from jutsu_engine.live.market_calendar import get_previous_trading_day, is_trading_day
+from jutsu_engine.utils.config import get_database_url, get_database_path
 
 logger = logging.getLogger('LIVE.DATA_FRESHNESS')
 
@@ -65,7 +67,7 @@ class DataFreshnessChecker:
 
     def __init__(
         self,
-        db_path: str = 'data/market_data.db',
+        db_path: Optional[str] = None,
         timeframe: str = '1D',
         required_symbols: Optional[List[str]] = None
     ):
@@ -73,10 +75,17 @@ class DataFreshnessChecker:
         Initialize DataFreshnessChecker.
 
         Args:
-            db_path: Path to SQLite database
+            db_path: Path to SQLite database (auto-detected if None)
             timeframe: Bar timeframe to check
             required_symbols: Symbols that must be fresh (default: strategy universe)
         """
+        # Use centralized utility for database path detection
+        if db_path is None:
+            db_url = get_database_url()
+            db_path = get_database_path()
+        else:
+            db_url = f'sqlite:///{db_path}'
+
         self.db_path = Path(db_path)
         self.timeframe = timeframe
         self.required_symbols = required_symbols or self.DEFAULT_REQUIRED_SYMBOLS
@@ -85,7 +94,7 @@ class DataFreshnessChecker:
         if not self.db_path.exists():
             raise DataFreshnessError(f"Database not found: {self.db_path}")
 
-        engine = create_engine(f'sqlite:///{self.db_path}')
+        engine = create_engine(db_url)
         Session = sessionmaker(bind=engine)
         self.session = Session()
 

@@ -4,14 +4,20 @@
 
 **Issues Resolved**:
 
-1. **SQLite Database Path/Init Error** (Latest Fix - v2)
+1. **SQLite Database Path/Init Error** (Latest Fix - v3: Centralized Utility)
    - **Error**: `sqlite3.OperationalError: unable to open database file`
-   - **Root Cause**: 3-slash vs 4-slash SQLite URL format confusion
-   - **Fixes Applied**:
-     - `dependencies.py`: Added `_normalize_sqlite_url()` to convert 3-slash to 4-slash
-     - `entrypoint.sh`: Normalize DATABASE_URL before use (bash + python)
-     - Both layers now auto-correct `sqlite:///app/...` → `sqlite:////app/...`
-   - **Why This is Permanent**: Path normalization at BOTH entrypoint AND Python level
+   - **Root Cause**: Multiple modules with hardcoded relative database paths (`data/market_data.db`)
+   - **Evidence**: Docker logs showed `DashboardDataRefresher initialized: db=data/market_data.db` (wrong path)
+   - **Final Fix** (Comprehensive):
+     - Created centralized `get_database_url()` and `get_database_path()` in `jutsu_engine/utils/config.py`
+     - Updated `jutsu_engine/live/data_refresh.py` to use centralized utility
+     - Updated `jutsu_engine/live/data_freshness.py` to use centralized utility
+     - Updated `jutsu_engine/api/dependencies.py` to call centralized utility
+   - **How It Works**:
+     - Reads `DATABASE_URL` environment variable
+     - Auto-normalizes `sqlite:///app/...` → `sqlite:////app/...` (3→4 slashes)
+     - Auto-detects Docker (`/app/data` exists) vs local environment
+   - **Why This is Permanent**: Single source of truth for database path detection
 
 1a. **Missing asyncio import**
    - **Error**: `name 'asyncio' is not defined`
@@ -45,6 +51,9 @@
    - **Fix**: Changed nginx to listen on port 8080 instead of port 80
 
 **Configuration Changes**:
+- `jutsu_engine/utils/config.py`: Added centralized `get_database_url()` and `get_database_path()` utilities
+- `jutsu_engine/live/data_refresh.py`: Uses centralized database utility instead of hardcoded path
+- `jutsu_engine/live/data_freshness.py`: Uses centralized database utility instead of hardcoded path
 - `jutsu_engine/api/dependencies.py`: Smart database path detection and auto-initialization
 - `docker/docker-entrypoint.sh`: Database initialization before services start
 - `docker/nginx.conf`: Uses `/tmp` for all temp/log paths, listens on port 8080
