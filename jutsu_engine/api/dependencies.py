@@ -22,6 +22,20 @@ logger = logging.getLogger('API.DEPS')
 # DATABASE CONFIGURATION
 # ==============================================================================
 
+def _normalize_sqlite_url(db_url: str) -> str:
+    """
+    Normalize SQLite URL to use correct slash format.
+
+    sqlite:///app/... should be sqlite:////app/... (4 slashes for absolute)
+    """
+    import re
+    if re.match(r'^sqlite:///app/', db_url):
+        normalized = db_url.replace('sqlite:///app/', 'sqlite:////app/', 1)
+        logger.info(f"Normalized database URL: {db_url} -> {normalized}")
+        return normalized
+    return db_url
+
+
 def _get_database_url() -> str:
     """
     Get database URL with proper absolute path handling.
@@ -32,7 +46,8 @@ def _get_database_url() -> str:
     db_url = os.getenv('DATABASE_URL')
 
     if db_url:
-        return db_url
+        # Normalize 3-slash paths to 4-slash for absolute /app paths
+        return _normalize_sqlite_url(db_url)
 
     # Default: Check if running in Docker (/app exists) or local
     if Path('/app/data').exists():

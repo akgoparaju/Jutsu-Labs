@@ -4,15 +4,19 @@
 
 **Issues Resolved**:
 
-1. **SQLite Database Path/Init Error** (Latest Fix)
+1. **SQLite Database Path/Init Error** (Latest Fix - v2)
    - **Error**: `sqlite3.OperationalError: unable to open database file`
-   - **Root Cause**: Database path handling and initialization not robust
+   - **Root Cause**: 3-slash vs 4-slash SQLite URL format confusion
    - **Fixes Applied**:
-     - `dependencies.py`: Auto-detect Docker vs local environment for correct path
-     - `dependencies.py`: Auto-create database with schema if it doesn't exist
-     - `entrypoint.sh`: Initialize database during container startup
-     - `entrypoint.sh`: Set `DATABASE_URL` with absolute path (4 slashes for SQLite)
-   - **Why This is Permanent**: Database now auto-created on first run, paths work in both Docker and local
+     - `dependencies.py`: Added `_normalize_sqlite_url()` to convert 3-slash to 4-slash
+     - `entrypoint.sh`: Normalize DATABASE_URL before use (bash + python)
+     - Both layers now auto-correct `sqlite:///app/...` → `sqlite:////app/...`
+   - **Why This is Permanent**: Path normalization at BOTH entrypoint AND Python level
+
+1a. **Missing asyncio import**
+   - **Error**: `name 'asyncio' is not defined`
+   - **Root Cause**: `asyncio.create_task()` used without importing asyncio
+   - **Fix**: Added `import asyncio` to `jutsu_engine/api/main.py`
 
 2. **Missing jutsu_engine.data Module**
    - **Error**: `ModuleNotFoundError: No module named 'jutsu_engine.data'`

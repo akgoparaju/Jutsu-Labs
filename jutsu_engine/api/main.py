@@ -5,6 +5,7 @@ Main entry point for the Jutsu trading dashboard API.
 Configures CORS, routes, and middleware.
 """
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional

@@ -17,7 +17,17 @@ if [ -n "$TZ" ]; then
 fi
 
 # Set default DATABASE_URL if not provided (use absolute path for Docker)
-export DATABASE_URL="${DATABASE_URL:-sqlite:////app/data/market_data.db}"
+if [ -z "$DATABASE_URL" ]; then
+    export DATABASE_URL="sqlite:////app/data/market_data.db"
+else
+    # Normalize 3-slash paths to 4-slash for absolute paths in Docker
+    # sqlite:///app/... should be sqlite:////app/... (4 slashes = 3 for protocol + 1 for root)
+    if echo "$DATABASE_URL" | grep -q "^sqlite:///app/"; then
+        # Has only 3 slashes but starts with /app - needs to be absolute path
+        export DATABASE_URL=$(echo "$DATABASE_URL" | sed 's|^sqlite:///app/|sqlite:////app/|')
+        echo "Normalized DATABASE_URL to absolute path format"
+    fi
+fi
 
 # Display configuration
 echo ""
@@ -65,14 +75,24 @@ python3 -c "
 from pathlib import Path
 from sqlalchemy import create_engine
 import os
+import re
 
 db_url = os.environ.get('DATABASE_URL', 'sqlite:////app/data/market_data.db')
+
+# Normalize 3-slash paths to 4-slash for absolute paths
+# sqlite:///app/... should be sqlite:////app/... (4 slashes)
+if re.match(r'^sqlite:///app/', db_url):
+    db_url = db_url.replace('sqlite:///app/', 'sqlite:////app/', 1)
+    print(f'  Normalized to: {db_url}')
+
 print(f'  Database URL: {db_url}')
 
-# Parse path from SQLite URL
+# Parse path from SQLite URL - handle both 3 and 4 slash formats
 if db_url.startswith('sqlite:////'):
+    # Absolute path (4 slashes = sqlite:/// + /absolute/path)
     db_path = Path(db_url.replace('sqlite:////', '/'))
 elif db_url.startswith('sqlite:///'):
+    # Relative path (3 slashes = sqlite:/// + relative/path)
     db_path = Path(db_url.replace('sqlite:///', ''))
 else:
     db_path = None
