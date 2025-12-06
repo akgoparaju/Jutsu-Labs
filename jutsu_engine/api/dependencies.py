@@ -22,9 +22,71 @@ logger = logging.getLogger('API.DEPS')
 # DATABASE CONFIGURATION
 # ==============================================================================
 
-# Database URL from environment or default
-# Use data/market_data.db which contains historical market data
-DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///data/market_data.db')
+def _get_database_url() -> str:
+    """
+    Get database URL with proper absolute path handling.
+
+    SQLite URL format: sqlite:///relative/path OR sqlite:////absolute/path
+    (Note: 4 slashes for absolute paths on Unix)
+    """
+    db_url = os.getenv('DATABASE_URL')
+
+    if db_url:
+        return db_url
+
+    # Default: Check if running in Docker (/app exists) or local
+    if Path('/app/data').exists():
+        # Docker environment - use absolute path
+        return 'sqlite:////app/data/market_data.db'
+    else:
+        # Local development - use relative path from project root
+        return 'sqlite:///data/market_data.db'
+
+
+def _ensure_database_exists(db_url: str) -> None:
+    """
+    Ensure the database file and directory exist.
+    Creates empty database with schema if it doesn't exist.
+    """
+    if not db_url.startswith('sqlite'):
+        return  # Only handle SQLite
+
+    # Parse SQLite path (sqlite:/// or sqlite:////)
+    if db_url.startswith('sqlite:////'):
+        # Absolute path
+        db_path = Path(db_url.replace('sqlite:////', '/'))
+    else:
+        # Relative path
+        db_path = Path(db_url.replace('sqlite:///', ''))
+
+    # Ensure parent directory exists
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # If database doesn't exist, create it with schema
+    if not db_path.exists():
+        logger.info(f"Database not found at {db_path}, creating...")
+        try:
+            # Import models to ensure they're registered with Base
+            from jutsu_engine.data.models import Base, MarketData, DataMetadata
+
+            # Create temporary engine just for schema creation
+            temp_engine = create_engine(
+                db_url,
+                connect_args={'check_same_thread': False},
+                echo=False
+            )
+            Base.metadata.create_all(temp_engine)
+            temp_engine.dispose()
+            logger.info(f"Database created successfully at {db_path}")
+        except Exception as e:
+            logger.warning(f"Could not create database: {e}")
+
+
+# Get database URL (handles Docker vs local automatically)
+DATABASE_URL = _get_database_url()
+
+# Ensure database exists before creating engine
+_ensure_database_exists(DATABASE_URL)
 
 # Create engine with appropriate settings
 if DATABASE_URL.startswith('sqlite'):

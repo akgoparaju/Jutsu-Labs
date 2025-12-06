@@ -16,10 +16,13 @@ if [ -n "$TZ" ]; then
     # The TZ environment variable is sufficient for Python datetime operations
 fi
 
+# Set default DATABASE_URL if not provided (use absolute path for Docker)
+export DATABASE_URL="${DATABASE_URL:-sqlite:////app/data/market_data.db}"
+
 # Display configuration
 echo ""
 echo "Configuration:"
-echo "  - Database: ${DATABASE_URL:-sqlite:///app/data/market_data.db}"
+echo "  - Database: ${DATABASE_URL}"
 echo "  - Log Level: ${LOG_LEVEL:-INFO}"
 echo "  - Timezone: ${TZ:-America/New_York}"
 echo "  - Mode: ${TRADING_MODE:-offline_mock}"
@@ -56,8 +59,43 @@ if [ ! -w "/app/state" ]; then
     exit 1
 fi
 
-# Note: Database initialization happens automatically when API starts
-# via SQLAlchemy Base.metadata.create_all() in the API module
+# Initialize database if it doesn't exist
+echo "Initializing database..."
+python3 -c "
+from pathlib import Path
+from sqlalchemy import create_engine
+import os
+
+db_url = os.environ.get('DATABASE_URL', 'sqlite:////app/data/market_data.db')
+print(f'  Database URL: {db_url}')
+
+# Parse path from SQLite URL
+if db_url.startswith('sqlite:////'):
+    db_path = Path(db_url.replace('sqlite:////', '/'))
+elif db_url.startswith('sqlite:///'):
+    db_path = Path(db_url.replace('sqlite:///', ''))
+else:
+    db_path = None
+
+if db_path:
+    # Ensure parent directory exists
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if db_path.exists():
+        print(f'  Database exists: {db_path}')
+    else:
+        print(f'  Creating database: {db_path}')
+        try:
+            from jutsu_engine.data.models import Base
+            engine = create_engine(db_url, connect_args={'check_same_thread': False})
+            Base.metadata.create_all(engine)
+            engine.dispose()
+            print('  Database schema created successfully')
+        except Exception as e:
+            print(f'  WARNING: Could not create database: {e}')
+else:
+    print('  Non-SQLite database, skipping initialization')
+"
 
 # Display startup summary
 echo ""

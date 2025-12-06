@@ -4,40 +4,46 @@
 
 **Issues Resolved**:
 
-1. **Missing jutsu_engine.data Module** (Latest)
+1. **SQLite Database Path/Init Error** (Latest Fix)
+   - **Error**: `sqlite3.OperationalError: unable to open database file`
+   - **Root Cause**: Database path handling and initialization not robust
+   - **Fixes Applied**:
+     - `dependencies.py`: Auto-detect Docker vs local environment for correct path
+     - `dependencies.py`: Auto-create database with schema if it doesn't exist
+     - `entrypoint.sh`: Initialize database during container startup
+     - `entrypoint.sh`: Set `DATABASE_URL` with absolute path (4 slashes for SQLite)
+   - **Why This is Permanent**: Database now auto-created on first run, paths work in both Docker and local
+
+2. **Missing jutsu_engine.data Module**
    - **Error**: `ModuleNotFoundError: No module named 'jutsu_engine.data'`
    - **Root Cause**: `.gitignore` had `data/` which matched `jutsu_engine/data/` directory
    - **Fix**: Changed to `/data/` (root only) and added `!jutsu_engine/data/` exception
    - **Files Added**: 12 Python files in `jutsu_engine/data/` now tracked in git
 
-2. **Nginx Config Syntax Error**
+3. **Nginx Config Syntax Error**
    - **Error**: `"client_body_temp_path" directive is not allowed here in /etc/nginx/nginx.conf:10`
    - **Root Cause**: Temp path directives were in "main" context (outside blocks)
    - **Fix**: Moved all temp path directives inside the `http {}` block where they're valid
 
-3. **Timezone Permission Error**
+4. **Timezone Permission Error**
    - **Error**: `ln: failed to create symbolic link '/etc/localtime': Permission denied`
    - **Root Cause**: Entrypoint tried to create symlink requiring root access
    - **Fix**: Removed `ln` command, use TZ environment variable instead
 
-3. **ModuleNotFoundError**
-   - **Error**: `ModuleNotFoundError: No module named 'jutsu_engine.data'`
-   - **Root Cause**: Database initialization in entrypoint couldn't find Python module
-   - **Fix**: Removed Python database init from entrypoint (API handles it automatically via SQLAlchemy)
-
-4. **Nginx Permission Error**
+5. **Nginx Permission Error**
    - **Error**: `mkdir() "/var/lib/nginx/body" failed (13: Permission denied)`
    - **Root Cause**: Nginx trying to create temp directories in privileged locations
    - **Fix**: Moved all nginx temp paths and logs to `/tmp`
 
-5. **Nginx Port Binding**
+6. **Nginx Port Binding**
    - **Error**: Nginx exits with status 1 (non-root can't bind to port 80)
    - **Root Cause**: Ports below 1024 require root privileges on Linux
    - **Fix**: Changed nginx to listen on port 8080 instead of port 80
 
 **Configuration Changes**:
+- `jutsu_engine/api/dependencies.py`: Smart database path detection and auto-initialization
+- `docker/docker-entrypoint.sh`: Database initialization before services start
 - `docker/nginx.conf`: Uses `/tmp` for all temp/log paths, listens on port 8080
-- `docker/docker-entrypoint.sh`: Removed timezone symlink and database init code
 - `Dockerfile`: Added `PYTHONPATH=/app`, exposed port 8080, updated healthcheck
 - `docker/UNRAID_SETUP.md`: Updated port mapping documentation
 
