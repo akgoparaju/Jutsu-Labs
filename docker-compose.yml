@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  jutsu-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jutsu-trading-dashboard
+    restart: unless-stopped
+
+    # Port mapping
+    ports:
+      - "8080:80"  # Map container port 80 to host port 8080
+
+    # Environment variables
+    environment:
+      # Schwab API credentials (replace with your values or use .env file)
+      - SCHWAB_APP_KEY=${SCHWAB_APP_KEY:-}
+      - SCHWAB_APP_SECRET=${SCHWAB_APP_SECRET:-}
+      - SCHWAB_CALLBACK_URL=${SCHWAB_CALLBACK_URL:-https://127.0.0.1}
+
+      # Database configuration
+      - DATABASE_URL=sqlite:////app/data/market_data.db
+
+      # Application settings
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - TZ=${TZ:-America/New_York}
+      - TRADING_MODE=${TRADING_MODE:-offline_mock}
+
+      # Optional API authentication
+      - JUTSU_API_USERNAME=${JUTSU_API_USERNAME:-}
+      - JUTSU_API_PASSWORD=${JUTSU_API_PASSWORD:-}
+
+    # Volume mounts (adjust paths for your system)
+    volumes:
+      # Data persistence
+      - ./data:/app/data
+
+      # Configuration files
+      - ./config:/app/config:ro
+
+      # State files
+      - ./state:/app/state
+
+      # Logs
+      - ./logs:/app/logs
+
+      # Schwab OAuth token (if you have one)
+      - ./token.json:/app/token.json:ro
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # Resource limits (adjust based on your needs)
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Network configuration
+    networks:
+      - jutsu-network
+
+networks:
+  jutsu-network:
+    driver: bridge

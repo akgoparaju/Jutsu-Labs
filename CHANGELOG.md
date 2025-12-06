@@ -1,3 +1,60 @@
+#### **Docker Deployment for Unraid** (2025-12-05)
+
+**Added production-ready Docker setup for Unraid server deployment**
+
+**New Files**:
+
+1. **Dockerfile** - Multi-stage build:
+   - Stage 1: Node 20 Alpine builds React frontend
+   - Stage 2: Python 3.11 Slim with nginx + uvicorn
+   - Non-root user execution for security
+   - Health check monitoring
+   - ~600MB optimized image size
+
+2. **docker-compose.yml** - Local development:
+   - Volume mounts for data, config, state, logs
+   - Environment variable configuration
+   - Resource limits (2 CPU, 2GB RAM)
+   - Port mapping (8080:80)
+
+3. **docker/nginx.conf** - Reverse proxy:
+   - Serves React frontend from static files
+   - Proxies `/api/*` to FastAPI backend
+   - WebSocket support for `/ws`
+   - Gzip compression, security headers
+
+4. **docker/supervisord.conf** - Process manager:
+   - Manages nginx + FastAPI processes
+   - Auto-restart on failure
+
+5. **docker/docker-entrypoint.sh** - Initialization:
+   - Creates required directories
+   - Validates permissions
+   - Initializes database schema
+
+**Documentation**:
+- `docker/README.md` - Comprehensive Docker guide
+- `docker/UNRAID_SETUP.md` - Step-by-step Unraid deployment
+- `docker/DEPLOYMENT_CHECKLIST.md` - Production checklist
+- `docker/QUICK_REFERENCE.md` - Command reference
+
+**Unraid Volume Mounts**:
+| Container Path | Host Path |
+|----------------|-----------|
+| `/app/data` | `/mnt/user/appdata/jutsu/data` |
+| `/app/config` | `/mnt/user/appdata/jutsu/config` |
+| `/app/state` | `/mnt/user/appdata/jutsu/state` |
+| `/app/logs` | `/mnt/user/appdata/jutsu/logs` |
+
+**Quick Start**:
+```bash
+cp .env.docker.example .env
+docker-compose up -d
+open http://localhost:8080
+```
+
+---
+
 #### **Hourly Price Refresh Scheduler** (2025-12-05)
 
 **Added intraday price updates via interval-based scheduler job**
