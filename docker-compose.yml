@@ -10,7 +10,7 @@ services:
 
     # Port mapping
     ports:
-      - "8080:80"  # Map container port 80 to host port 8080
+      - "8080:8080"  # Container uses port 8080 (non-root user)
 
     # Environment variables
     environment:
@@ -50,7 +50,7 @@ services:
 
     # Health check
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:80/api/status"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/status"]
       interval: 30s
       timeout: 10s
       retries: 3

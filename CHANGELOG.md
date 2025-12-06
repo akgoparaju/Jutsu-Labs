@@ -1,3 +1,41 @@
+#### **Docker Non-Root Container Fixes** (2025-12-06)
+
+**Fixed multiple issues preventing Docker container from running as non-root user**
+
+**Issues Resolved**:
+
+1. **Timezone Permission Error**
+   - **Error**: `ln: failed to create symbolic link '/etc/localtime': Permission denied`
+   - **Root Cause**: Entrypoint tried to create symlink requiring root access
+   - **Fix**: Removed `ln` command, use TZ environment variable instead
+
+2. **ModuleNotFoundError**
+   - **Error**: `ModuleNotFoundError: No module named 'jutsu_engine.data'`
+   - **Root Cause**: Database initialization in entrypoint couldn't find Python module
+   - **Fix**: Removed Python database init from entrypoint (API handles it automatically via SQLAlchemy)
+
+3. **Nginx Permission Error**
+   - **Error**: `mkdir() "/var/lib/nginx/body" failed (13: Permission denied)`
+   - **Root Cause**: Nginx trying to create temp directories in privileged locations
+   - **Fix**: Moved all nginx temp paths and logs to `/tmp`
+
+4. **Nginx Port Binding**
+   - **Error**: Nginx exits with status 1 (non-root can't bind to port 80)
+   - **Root Cause**: Ports below 1024 require root privileges on Linux
+   - **Fix**: Changed nginx to listen on port 8080 instead of port 80
+
+**Configuration Changes**:
+- `docker/nginx.conf`: Uses `/tmp` for all temp/log paths, listens on port 8080
+- `docker/docker-entrypoint.sh`: Removed timezone symlink and database init code
+- `Dockerfile`: Added `PYTHONPATH=/app`, exposed port 8080, updated healthcheck
+- `docker/UNRAID_SETUP.md`: Updated port mapping documentation
+
+**Port Mapping Update**:
+- Container Port: `8080` (was `80`)
+- Unraid: Map container port `8080` to host port `8080` (or preferred port)
+
+---
+
 #### **Docker Hub CI/CD Pipeline** (2025-12-05)
 
 **Added GitHub Actions workflow for automatic Docker Hub publishing**
