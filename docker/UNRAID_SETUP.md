@@ -12,11 +12,11 @@ This guide provides instructions for deploying the Jutsu Trading Dashboard on an
 
 ## Docker Hub Image
 
-**Repository**: `akgoparaju/jutsu-labs`
+**Repository**: `ankugo/jutsu-labs`
 
 ```bash
 # Pull the latest image
-docker pull akgoparaju/jutsu-labs:latest
+docker pull ankugo/jutsu-labs:latest
 ```
 
 **Available Tags**:
@@ -32,7 +32,7 @@ The image is automatically built and published to Docker Hub:
 
 ```bash
 # Pull the latest image
-docker pull akgoparaju/jutsu-labs:latest
+docker pull ankugo/jutsu-labs:latest
 ```
 
 **Alternative: Build Locally**
@@ -42,7 +42,7 @@ If you prefer to build from source:
 ```bash
 git clone https://github.com/akgoparaju/Jutsu-Labs.git
 cd Jutsu-Labs
-docker build -t akgoparaju/jutsu-labs:latest .
+docker build -t ankugo/jutsu-labs:latest .
 ```
 
 ### 2. Create Unraid Application Directory
@@ -76,7 +76,7 @@ cp token.json /mnt/user/appdata/jutsu/
 
 **Basic Settings:**
 - **Name:** `jutsu-trading-dashboard`
-- **Repository:** `akgoparaju/jutsu-labs:latest`
+- **Repository:** `ankugo/jutsu-labs:latest`
 - **Network Type:** `Bridge`
 - **Console shell command:** `bash`
 

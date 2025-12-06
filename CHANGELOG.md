@@ -2,14 +2,14 @@
 
 **Added GitHub Actions workflow for automatic Docker Hub publishing**
 
-- **Repository**: `akgoparaju/jutsu-labs:latest`
+- **Repository**: `ankugo/jutsu-labs:latest`
 - **Platforms**: `linux/amd64`, `linux/arm64` (Unraid compatible)
 - **Triggers**: Push to `main`, version tags (`v*`), manual dispatch
 - **Caching**: Registry-based layer caching for fast builds
 
 **Unraid Deployment**:
 ```bash
-docker pull akgoparaju/jutsu-labs:latest
+docker pull ankugo/jutsu-labs:latest
 ```
 
 **Required GitHub Secrets**:

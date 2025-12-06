@@ -10,7 +10,7 @@ on:
 
 env:
   REGISTRY: docker.io
-  IMAGE_NAME: akgoparaju/jutsu-labs
+  IMAGE_NAME: ankugo/jutsu-labs
 
 jobs:
   build-and-push:
