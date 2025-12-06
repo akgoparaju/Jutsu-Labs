@@ -1,3 +1,43 @@
+#### **Weekend Snapshot Protection & Dashboard Baseline Fix** (2025-12-06)
+
+**Fixed baseline values showing N/A and weekend data appearing in dashboard**
+
+**Issues Resolved**:
+
+1. **N/A Baseline Values in Dashboard**
+   - **Symptom**: Portfolio section showed "QQQ Baseline: $N/A" and "Alpha: N/A"
+   - **Root Cause**: Weekend snapshot (Dec 6, Saturday) was saved to database with null baseline values
+   - **Evidence**: `/api/performance/equity-curve` returned `baseline_value: null` for Dec 6 entry
+   - **Fix**: Deleted corrupted weekend snapshot from Unraid database
+
+2. **Weekend Data in Performance Tab**
+   - **Symptom**: Dec 6 (Saturday) row appeared in Daily Performance table
+   - **Root Cause**: Snapshot was saved on weekend despite scheduler having `is_trading_day()` check
+   - **Evidence**: Database had 4 snapshots (Dec 4, Dec 5, Dec 5, Dec 6) instead of 3
+
+3. **Defensive Weekend Protection Added**
+   - **Files Modified**:
+     - `jutsu_engine/live/mock_order_executor.py` - Added `is_trading_day()` check in `save_performance_snapshot()`
+     - `jutsu_engine/live/data_refresh.py` - Added `is_trading_day()` check in `save_performance_snapshot()`
+   - **Behavior**: Now skips saving snapshots on weekends/holidays even if manually triggered
+   - **Log Message**: "Attempted to save performance snapshot on non-trading day - skipping"
+
+**Database Cleanup Commands (for Unraid)**:
+```bash
+# Check current state
+sqlite3 data/market_data.db "SELECT id, datetime(timestamp) as ts, baseline_value FROM performance_snapshots;"
+
+# Delete weekend snapshots
+sqlite3 data/market_data.db "DELETE FROM performance_snapshots WHERE date(timestamp) = '2025-12-06';"
+```
+
+**Verification**:
+- Dashboard Portfolio: QQQ Baseline shows $10,067.76 (+0.68%)
+- Performance Tab: Only Dec 4 and Dec 5 rows (no weekend data)
+- Alpha calculation: +0.14% (strategy outperformance vs QQQ benchmark)
+
+---
+
 #### **Docker Non-Root Container Fixes** (2025-12-06)
 
 **Fixed multiple issues preventing Docker container from running as non-root user**

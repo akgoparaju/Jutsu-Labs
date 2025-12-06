@@ -494,6 +494,11 @@ class DashboardDataRefresher:
         Returns:
             True if successful, False otherwise
         """
+        # Defensive check: Don't save snapshots on weekends/holidays
+        if not is_trading_day():
+            logger.warning("Attempted to save performance snapshot on non-trading day - skipping")
+            return False
+        
         session = self._get_session()
         
         try:

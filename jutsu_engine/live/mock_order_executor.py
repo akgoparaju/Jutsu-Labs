@@ -21,6 +21,7 @@ from sqlalchemy.orm import sessionmaker, Session
 
 from jutsu_engine.live.executor_router import ExecutorInterface
 from jutsu_engine.live.mode import TradingMode
+from jutsu_engine.live.market_calendar import is_trading_day
 from jutsu_engine.data.models import LiveTrade, Position, PerformanceSnapshot
 
 logger = logging.getLogger('LIVE.MOCK_EXECUTOR')
@@ -432,6 +433,11 @@ class MockOrderExecutor(ExecutorInterface):
             baseline_value: Optional QQQ buy-and-hold value for comparison
             baseline_return: Optional QQQ buy-and-hold cumulative return %
         """
+        # Defensive check: Don't save snapshots on weekends/holidays
+        if not is_trading_day():
+            logger.warning("Attempted to save performance snapshot on non-trading day - skipping")
+            return
+        
         try:
             # Query previous snapshot for this mode to calculate daily P&L
             from sqlalchemy import desc, func
