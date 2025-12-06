@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { configApi, ConfigParameter } from '../api/client'
+import SchwabAuth from '../components/SchwabAuth'
 
 function Config() {
   const queryClient = useQueryClient()
@@ -88,6 +89,9 @@ function Config() {
           </span>
         )}
       </div>
+
+      {/* Schwab API Authentication */}
+      <SchwabAuth />
 
       {/* Strategy Info */}
       {config && (

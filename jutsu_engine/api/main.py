@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from jutsu_engine.api.websocket import websocket_endpoint, manager
 from jutsu_engine.api.routes import (
     auth_router,
+    schwab_auth_router,
     status_router,
     config_router,
     trades_router,
@@ -225,6 +226,7 @@ def create_app(
 
     # Include routers
     app.include_router(auth_router)  # Authentication endpoints
+    app.include_router(schwab_auth_router)  # Schwab API OAuth authentication
     app.include_router(status_router)
     app.include_router(config_router)
     app.include_router(trades_router)

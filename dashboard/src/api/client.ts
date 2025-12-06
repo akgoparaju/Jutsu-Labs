@@ -286,3 +286,40 @@ export const indicatorsApi = {
   getIndicators: () => api.get<IndicatorsResponse>('/indicators'),
   getDescriptions: () => api.get('/indicators/descriptions'),
 }
+
+// Schwab Authentication Types
+export interface SchwabAuthStatus {
+  authenticated: boolean
+  token_exists: boolean
+  token_valid: boolean
+  token_age_days?: number
+  expires_in_days?: number
+  message: string
+  callback_url?: string
+}
+
+export interface SchwabAuthInitiate {
+  authorization_url: string
+  callback_url: string
+  state: string
+  instructions: string
+}
+
+export interface SchwabAuthCallback {
+  callback_url: string
+}
+
+export interface SchwabAuthCallbackResponse {
+  success: boolean
+  message: string
+  token_created: boolean
+}
+
+// Schwab Authentication API
+export const schwabAuthApi = {
+  getStatus: () => api.get<SchwabAuthStatus>('/schwab/status'),
+  initiate: () => api.post<SchwabAuthInitiate>('/schwab/initiate'),
+  callback: (data: SchwabAuthCallback) =>
+    api.post<SchwabAuthCallbackResponse>('/schwab/callback', data),
+  deleteToken: () => api.delete('/schwab/token'),
+}

@@ -1,3 +1,52 @@
+#### **Dashboard: Schwab API Authentication UI** (2025-12-06)
+
+**Added web-based Schwab API authentication to dashboard - works in both local and Docker environments**
+
+**Problem Solved**:
+Previously, Schwab API authentication required CLI access and a browser on the same machine. This made Docker deployments (like Unraid) difficult because the container couldn't open a browser window. Now users can authenticate directly from the dashboard UI using a manual OAuth flow.
+
+**How It Works**:
+1. Navigate to Configuration page in dashboard
+2. Click "Authenticate with Schwab" button
+3. Copy/open the authorization URL in any browser
+4. Log in to Schwab and authorize the app
+5. Copy the redirect URL from browser and paste it back
+6. Token is saved and authentication complete
+
+**Changes**:
+
+1. **Backend API** (`jutsu_engine/api/routes/schwab_auth.py`)
+   - `GET /api/schwab/status` - Check token status (exists, valid, age, expiration)
+   - `POST /api/schwab/initiate` - Generate OAuth authorization URL
+   - `POST /api/schwab/callback` - Exchange callback URL for access token
+   - `DELETE /api/schwab/token` - Delete current token (force re-auth)
+   - CSRF protection via OAuth state validation
+   - Docker-aware token path handling
+
+2. **Frontend UI** (`dashboard/src/components/SchwabAuth.tsx`)
+   - Visual status indicator (authenticated/expired/not authenticated)
+   - Token age and expiration countdown
+   - Copy button for authorization URL
+   - Textarea for pasting callback URL
+   - Error handling and loading states
+
+3. **Integration**
+   - Added to Configuration page in dashboard
+   - Uses existing dashboard auth context (JWT protected)
+   - Auto-refreshes status every minute
+
+**Files Added**:
+- `jutsu_engine/api/routes/schwab_auth.py` - Backend Schwab auth endpoints
+- `dashboard/src/components/SchwabAuth.tsx` - Frontend auth component
+
+**Files Modified**:
+- `jutsu_engine/api/routes/__init__.py` - Register schwab_auth_router
+- `jutsu_engine/api/main.py` - Include schwab_auth_router
+- `dashboard/src/api/client.ts` - Add schwabAuthApi types and functions
+- `dashboard/src/pages/Config.tsx` - Add SchwabAuth component
+
+---
+
 #### **Dashboard: Custom Logo & GitHub Actions for serverdB** (2025-12-06)
 
 **Added custom Jutsu Trading logo to dashboard and enabled CI/CD testing on serverdB branch**
