@@ -10,21 +10,39 @@ This guide provides instructions for deploying the Jutsu Trading Dashboard on an
 - Minimum 2GB RAM allocated to the container
 - Minimum 2GB free disk space on appdata share
 
-## Installation Steps
+## Docker Hub Image
 
-### 1. Build the Docker Image
-
-From the Jutsu-Labs project directory on your development machine:
+**Repository**: `akgoparaju/jutsu-labs`
 
 ```bash
-# Build the image
-docker build -t jutsu-trading-dashboard:latest .
+# Pull the latest image
+docker pull akgoparaju/jutsu-labs:latest
+```
 
-# Tag for your registry (optional, if using private registry)
-docker tag jutsu-trading-dashboard:latest myregistry.com/jutsu-trading-dashboard:latest
+**Available Tags**:
+- `latest` - Latest stable release from main branch
+- `v1.0.0` - Specific version tags
+- `main` - Latest from main branch
 
-# Push to registry (if applicable)
-docker push myregistry.com/jutsu-trading-dashboard:latest
+## Installation Steps
+
+### 1. Pull the Docker Image (Recommended)
+
+The image is automatically built and published to Docker Hub:
+
+```bash
+# Pull the latest image
+docker pull akgoparaju/jutsu-labs:latest
+```
+
+**Alternative: Build Locally**
+
+If you prefer to build from source:
+
+```bash
+git clone https://github.com/akgoparaju/Jutsu-Labs.git
+cd Jutsu-Labs
+docker build -t akgoparaju/jutsu-labs:latest .
 ```
 
 ### 2. Create Unraid Application Directory
@@ -58,7 +76,7 @@ cp token.json /mnt/user/appdata/jutsu/
 
 **Basic Settings:**
 - **Name:** `jutsu-trading-dashboard`
-- **Repository:** `jutsu-trading-dashboard:latest` (or your registry path)
+- **Repository:** `akgoparaju/jutsu-labs:latest`
 - **Network Type:** `Bridge`
 - **Console shell command:** `bash`
 

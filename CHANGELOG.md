@@ -1,3 +1,23 @@
+#### **Docker Hub CI/CD Pipeline** (2025-12-05)
+
+**Added GitHub Actions workflow for automatic Docker Hub publishing**
+
+- **Repository**: `akgoparaju/jutsu-labs:latest`
+- **Platforms**: `linux/amd64`, `linux/arm64` (Unraid compatible)
+- **Triggers**: Push to `main`, version tags (`v*`), manual dispatch
+- **Caching**: Registry-based layer caching for fast builds
+
+**Unraid Deployment**:
+```bash
+docker pull akgoparaju/jutsu-labs:latest
+```
+
+**Required GitHub Secrets**:
+- `DOCKERHUB_USERNAME` - Docker Hub username
+- `DOCKERHUB_TOKEN` - Docker Hub access token
+
+---
+
 #### **Docker Build Fix** (2025-12-05)
 
 **Fixed Rollup native bindings error during Docker build**
