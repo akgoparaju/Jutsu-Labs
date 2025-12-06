@@ -11,8 +11,8 @@ WORKDIR /build
 # Copy package files for dependency installation
 COPY dashboard/package*.json ./
 
-# Install dependencies
-RUN npm ci --only=production
+# Install ALL dependencies (devDependencies needed for Vite/Rollup build)
+RUN npm ci
 
 # Copy frontend source
 COPY dashboard/ ./

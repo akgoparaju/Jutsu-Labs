@@ -1,3 +1,14 @@
+#### **Docker Build Fix** (2025-12-05)
+
+**Fixed Rollup native bindings error during Docker build**
+
+- **Root Cause**: `npm ci --only=production` excluded devDependencies
+- **Issue**: Vite/Rollup (build tools) are devDependencies, causing `@rollup/rollup-linux-arm64-musl` module not found error
+- **Resolution**: Changed to `npm ci` to install all dependencies for build stage
+- **Impact**: Final image unchanged (only compiled assets copied to production stage)
+
+---
+
 #### **Docker Deployment for Unraid** (2025-12-05)
 
 **Added production-ready Docker setup for Unraid server deployment**
