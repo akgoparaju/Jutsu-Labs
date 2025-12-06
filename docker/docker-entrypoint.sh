@@ -56,18 +56,8 @@ if [ ! -w "/app/state" ]; then
     exit 1
 fi
 
-# Initialize database if needed
-echo ""
-echo "Initializing database..."
-python3 -c "
-from jutsu_engine.data.models import Base
-from jutsu_engine.api.dependencies import engine
-try:
-    Base.metadata.create_all(engine)
-    print('Database initialized successfully')
-except Exception as e:
-    print(f'Database initialization warning: {e}')
-"
+# Note: Database initialization happens automatically when API starts
+# via SQLAlchemy Base.metadata.create_all() in the API module
 
 # Display startup summary
 echo ""
