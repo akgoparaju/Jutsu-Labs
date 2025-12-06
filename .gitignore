@@ -86,3 +86,13 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 dashboard/node_modules/
+node_modules/
+
+# OAuth tokens (sensitive)
+token.json
+
+# Playwright MCP
+.playwright-mcp/
+
+# State backups (local only)
+state/backups/
