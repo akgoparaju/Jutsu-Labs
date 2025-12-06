@@ -4,22 +4,27 @@
 
 **Issues Resolved**:
 
-1. **Timezone Permission Error**
+1. **Nginx Config Syntax Error** (Latest)
+   - **Error**: `"client_body_temp_path" directive is not allowed here in /etc/nginx/nginx.conf:10`
+   - **Root Cause**: Temp path directives were in "main" context (outside blocks)
+   - **Fix**: Moved all temp path directives inside the `http {}` block where they're valid
+
+2. **Timezone Permission Error**
    - **Error**: `ln: failed to create symbolic link '/etc/localtime': Permission denied`
    - **Root Cause**: Entrypoint tried to create symlink requiring root access
    - **Fix**: Removed `ln` command, use TZ environment variable instead
 
-2. **ModuleNotFoundError**
+3. **ModuleNotFoundError**
    - **Error**: `ModuleNotFoundError: No module named 'jutsu_engine.data'`
    - **Root Cause**: Database initialization in entrypoint couldn't find Python module
    - **Fix**: Removed Python database init from entrypoint (API handles it automatically via SQLAlchemy)
 
-3. **Nginx Permission Error**
+4. **Nginx Permission Error**
    - **Error**: `mkdir() "/var/lib/nginx/body" failed (13: Permission denied)`
    - **Root Cause**: Nginx trying to create temp directories in privileged locations
    - **Fix**: Moved all nginx temp paths and logs to `/tmp`
 
-4. **Nginx Port Binding**
+5. **Nginx Port Binding**
    - **Error**: Nginx exits with status 1 (non-root can't bind to port 80)
    - **Root Cause**: Ports below 1024 require root privileges on Linux
    - **Fix**: Changed nginx to listen on port 8080 instead of port 80
