@@ -9,11 +9,11 @@ echo "=================================================="
 echo "Creating required directories..."
 mkdir -p /app/data /app/state /app/logs /app/token_cache
 
-# Set timezone
+# Set timezone (graceful handling - TZ env var is sufficient for most apps)
 if [ -n "$TZ" ]; then
-    echo "Setting timezone to: $TZ"
-    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime
-    echo $TZ > /etc/timezone
+    echo "Timezone set via TZ environment variable: $TZ"
+    # Note: System timezone files (/etc/localtime) require root access
+    # The TZ environment variable is sufficient for Python datetime operations
 fi
 
 # Display configuration
