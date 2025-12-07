@@ -34,6 +34,10 @@ function SchwabAuth() {
       setAuthFlow(data)
       setCallbackUrl('')
     },
+    onError: (error: any) => {
+      // Extract error message from response if available
+      console.error('Schwab auth initiate error:', error)
+    },
   })
 
   // Complete OAuth flow with callback
@@ -261,7 +265,14 @@ function SchwabAuth() {
           {/* Error Display */}
           {callbackMutation.isError && (
             <div className="p-3 bg-red-900/30 border border-red-700 rounded-lg text-red-400 text-sm">
-              {(callbackMutation.error as Error)?.message || 'Authentication failed. Please try again.'}
+              {(() => {
+                const error = callbackMutation.error as any
+                // Extract detailed error message from axios response
+                if (error?.response?.data?.detail) {
+                  return error.response.data.detail
+                }
+                return error?.message || 'Authentication failed. Please try again.'
+              })()}
             </div>
           )}
         </div>
@@ -271,8 +282,18 @@ function SchwabAuth() {
           {!status?.authenticated && (
             <button
               onClick={() => initiateMutation.mutate()}
-              disabled={initiateMutation.isPending}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg transition-colors flex items-center gap-2"
+              disabled={
+                initiateMutation.isPending ||
+                status?.message?.includes('credentials not configured') ||
+                status?.message?.includes('SCHWAB_API_KEY')
+              }
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center gap-2"
+              title={
+                status?.message?.includes('credentials not configured') ||
+                status?.message?.includes('SCHWAB_API_KEY')
+                  ? 'API credentials must be configured in .env file'
+                  : 'Click to start OAuth flow'
+              }
             >
               {initiateMutation.isPending ? (
                 <>
@@ -313,7 +334,14 @@ function SchwabAuth() {
       {/* Initiate Error */}
       {initiateMutation.isError && (
         <div className="p-3 bg-red-900/30 border border-red-700 rounded-lg text-red-400 text-sm">
-          {(initiateMutation.error as Error)?.message || 'Failed to start authentication. Check API credentials.'}
+          {(() => {
+            const error = initiateMutation.error as any
+            // Extract detailed error message from axios response
+            if (error?.response?.data?.detail) {
+              return error.response.data.detail
+            }
+            return error?.message || 'Failed to start authentication. Check API credentials.'
+          })()}
         </div>
       )}
 

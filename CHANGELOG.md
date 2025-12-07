@@ -1,3 +1,37 @@
+#### **Dashboard: Improve Schwab Auth Error Handling** (2025-12-07)
+
+**Enhanced UI to show detailed error messages and disable button when credentials not configured**
+
+**Problem**:
+After fixing the 401 Unauthorized error, clicking "Authenticate with Schwab" showed a generic error "Request failed with status code 400" instead of the actual API error message.
+
+**Root Cause** (Evidence-Based):
+Using Playwright browser automation on Docker deployment (http://192.168.7.100:8787/config):
+1. `/api/schwab/status` returns 200 OK with message "Schwab API credentials not configured..."
+2. `/api/schwab/initiate` returns 400 Bad Request with detail: "Schwab API credentials not configured. Set SCHWAB_API_KEY and SCHWAB_API_SECRET in .env"
+3. This 400 is **expected behavior** - the API correctly rejects initiation when credentials aren't configured
+4. The UI was not extracting the detailed error message from `error.response.data.detail`
+
+**Fix**:
+1. **Extract detailed error messages** from API responses (`error.response.data.detail`)
+2. **Disable "Authenticate with Schwab" button** when status message indicates credentials not configured
+3. **Add tooltip** explaining why button is disabled: "API credentials must be configured in .env file"
+
+**Files Modified**:
+- `dashboard/src/components/SchwabAuth.tsx`:
+  - Lines 266-277: Callback error now shows `error.response.data.detail`
+  - Lines 285-289: Button disabled when credentials not configured
+  - Lines 291-296: Added helpful tooltip
+  - Lines 335-346: Initiate error now shows `error.response.data.detail`
+
+**User Action Required**:
+If seeing "Schwab API credentials not configured":
+1. Set `SCHWAB_API_KEY` and `SCHWAB_API_SECRET` in Docker environment
+2. Rebuild/restart the container
+3. Then the "Authenticate with Schwab" button will be enabled
+
+---
+
 #### **API: Fix Schwab Auth 401 Unauthorized in Docker** (2025-12-07)
 
 **Removed authentication requirement from Schwab OAuth endpoints to allow token management regardless of dashboard authentication state**
