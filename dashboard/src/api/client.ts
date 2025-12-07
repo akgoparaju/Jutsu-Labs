@@ -3,6 +3,9 @@ import axios from 'axios'
 // API base URL - uses Vite proxy in development
 const API_BASE = '/api'
 
+// Token key must match AuthContext
+const TOKEN_KEY = 'jutsu_auth_token'
+
 // Create axios instance
 export const api = axios.create({
   baseURL: API_BASE,
@@ -11,6 +14,20 @@ export const api = axios.create({
     'Content-Type': 'application/json',
   },
 })
+
+// Add request interceptor to include JWT token
+api.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem(TOKEN_KEY)
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`
+    }
+    return config
+  },
+  (error) => {
+    return Promise.reject(error)
+  }
+)
 
 // Types
 export interface RegimeInfo {

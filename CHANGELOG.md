@@ -1,3 +1,18 @@
+#### **Dashboard: Fix Schwab Auth 401 Unauthorized Error** (2025-12-07)
+
+**Fixed bug where Schwab API Authentication showed "Failed to load authentication status" error**
+
+**Root Cause**:
+The axios API client wasn't including the JWT Bearer token in API requests. The SchwabAuth component made requests to `/api/schwab/status` without authorization, causing 401 Unauthorized errors.
+
+**Fix**:
+Added axios request interceptor to automatically include the JWT token from localStorage in all API requests. The token key (`jutsu_auth_token`) matches the AuthContext storage key.
+
+**Files Modified**:
+- `dashboard/src/api/client.ts` - Added request interceptor for Bearer token injection
+
+---
+
 #### **Dashboard: Schwab API Authentication UI** (2025-12-06)
 
 **Added web-based Schwab API authentication to dashboard - works in both local and Docker environments**
