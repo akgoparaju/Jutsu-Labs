@@ -10,7 +10,7 @@ import {
   LogOut,
   User,
 } from 'lucide-react'
-import logoImg from '../assets/logo.png'
+import logoImg from '../assets/logo.svg'
 import { useStatus } from '../hooks/useStatus'
 import { useLiveUpdates } from '../hooks/useWebSocket'
 import { useAuth } from '../contexts/AuthContext'

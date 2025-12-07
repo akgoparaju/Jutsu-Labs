@@ -1,3 +1,32 @@
+#### **Dashboard: Switch Icons to SVG Format** (2025-12-07)
+
+**Changed dashboard icons from PNG to SVG for better scalability and display quality**
+
+**Changes**:
+
+1. **Header Logo** (`Layout.tsx`)
+   - Changed from `logo.png` to `logo.svg`
+   - SVG scales infinitely without pixelation on any display
+
+2. **Favicon** (`index.html`)
+   - Changed from `favicon.png` to `favicon.svg`
+   - Updated MIME type from `image/png` to `image/svg+xml`
+
+3. **Apple Touch Icon** - **Kept as PNG**
+   - iOS does not support SVG for touch icons
+   - Retained `favicon.png` for iOS home screen compatibility
+
+**Evidence-Based Decision**:
+- TypeScript SVG support confirmed in `vite-env.d.ts:24-27`
+- Vite natively supports SVG imports as URL strings
+- SVG provides better quality on high-DPI/retina displays
+
+**Files Modified**:
+- `dashboard/src/components/Layout.tsx` - Changed logo import to SVG
+- `dashboard/index.html` - Changed favicon to SVG (kept apple-touch-icon as PNG)
+
+---
+
 #### **Dashboard: Fix Schwab Auth 401 Unauthorized Error** (2025-12-07)
 
 **Fixed bug where Schwab API Authentication showed "Failed to load authentication status" error**
