@@ -1,3 +1,33 @@
+#### **Docker: Fix JWT Authorization Header Forwarding** (2025-12-07)
+
+**Fixed nginx not explicitly forwarding Authorization header to FastAPI backend**
+
+**Problem**:
+Schwab API Authentication showed "Failed to load authentication status" in Docker deployments (Unraid) even after the axios interceptor fix was applied locally. The configuration page worked (no JWT required) but Schwab auth failed (requires JWT).
+
+**Root Cause**:
+Two issues combined:
+1. **Primary**: Docker image not rebuilt after axios interceptor fix (commit 885f63a)
+2. **Secondary**: nginx.conf wasn't explicitly forwarding the Authorization header
+
+**Fix**:
+Added explicit Authorization header forwarding in nginx.conf:
+```nginx
+proxy_set_header Authorization $http_authorization;
+```
+
+**Files Modified**:
+- `docker/nginx.conf` - Added Authorization header forwarding in /api location
+
+**User Action Required**:
+After pulling latest code, rebuild Docker image:
+```bash
+docker build -t jutsu-trading-dashboard .
+# Or for Unraid: Re-pull/rebuild the container
+```
+
+---
+
 #### **Dashboard: Switch Icons to SVG Format** (2025-12-07)
 
 **Changed dashboard icons from PNG to SVG for better scalability and display quality**
