@@ -8,6 +8,9 @@ Provides endpoints for OAuth authentication with Schwab API:
 
 Designed to work in both local development and Docker environments
 using the manual OAuth flow (copy-paste URLs).
+
+Note: These endpoints are accessible without dashboard authentication
+to allow Schwab OAuth setup even when AUTH_REQUIRED=true.
 """
 
 import json
@@ -21,7 +24,6 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from jutsu_engine.api.dependencies import get_current_user
 from jutsu_engine.utils.config import get_config
 
 logger = logging.getLogger('API.SCHWAB_AUTH')
@@ -154,11 +156,14 @@ _pending_auth_states: dict = {}
 # ==============================================================================
 # ROUTES
 # ==============================================================================
+# NOTE: These routes do NOT use get_current_user dependency to allow
+# Schwab OAuth management even when AUTH_REQUIRED=true for the dashboard.
+# This is intentional - Schwab token management should work independently
+# of dashboard authentication.
+# ==============================================================================
 
 @router.get("/status", response_model=SchwabAuthStatus)
-async def get_schwab_auth_status(
-    current_user=Depends(get_current_user)
-):
+async def get_schwab_auth_status():
     """
     Get current Schwab API authentication status.
 
@@ -167,6 +172,9 @@ async def get_schwab_auth_status(
     - Whether token is valid (not expired)
     - Token age and expiration
     - Configured callback URL
+
+    Note: This endpoint does not require dashboard authentication to allow
+    Schwab setup even when AUTH_REQUIRED=true.
     """
     schwab_config = get_schwab_config()
     token_status = get_token_status()
@@ -217,9 +225,7 @@ async def get_schwab_auth_status(
 
 
 @router.post("/initiate", response_model=SchwabAuthInitiate)
-async def initiate_schwab_auth(
-    current_user=Depends(get_current_user)
-):
+async def initiate_schwab_auth():
     """
     Initiate Schwab OAuth authentication flow.
 
@@ -228,6 +234,9 @@ async def initiate_schwab_auth(
     The user must copy that URL and submit it to the /callback endpoint.
 
     This flow works in both local and Docker environments.
+
+    Note: This endpoint does not require dashboard authentication to allow
+    Schwab setup even when AUTH_REQUIRED=true.
     """
     schwab_config = get_schwab_config()
 
@@ -292,16 +301,16 @@ async def initiate_schwab_auth(
 
 
 @router.post("/callback", response_model=SchwabAuthCallbackResponse)
-async def complete_schwab_auth(
-    data: SchwabAuthCallback,
-    current_user=Depends(get_current_user)
-):
+async def complete_schwab_auth(data: SchwabAuthCallback):
     """
     Complete Schwab OAuth authentication with callback URL.
 
     After the user authorizes the app in their browser, they are redirected
     to the callback URL. They must copy that entire URL and submit it here
     to complete the authentication and receive their access token.
+
+    Note: This endpoint does not require dashboard authentication to allow
+    Schwab setup even when AUTH_REQUIRED=true.
     """
     schwab_config = get_schwab_config()
 
@@ -399,14 +408,15 @@ async def complete_schwab_auth(
 
 
 @router.delete("/token")
-async def delete_schwab_token(
-    current_user=Depends(get_current_user)
-):
+async def delete_schwab_token():
     """
     Delete the current Schwab token.
 
     This forces re-authentication on the next API call.
     Useful for testing or when token is corrupted.
+
+    Note: This endpoint does not require dashboard authentication to allow
+    Schwab setup even when AUTH_REQUIRED=true.
     """
     schwab_config = get_schwab_config()
     token_path = schwab_config['token_path']

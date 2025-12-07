@@ -1,0 +1,210 @@
+{
+  "timestamp": "2025-12-07T21:47:41.720Z",
+  "tests": [
+    {
+      "name": "Local Deployment",
+      "url": "http://localhost:3000/config",
+      "timestamp": "2025-12-07T21:47:41.722Z",
+      "consoleMessages": [
+        {
+          "type": "debug",
+          "text": "[vite] connecting...",
+          "location": {
+            "url": "http://localhost:3000/@vite/client",
+            "lineNumber": 494,
+            "columnNumber": 8
+          }
+        },
+        {
+          "type": "debug",
+          "text": "[vite] connected.",
+          "location": {
+            "url": "http://localhost:3000/@vite/client",
+            "lineNumber": 617,
+            "columnNumber": 14
+          }
+        },
+        {
+          "type": "warning",
+          "text": "⚠️ React Router Future Flag Warning: React Router will begin wrapping state updates in `React.startTransition` in v7. You can use the `v7_startTransition` future flag to opt-in early. For more information, see https://reactrouter.com/v6/upgrading/future#v7_starttransition.",
+          "location": {
+            "url": "http://localhost:3000/node_modules/.vite/deps/react-router-dom.js?v=033ab034",
+            "lineNumber": 4412,
+            "columnNumber": 12
+          }
+        },
+        {
+          "type": "warning",
+          "text": "⚠️ React Router Future Flag Warning: Relative route resolution within Splat routes is changing in v7. You can use the `v7_relativeSplatPath` future flag to opt-in early. For more information, see https://reactrouter.com/v6/upgrading/future#v7_relativesplatpath.",
+          "location": {
+            "url": "http://localhost:3000/node_modules/.vite/deps/react-router-dom.js?v=033ab034",
+            "lineNumber": 4412,
+            "columnNumber": 12
+          }
+        }
+      ],
+      "networkRequests": [],
+      "errors": [
+        "Schwab Auth component not found"
+      ],
+      "screenshots": {
+        "initial": "/Users/anil.goparaju/Documents/Python/Projects/Jutsu-Labs/scripts/debug_Local_Deployment_initial.png"
+      },
+      "pageLoadStatus": 200,
+      "hasToken": false,
+      "authRequired": false
+    },
+    {
+      "name": "Docker Deployment",
+      "url": "http://192.168.7.100:8787/config",
+      "timestamp": "2025-12-07T21:48:00.093Z",
+      "consoleMessages": [
+        {
+          "type": "error",
+          "text": "Access to fetch at 'http://localhost:8000/auth/status' from origin 'http://192.168.7.100:8787' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.",
+          "location": {
+            "url": "http://192.168.7.100:8787/config",
+            "lineNumber": 0,
+            "columnNumber": 0
+          }
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: net::ERR_FAILED",
+          "location": {
+            "url": "http://localhost:8000/auth/status",
+            "lineNumber": 0,
+            "columnNumber": 0
+          }
+        },
+        {
+          "type": "error",
+          "text": "Failed to check auth status: TypeError: Failed to fetch\n    at y (http://192.168.7.100:8787/assets/index-CNn6bxRb.js:67:4646)\n    at http://192.168.7.100:8787/assets/index-CNn6bxRb.js:67:4560\n    at Ao (http://192.168.7.100:8787/assets/index-CNn6bxRb.js:40:24250)\n    at Ys (http://192.168.7.100:8787/assets/index-CNn6bxRb.js:40:42262)\n    at http://192.168.7.100:8787/assets/index-CNn6bxRb.js:40:40616\n    at N (http://192.168.7.100:8787/assets/index-CNn6bxRb.js:25:1561)\n    at MessagePort.V (http://192.168.7.100:8787/assets/index-CNn6bxRb.js:25:1927)",
+          "location": {
+            "url": "http://192.168.7.100:8787/assets/index-CNn6bxRb.js",
+            "lineNumber": 66,
+            "columnNumber": 4831
+          }
+        },
+        {
+          "type": "warning",
+          "text": "WebSocket connection to 'ws://192.168.7.100:8000/ws' failed: WebSocket is closed before the connection is established.",
+          "location": {
+            "url": "http://192.168.7.100:8787/assets/index-CNn6bxRb.js",
+            "lineNumber": 216,
+            "columnNumber": 0
+          }
+        },
+        {
+          "type": "error",
+          "text": "WebSocket error: Event",
+          "location": {
+            "url": "http://192.168.7.100:8787/assets/index-CNn6bxRb.js",
+            "lineNumber": 216,
+            "columnNumber": 9175
+          }
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+          "location": {
+            "url": "http://192.168.7.100:8787/api/schwab/status",
+            "lineNumber": 0,
+            "columnNumber": 0
+          }
+        },
+        {
+          "type": "error",
+          "text": "WebSocket connection to 'ws://192.168.7.100:8000/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED",
+          "location": {
+            "url": "http://192.168.7.100:8787/assets/index-CNn6bxRb.js",
+            "lineNumber": 216,
+            "columnNumber": 0
+          }
+        },
+        {
+          "type": "error",
+          "text": "WebSocket error: Event",
+          "location": {
+            "url": "http://192.168.7.100:8787/assets/index-CNn6bxRb.js",
+            "lineNumber": 216,
+            "columnNumber": 9175
+          }
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+          "location": {
+            "url": "http://192.168.7.100:8787/api/schwab/status",
+            "lineNumber": 0,
+            "columnNumber": 0
+          }
+        }
+      ],
+      "networkRequests": [
+        {
+          "method": "GET",
+          "url": "http://192.168.7.100:8787/api/schwab/status",
+          "status": 401,
+          "statusText": "Unauthorized",
+          "requestHeaders": {
+            "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            "accept": "application/json, text/plain, */*",
+            "referer": "http://192.168.7.100:8787/config"
+          },
+          "responseHeaders": {
+            "www-authenticate": "Bearer",
+            "connection": "keep-alive",
+            "x-content-type-options": "nosniff",
+            "referrer-policy": "no-referrer-when-downgrade",
+            "content-length": "36",
+            "date": "Sun, 07 Dec 2025 21:48:00 GMT",
+            "x-xss-protection": "1; mode=block",
+            "content-type": "application/json",
+            "server": "nginx/1.26.3",
+            "x-frame-options": "SAMEORIGIN"
+          },
+          "responseBody": {
+            "detail": "Authentication required"
+          }
+        },
+        {
+          "method": "GET",
+          "url": "http://192.168.7.100:8787/api/schwab/status",
+          "status": 401,
+          "statusText": "Unauthorized",
+          "requestHeaders": {
+            "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            "accept": "application/json, text/plain, */*",
+            "referer": "http://192.168.7.100:8787/config"
+          },
+          "responseHeaders": {
+            "www-authenticate": "Bearer",
+            "connection": "keep-alive",
+            "x-content-type-options": "nosniff",
+            "referrer-policy": "no-referrer-when-downgrade",
+            "content-length": "36",
+            "date": "Sun, 07 Dec 2025 21:48:01 GMT",
+            "x-xss-protection": "1; mode=block",
+            "content-type": "application/json",
+            "server": "nginx/1.26.3",
+            "x-frame-options": "SAMEORIGIN"
+          },
+          "responseBody": {
+            "detail": "Authentication required"
+          }
+        }
+      ],
+      "errors": [
+        "UI shows: Failed to load authentication status"
+      ],
+      "screenshots": {
+        "initial": "/Users/anil.goparaju/Documents/Python/Projects/Jutsu-Labs/scripts/debug_Docker_Deployment_initial.png",
+        "error": "/Users/anil.goparaju/Documents/Python/Projects/Jutsu-Labs/scripts/debug_Docker_Deployment_error.png"
+      },
+      "pageLoadStatus": 200,
+      "hasToken": false,
+      "authRequired": false
+    }
+  ]
+}
