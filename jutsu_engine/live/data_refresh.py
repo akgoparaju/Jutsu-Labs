@@ -289,10 +289,12 @@ class DashboardDataRefresher:
                 project_root = Path(__file__).parent.parent.parent
                 token_path = project_root / 'token.json'
                 
+                # IMPORTANT: schwab-py only allows 127.0.0.1, NOT localhost
+                # See: https://schwab-py.readthedocs.io/en/latest/auth.html#callback-url-advisory
                 schwab_client = auth.easy_client(
                     api_key=os.getenv('SCHWAB_API_KEY'),
                     app_secret=os.getenv('SCHWAB_API_SECRET'),
-                    callback_url='https://localhost:8182',
+                    callback_url=os.getenv('SCHWAB_CALLBACK_URL', 'https://127.0.0.1:8182'),
                     token_path=str(token_path)
                 )
                 

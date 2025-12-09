@@ -1,3 +1,71 @@
+#### **Schwab: Fix localhost Callback URL Rejection** (2025-12-08)
+
+**Fixed hardcoded `localhost` callback URLs that schwab-py rejects - library only allows `127.0.0.1`**
+
+**Problem**:
+After fixing token path issue, got new error: `Disallowed hostname localhost. client_from_login_flow only allows callback URLs with hostname 127.0.0.1`
+
+**Root Cause** (Evidence-Based):
+schwab-py library **explicitly rejects** `localhost` - only allows `127.0.0.1` per their security advisory.
+
+Hardcoded `localhost` found in:
+1. `schwab.py` line 151: `'https://localhost:8080/callback'` (default fallback)
+2. `data_refresh.py` line 295: `'https://localhost:8182'` (hardcoded)
+
+**Fix**:
+1. Changed all defaults to `https://127.0.0.1:8182`
+2. Added env var support in `data_refresh.py`
+3. Updated troubleshooting messages to warn about localhost vs 127.0.0.1
+
+**Files Modified**:
+- `jutsu_engine/data/fetchers/schwab.py`: Lines 105, 148-154, 242-249
+- `jutsu_engine/live/data_refresh.py`: Lines 292-299
+
+**Reference**: https://schwab-py.readthedocs.io/en/latest/auth.html#callback-url-advisory
+
+---
+
+#### **Schwab: Fix Token Path Mismatch in Docker** (2025-12-08)
+
+**Fixed critical bug where SchwabDataFetcher read from wrong token path in Docker, causing persistent authentication failures after successful re-authentication**
+
+**Problem**:
+User re-authenticated with Schwab via dashboard but still got `refresh_token_authentication_error` with HTTP 400. Different tokenDigest values confirmed a new token was created, yet errors persisted.
+
+**Root Cause** (Evidence-Based):
+1. Found TWO token files in Docker:
+   - `/app/token.json` (old/revoked) - created Dec 5, 3.6 days ago
+   - `/app/data/token.json` (new/valid) - created Dec 8, 0.9 days ago
+2. `schwab_auth.py` OAuth callback (line 83-84) correctly writes to `/app/data/token.json`:
+   ```python
+   if Path('/app').exists() and not token_path.startswith('/'):
+       token_path = f'/app/data/{token_path}'
+   ```
+3. `schwab.py` SchwabDataFetcher (line 152) used `token.json` directly WITHOUT Docker path logic:
+   ```python
+   self.token_path = token_path or os.getenv('SCHWAB_TOKEN_PATH', 'token.json')
+   ```
+4. Result: OAuth writes new token to `/app/data/token.json`, but fetcher reads old revoked token from `/app/token.json`
+
+**Fix**:
+Added matching Docker path logic to `SchwabDataFetcher.__init__()`:
+```python
+token_path_raw = token_path or os.getenv('SCHWAB_TOKEN_PATH', 'token.json')
+if Path('/app').exists() and not token_path_raw.startswith('/'):
+    self.token_path = f'/app/data/{token_path_raw}'
+else:
+    self.token_path = token_path_raw
+```
+
+**Files Modified**:
+- `jutsu_engine/data/fetchers/schwab.py`:
+  - Line 33: Added `from pathlib import Path` import
+  - Lines 154-162: Added Docker path adjustment logic matching `schwab_auth.py`
+
+**Impact**: All Docker deployments now correctly read tokens from `/app/data/token.json` after OAuth authentication.
+
+---
+
 #### **Dashboard: Improve Schwab Auth Error Handling** (2025-12-07)
 
 **Enhanced UI to show detailed error messages and disable button when credentials not configured**

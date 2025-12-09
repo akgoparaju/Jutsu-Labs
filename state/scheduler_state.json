@@ -1,8 +1,8 @@
 {
   "enabled": true,
   "execution_time": "15min_after_open",
-  "last_run": "2025-12-05T19:39:17.364926+00:00",
-  "last_run_status": "success",
-  "last_error": null,
-  "run_count": 3
+  "last_run": "2025-12-09T00:46:16.644277+00:00",
+  "last_run_status": "failed",
+  "last_error": "Historical data fetch failed: unsupported_token_type: 400 Bad Request: \"{\"error_description\":\"Exception while authenticating refresh token [tokenDigest=Gv/L4p1fEavVMppGw5HCJBjqxda7l8rTsBRzSU8ayuQ=, Exception=Failed refresh token authentication [tokenDigest=Gv/L4p1fEavVMppGw5HCJBjqxda7l8rTsBRzSU8ayuQ=]]\",\"error\":\"refresh_token_authentication_error\"}\"",
+  "run_count": 5
 }

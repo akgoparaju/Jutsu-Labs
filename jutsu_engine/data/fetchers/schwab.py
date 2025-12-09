@@ -30,6 +30,7 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 import requests
@@ -101,7 +102,7 @@ class SchwabDataFetcher(DataFetcher):
     Environment Variables Required:
         SCHWAB_API_KEY: Your Schwab API Client ID
         SCHWAB_API_SECRET: Your Schwab API Secret
-        SCHWAB_CALLBACK_URL: OAuth callback URL (default: https://localhost:8080/callback)
+        SCHWAB_CALLBACK_URL: OAuth callback URL (default: https://127.0.0.1:8182)
         SCHWAB_TOKEN_PATH: Path to token.json file (default: ./token.json)
 
     Example:
@@ -144,12 +145,23 @@ class SchwabDataFetcher(DataFetcher):
         # Load configuration from parameters or environment/config
         self.api_key = api_key or config.schwab_api_key
         self.api_secret = api_secret or config.schwab_api_secret
+        # IMPORTANT: schwab-py only allows 127.0.0.1, NOT localhost
+        # See: https://schwab-py.readthedocs.io/en/latest/auth.html#callback-url-advisory
         self.callback_url = (
             callback_url
             or os.getenv('SCHWAB_CALLBACK_URL')
-            or 'https://localhost:8080/callback'
+            or 'https://127.0.0.1:8182'
         )
-        self.token_path = token_path or os.getenv('SCHWAB_TOKEN_PATH', 'token.json')
+
+        # Get token path from parameter or environment
+        token_path_raw = token_path or os.getenv('SCHWAB_TOKEN_PATH', 'token.json')
+
+        # Handle Docker paths - match logic in schwab_auth.py
+        # In Docker, /app exists and token files are stored in /app/data/
+        if Path('/app').exists() and not token_path_raw.startswith('/'):
+            self.token_path = f'/app/data/{token_path_raw}'
+        else:
+            self.token_path = token_path_raw
 
         # Validate credentials
         if not self.api_key or not self.api_secret:
@@ -231,9 +243,9 @@ class SchwabDataFetcher(DataFetcher):
                 "\nAuthentication troubleshooting:\n"
                 "1. Verify credentials in .env are correct\n"
                 "2. Ensure app status is 'Ready for Use' at developer.schwab.com\n"
-                "3. Check callback URL matches: https://localhost:8080/callback\n"
+                "3. Check callback URL uses 127.0.0.1 (NOT localhost!): https://127.0.0.1:8182\n"
                 "4. Try removing token.json and re-authenticating\n"
-                "5. Make sure port 8080 is not in use by another application"
+                "5. Ensure SCHWAB_CALLBACK_URL env var is set correctly"
             )
             raise
 
