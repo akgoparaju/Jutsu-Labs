@@ -82,16 +82,25 @@ def initialize_schwab_client():
     import os
 
     project_root = Path(__file__).parent.parent
-    token_path = project_root / 'token.json'
+
+    # Handle Docker paths - match logic in schwab_auth.py and schwab.py
+    # In Docker, /app exists and token files are stored in /app/data/
+    token_path_raw = 'token.json'
+    if Path('/app').exists():
+        token_path = Path('/app/data') / token_path_raw
+    else:
+        token_path = project_root / token_path_raw
 
     try:
+        # IMPORTANT: schwab-py only allows 127.0.0.1, NOT localhost
+        # See: https://schwab-py.readthedocs.io/en/latest/auth.html#callback-url-advisory
         schwab_client = auth.easy_client(
             api_key=os.getenv('SCHWAB_API_KEY'),
             app_secret=os.getenv('SCHWAB_API_SECRET'),
-            callback_url='https://localhost:8182',
+            callback_url=os.getenv('SCHWAB_CALLBACK_URL', 'https://127.0.0.1:8182'),
             token_path=str(token_path)
         )
-        logger.info("Schwab client initialized successfully")
+        logger.info(f"Schwab client initialized successfully (token: {token_path})")
         return schwab_client
     except Exception as e:
         logger.error(f"Failed to initialize Schwab client: {e}")
