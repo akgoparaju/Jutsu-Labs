@@ -586,12 +586,9 @@ class DashboardDataRefresher:
                 drawdown = 0.0
             
             # Extract strategy context from indicators or state.json
-            # Prefer indicators if available, fall back to state.json
+            # Indicators may have 'trend' but NOT 'vol_state' - always read from state.json
             trend_state = indicators.get('trend') if indicators else None
             vol_state = None
-            
-            # If trend_state not from indicators, try to get from state.json
-            # This ensures regime data is always available for dashboard display
 
             # Build positions JSON
             positions_json = json.dumps(positions) if positions else None
@@ -600,34 +597,41 @@ class DashboardDataRefresher:
             baseline_value = None
             baseline_return = None
 
+            # ALWAYS read regime data from state.json as fallback
+            # This is critical because calculate_indicators() only sets 'trend', not 'vol_state'
+            # BUG FIX: Separated regime reading from baseline calculation to ensure proper error handling
+            state_path = Path(__file__).parent.parent.parent / 'state' / 'state.json'
             try:
-                # Load state for initial_qqq_price and vol_state
-                state_path = Path(__file__).parent.parent.parent / 'state' / 'state.json'
                 if state_path.exists():
                     with open(state_path, 'r') as f:
                         state = json.load(f)
 
-                    # Read vol_state from state.json (0 = "Low", 1 = "High")
+                    # ALWAYS read vol_state from state.json (not available from indicators)
+                    # Strategy stores vol_state as integer: 0 = "Low", 1 = "High"
                     vol_state_num = state.get('vol_state')
                     if vol_state_num is not None:
                         vol_state_map = {0: 'Low', 1: 'High'}
                         vol_state = vol_state_map.get(vol_state_num, 'Low')
                         logger.debug(f"Vol state from state.json: {vol_state_num} -> {vol_state}")
+                    else:
+                        logger.warning("vol_state not found in state.json")
                     
                     # Read trend_state from state.json if not from indicators
-                    # This ensures regime is always available for dashboard display
-                    if trend_state is None:
-                        trend_state_raw = state.get('trend_state')
-                        if trend_state_raw:
-                            trend_state = trend_state_raw
-                            logger.debug(f"Trend state from state.json: {trend_state}")
-                        else:
-                            # Default to Sideways if not specified (most common/neutral state)
-                            trend_state = 'Sideways'
-                            logger.debug(f"Trend state defaulted to: {trend_state}")
+                    # Note: indicators.get('trend') returns simplified Bullish/Bearish/Sideways
+                    # but state.json has the actual strategy trend (BullStrong, Sideways, etc.)
+                    # Prefer state.json trend_state for consistency with strategy decisions
+                    trend_state_raw = state.get('trend_state')
+                    if trend_state_raw:
+                        # Always prefer state.json for trend_state (matches strategy decision)
+                        trend_state = trend_state_raw
+                        logger.debug(f"Trend state from state.json: {trend_state}")
+                    elif trend_state is None:
+                        # Default to Sideways if not specified (most common/neutral state)
+                        trend_state = 'Sideways'
+                        logger.debug(f"Trend state defaulted to: {trend_state}")
 
+                    # Calculate QQQ baseline
                     initial_qqq_price = state.get('initial_qqq_price')
-
                     if initial_qqq_price and 'QQQ' in prices:
                         current_qqq_price = float(prices['QQQ'])
                         qqq_return = (current_qqq_price / initial_qqq_price) - 1
@@ -637,8 +641,10 @@ class DashboardDataRefresher:
                             f"Baseline calculated: QQQ ${initial_qqq_price:.2f} -> ${current_qqq_price:.2f}, "
                             f"baseline=${baseline_value:.2f} ({baseline_return:+.2f}%)"
                         )
+                else:
+                    logger.warning(f"state.json not found at {state_path}")
             except Exception as e:
-                logger.warning(f"Could not calculate baseline: {e}")
+                logger.error(f"Failed to read state.json for regime data: {e}", exc_info=True)
 
             # Determine strategy cell from trend and vol
             strategy_cell = None

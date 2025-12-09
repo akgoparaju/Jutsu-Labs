@@ -554,6 +554,9 @@ def load_config(force_reload: bool = False) -> dict:
     Load the live trading configuration.
 
     Caches the config and only reloads when force_reload=True.
+
+    Checks primary config path first, then falls back to Docker default config
+    location (/app/config.default/) for cases where mounted volume is empty.
     """
     global _config_cache
 
@@ -563,9 +566,18 @@ def load_config(force_reload: bool = False) -> dict:
     import yaml
     config_path = get_config_path()
 
+    # Fallback path for Docker deployments where mounted config dir may be empty
+    # The Dockerfile copies default config to /app/config.default/
+    default_config_path = Path('/app/config.default/live_trading_config.yaml')
+
     if not config_path.exists():
-        logger.warning(f"Config file not found: {config_path}")
-        return {}
+        # Check fallback path (Docker default config)
+        if default_config_path.exists():
+            logger.info(f"Primary config not found at {config_path}, using default: {default_config_path}")
+            config_path = default_config_path
+        else:
+            logger.warning(f"Config file not found: {config_path} (no fallback available)")
+            return {}
 
     with open(config_path, 'r') as f:
         _config_cache = yaml.safe_load(f)

@@ -66,6 +66,10 @@ COPY jutsu_engine/ ./jutsu_engine/
 COPY config/ ./config/
 COPY scripts/ ./scripts/
 
+# Store default config in backup location (for volume mount fallback)
+# When user mounts empty ./config volume, we need the default config available
+COPY config/ ./config.default/
+
 # Copy frontend build from previous stage
 COPY --from=frontend-builder /build/dist ./dashboard/dist
 

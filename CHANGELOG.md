@@ -1,3 +1,93 @@
+#### **Docker: Fix "Unknown" Strategy in Decision Tree Tab** (2025-12-09)
+
+**Fixed Docker deployment showing "Unknown" strategy instead of "Hierarchical_Adaptive_v3_5b"**
+
+**Problem**:
+Decision tree tab in Docker/Unraid deployment showed "Unknown" strategy name, while local deployment showed correct name.
+
+**Root Cause** (Evidence-Based):
+1. `docker-compose.yml` line 58: `./config:/app/config:ro` mounts config as read-only
+2. If host has no `./config` directory, Docker creates empty directory that overrides Dockerfile's copied config
+3. `load_config()` in `dependencies.py` returned `{}` when config file missing
+4. `strategy_config.get('name', 'Unknown')` in `config.py:103` returned 'Unknown'
+
+**Fix**:
+1. Added fallback config path in `dependencies.py`:
+```python
+default_config_path = Path('/app/config.default/live_trading_config.yaml')
+if not config_path.exists():
+    if default_config_path.exists():
+        config_path = default_config_path  # Use Docker default
+```
+2. Modified `Dockerfile` to copy config to backup location:
+```dockerfile
+COPY config/ ./config.default/  # Fallback for empty mounted volumes
+```
+3. Updated `docker-entrypoint.sh` to log config status for debugging
+
+**Files Modified**:
+- `jutsu_engine/api/dependencies.py`: Lines 569-580 (fallback config path)
+- `Dockerfile`: Line 69-71 (copy config to config.default/)
+- `docker/docker-entrypoint.sh`: Lines 12-26 (config status logging)
+
+**User Action Required**:
+Rebuild Docker image to get the fix:
+```bash
+docker build -t jutsu-trading-dashboard .
+```
+
+---
+
+#### **Performance Table: Fix Empty Regime for Dec 9 1PM Snapshots** (2025-12-09)
+
+**Fixed performance snapshots showing NULL regime for Dec 9 13:00 entries**
+
+**Problem**:
+Dec 9 snapshots at 1PM Pacific (IDs 11, 12) showed NULL for strategy_cell, trend_state, vol_state.
+
+**Root Cause** (Evidence-Based):
+1. `data_refresh.py` `save_performance_snapshot()` had state.json reading inside one try/except block
+2. `calculate_indicators()` returns `'trend'` but NOT `'vol_state'`
+3. When any exception occurred in the block, the error message was misleading: "Could not calculate baseline"
+4. The actual issue: vol_state must ALWAYS come from state.json, but the reading was combined with baseline calculation
+
+**Fix**:
+Separated regime reading from baseline calculation in `data_refresh.py`:
+```python
+# ALWAYS read regime data from state.json as fallback
+# BUG FIX: Separated regime reading from baseline calculation
+state_path = Path(__file__).parent.parent.parent / 'state' / 'state.json'
+try:
+    if state_path.exists():
+        with open(state_path, 'r') as f:
+            state = json.load(f)
+
+        # ALWAYS read vol_state from state.json
+        vol_state_num = state.get('vol_state')
+        if vol_state_num is not None:
+            vol_state_map = {0: 'Low', 1: 'High'}
+            vol_state = vol_state_map.get(vol_state_num, 'Low')
+
+        # Read trend_state from state.json for consistency
+        trend_state_raw = state.get('trend_state')
+        if trend_state_raw:
+            trend_state = trend_state_raw
+except Exception as e:
+    logger.error(f"Failed to read state.json for regime data: {e}")
+```
+
+**Files Modified**:
+- `jutsu_engine/live/data_refresh.py`: Lines 587-641 (refactored state.json reading)
+- PostgreSQL: Deleted snapshots IDs 11, 12 (bad Dec 9 1PM entries)
+
+**Prevention**:
+Future snapshots will always have regime data because:
+1. vol_state and trend_state are read from state.json with dedicated error handling
+2. Error messages now accurately identify the failure source
+3. Regime reading is separated from baseline calculation
+
+---
+
 #### **Dashboard: Fix "Invalid Date" in Header Last Updated Display** (2025-12-09)
 
 **Fixed dashboard header showing "Invalid Date" for Last Updated timestamp**

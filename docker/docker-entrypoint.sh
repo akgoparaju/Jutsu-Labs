@@ -9,6 +9,55 @@ echo "=================================================="
 echo "Creating required directories..."
 mkdir -p /app/data /app/state /app/logs /app/token_cache
 
+# Check for config file - log status for debugging
+# If mounted config dir is empty, the Python app will fallback to /app/config.default/
+CONFIG_FILE="/app/config/live_trading_config.yaml"
+DEFAULT_CONFIG="/app/config.default/live_trading_config.yaml"
+
+if [ -f "$CONFIG_FILE" ]; then
+    echo "Config file found: $CONFIG_FILE"
+elif [ -f "$DEFAULT_CONFIG" ]; then
+    echo "Using default config: $DEFAULT_CONFIG"
+    echo "  (mounted config dir is empty, Python app will use fallback)"
+else
+    echo "WARNING: No config file found"
+    echo "  - Strategy name may show as 'Unknown' in dashboard"
+    echo "  - Create config/live_trading_config.yaml on host and restart container"
+fi
+
+# Initialize state.json if not present (fresh Docker deployments)
+# state.json is NOT bundled in Docker image - each deployment gets fresh state
+STATE_FILE="/app/state/state.json"
+STATE_TEMPLATE="/app/state/state.json.template"
+
+if [ ! -f "$STATE_FILE" ]; then
+    if [ -f "$STATE_TEMPLATE" ]; then
+        echo "Initializing state.json from template..."
+        cp "$STATE_TEMPLATE" "$STATE_FILE"
+        echo "  - Created: $STATE_FILE"
+    else
+        echo "Creating default state.json..."
+        cat > "$STATE_FILE" << 'STATEEOF'
+{
+  "last_run": null,
+  "vol_state": 0,
+  "trend_state": "Sideways",
+  "current_positions": {},
+  "account_equity": 10000.0,
+  "last_allocation": {},
+  "metadata": {
+    "created_at": null,
+    "version": "1.0"
+  },
+  "initial_qqq_price": null
+}
+STATEEOF
+        echo "  - Created: $STATE_FILE"
+    fi
+else
+    echo "State file found: $STATE_FILE"
+fi
+
 # Set timezone (graceful handling - TZ env var is sufficient for most apps)
 if [ -n "$TZ" ]; then
     echo "Timezone set via TZ environment variable: $TZ"

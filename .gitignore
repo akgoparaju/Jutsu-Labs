@@ -97,3 +97,7 @@ token.json
 
 # State backups (local only)
 state/backups/
+state/state.json
+state/scheduler_state.json
+state/*.db
+state/*.sqlite

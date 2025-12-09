@@ -1,0 +1,13 @@
+{
+  "last_run": null,
+  "vol_state": 0,
+  "trend_state": "Sideways",
+  "current_positions": {},
+  "account_equity": 10000.0,
+  "last_allocation": {},
+  "metadata": {
+    "created_at": null,
+    "version": "1.0"
+  },
+  "initial_qqq_price": null
+}
