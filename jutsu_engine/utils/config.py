@@ -441,3 +441,101 @@ def reload_config():
     """Reload configuration (useful for testing)."""
     global _config
     _config = Config()
+
+
+def get_safe_database_url_for_logging(db_url: Optional[str] = None) -> str:
+    """
+    Return database URL with password masked for safe logging.
+
+    Prevents accidental exposure of database credentials in logs.
+    Works with both PostgreSQL and SQLite URLs.
+
+    Args:
+        db_url: Database URL to mask. If None, uses current database URL.
+
+    Returns:
+        Database URL with password replaced by '****'
+
+    Example:
+        # PostgreSQL: postgresql://user:secret@host:5432/db → postgresql://user:****@host:5432/db
+        # SQLite: sqlite:///path/to/db.sqlite → sqlite:///path/to/db.sqlite (unchanged)
+    """
+    if db_url is None:
+        db_url = get_database_url()
+
+    if not db_url:
+        return "<no database url>"
+
+    # SQLite URLs don't have passwords
+    if db_url.startswith('sqlite'):
+        return db_url
+
+    # PostgreSQL URLs: postgresql://user:password@host:port/database
+    if 'postgresql' in db_url and '@' in db_url:
+        try:
+            # Split into protocol+credentials and host+database
+            parts = db_url.split('@')
+            if len(parts) >= 2:
+                cred_part = parts[0]  # postgresql://user:password
+                host_part = '@'.join(parts[1:])  # host:port/database
+
+                # Find the password portion (after last : before @)
+                if '://' in cred_part:
+                    proto, user_pass = cred_part.split('://', 1)
+                    if ':' in user_pass:
+                        user = user_pass.rsplit(':', 1)[0]
+                        return f"{proto}://{user}:****@{host_part}"
+                    else:
+                        # No password in URL
+                        return db_url
+        except (ValueError, IndexError):
+            pass
+
+    # For any other format, return with generic masking
+    return db_url
+
+
+def get_secret(secret_name: str, env_var: Optional[str] = None, default: Optional[str] = None) -> Optional[str]:
+    """
+    Get a secret value from Docker secrets file or environment variable.
+
+    Docker secrets are mounted as files at /run/secrets/<secret_name>.
+    This function checks Docker secrets first, then falls back to environment variables.
+
+    Args:
+        secret_name: Name of the Docker secret file (e.g., 'db_password')
+        env_var: Environment variable name to check as fallback. If None, uses secret_name.upper()
+        default: Default value if secret not found anywhere
+
+    Returns:
+        Secret value or default
+
+    Example:
+        # Docker: reads /run/secrets/db_password
+        # Local: reads DB_PASSWORD environment variable
+        db_password = get_secret('db_password', 'POSTGRES_PASSWORD')
+    """
+    # Try Docker secrets first (production)
+    secret_path = Path(f'/run/secrets/{secret_name}')
+    if secret_path.exists():
+        try:
+            return secret_path.read_text().strip()
+        except (IOError, PermissionError) as e:
+            # Log but don't expose error details
+            import logging
+            logging.getLogger('CONFIG').warning(f"Could not read secret '{secret_name}': permission denied")
+
+    # Try file-based secret (FILE suffix pattern)
+    if env_var is None:
+        env_var = secret_name.upper()
+
+    file_env_var = f"{env_var}_FILE"
+    secret_file_path = os.getenv(file_env_var)
+    if secret_file_path:
+        try:
+            return Path(secret_file_path).read_text().strip()
+        except (IOError, FileNotFoundError, PermissionError):
+            pass
+
+    # Fall back to environment variable
+    return os.getenv(env_var, default)

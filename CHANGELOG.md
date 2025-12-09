@@ -641,6 +641,83 @@ else:
   - Lines 154-162: Added Docker path adjustment logic matching `schwab_auth.py`
 
 **Impact**: All Docker deployments now correctly read tokens from `/app/data/token.json` after OAuth authentication.
+#### **Security: Comprehensive Security Hardening for Production Deployment** (2025-12-07)
+
+**Implemented critical security features for Cloudflare tunnel deployment**
+
+**Security Enhancements Implemented**:
+
+1. **Database URL Masking** (Critical)
+   - Added `get_safe_database_url_for_logging()` in `config.py`
+   - Fixed insecure logging in `dependencies.py` that exposed passwords
+   - PostgreSQL passwords now masked as `****` in all logs
+
+2. **JWT Token Security** (Critical)
+   - Short-lived access tokens (default 15 minutes, configurable via `ACCESS_TOKEN_EXPIRE_MINUTES`)
+   - Long-lived refresh tokens (default 7 days, configurable via `REFRESH_TOKEN_EXPIRE_DAYS`)
+   - Token type validation ("access" vs "refresh")
+   - Added `create_refresh_token()` function
+
+3. **Rate Limiting** (Critical)
+   - Added slowapi integration for brute force protection
+   - Login endpoint: 5 attempts/minute per IP (configurable via `LOGIN_RATE_LIMIT`)
+   - Custom IP detection handles Cloudflare/nginx proxies
+
+4. **Schwab OAuth Protection** (Critical)
+   - DELETE /api/schwab/token now requires authentication
+   - Security event logging for token deletion
+
+5. **Security Event Logging**
+   - New `security_logger.py` module with structured audit logging
+   - Events: LOGIN_SUCCESS, LOGIN_FAILURE, TOKEN_CREATED, OAUTH_TOKEN_DELETED, etc.
+   - JSON format for log aggregation (ELK/Splunk compatible)
+
+6. **Environment-Configurable CORS**
+   - Production: Set `CORS_ORIGINS` environment variable (comma-separated)
+   - Development: Falls back to localhost origins
+
+7. **Disable API Docs in Production**
+   - Set `DISABLE_DOCS=true` to hide /docs, /redoc, /openapi.json
+   - Prevents API structure exposure
+
+8. **WebSocket Authentication**
+   - When `AUTH_REQUIRED=true`, WebSocket requires token query parameter
+   - Connect with: `ws://host/ws?token=<jwt_token>`
+   - Invalid tokens rejected with code 4001
+
+9. **Docker Secrets Management**
+   - Added `get_secret()` helper function
+   - Supports Docker secrets (`/run/secrets/`) and FILE suffix pattern
+   - Graceful fallback to environment variables
+
+**Files Modified**:
+- `jutsu_engine/utils/config.py` - Added URL masking and secrets helper
+- `jutsu_engine/api/dependencies.py` - JWT security, secure logging
+- `jutsu_engine/api/main.py` - Rate limiting, CORS, docs toggle
+- `jutsu_engine/api/routes/auth.py` - Token security, rate limiting, security logging
+- `jutsu_engine/api/routes/schwab_auth.py` - Protected DELETE endpoint
+- `jutsu_engine/api/websocket.py` - WebSocket authentication
+- `requirements.txt` - Added slowapi dependency
+
+**Files Created**:
+- `jutsu_engine/utils/security_logger.py` - Security event logging system
+
+**Docker Environment Variables** (Production):
+```env
+AUTH_REQUIRED=true
+SECRET_KEY=<strong-random-key>
+ACCESS_TOKEN_EXPIRE_MINUTES=15
+REFRESH_TOKEN_EXPIRE_DAYS=7
+LOGIN_RATE_LIMIT=5/minute
+CORS_ORIGINS=https://your-domain.com
+DISABLE_DOCS=true
+```
+
+**Post-Deployment**:
+1. Rebuild Docker image to include slowapi
+2. Configure environment variables listed above
+3. Test authentication flow works correctly
+4. Monitor security logs for suspicious activity
 
 ---
 

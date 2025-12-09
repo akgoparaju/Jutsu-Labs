@@ -5,12 +5,14 @@ Provides endpoints for OAuth authentication with Schwab API:
 - GET /api/schwab/status: Check token status
 - POST /api/schwab/initiate: Start OAuth flow, get authorization URL
 - POST /api/schwab/callback: Complete OAuth flow with callback URL
+- DELETE /api/schwab/token: Delete token (requires authentication)
 
 Designed to work in both local development and Docker environments
 using the manual OAuth flow (copy-paste URLs).
 
-Note: These endpoints are accessible without dashboard authentication
-to allow Schwab OAuth setup even when AUTH_REQUIRED=true.
+Security Notes:
+- GET/POST endpoints are accessible without authentication for initial setup
+- DELETE endpoint REQUIRES authentication to prevent unauthorized token deletion
 """
 
 import json
@@ -21,10 +23,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from pydantic import BaseModel
 
 from jutsu_engine.utils.config import get_config
+from jutsu_engine.api.dependencies import get_current_user
+from jutsu_engine.utils.security_logger import security_logger, get_client_ip
 
 logger = logging.getLogger('API.SCHWAB_AUTH')
 
@@ -408,23 +412,48 @@ async def complete_schwab_auth(data: SchwabAuthCallback):
 
 
 @router.delete("/token")
-async def delete_schwab_token():
+async def delete_schwab_token(
+    request: Request,
+    current_user = Depends(get_current_user)
+):
     """
     Delete the current Schwab token.
 
     This forces re-authentication on the next API call.
     Useful for testing or when token is corrupted.
 
-    Note: This endpoint does not require dashboard authentication to allow
-    Schwab setup even when AUTH_REQUIRED=true.
+    **REQUIRES AUTHENTICATION** - This is a destructive operation that could
+    disrupt trading if performed maliciously.
+
+    Args:
+        request: FastAPI request (for security logging)
+        current_user: Authenticated user (dependency injection)
+
+    Returns:
+        Success message if token deleted or didn't exist
+
+    Raises:
+        HTTPException 401: If not authenticated (when AUTH_REQUIRED=true)
+        HTTPException 500: If token deletion fails
     """
+    client_ip = get_client_ip(request)
+    username = current_user.username if current_user else "anonymous"
+
     schwab_config = get_schwab_config()
     token_path = schwab_config['token_path']
 
     if os.path.isfile(token_path):
         try:
             os.remove(token_path)
-            logger.info(f"Deleted Schwab token at {token_path}")
+            logger.info(f"Deleted Schwab token at {token_path} by user '{username}'")
+
+            # Log security event
+            security_logger.log_oauth_token_deleted(
+                provider="schwab",
+                username=username,
+                ip_address=client_ip
+            )
+
             return {"success": True, "message": "Token deleted successfully"}
         except OSError as e:
             logger.error(f"Failed to delete token: {e}")

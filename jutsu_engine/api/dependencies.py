@@ -32,6 +32,7 @@ except ImportError:
 from jutsu_engine.utils.config import (
     get_database_url,
     get_database_type,
+    get_safe_database_url_for_logging,
     is_sqlite,
     is_postgresql,
     DATABASE_TYPE_SQLITE,
@@ -121,7 +122,7 @@ DATABASE_URL = get_database_url()
 DATABASE_TYPE = get_database_type()
 
 logger.info(f"Database type: {DATABASE_TYPE}")
-logger.info(f"Database URL: {DATABASE_URL[:50]}..." if len(DATABASE_URL) > 50 else f"Database URL: {DATABASE_URL}")
+logger.info(f"Database URL: {get_safe_database_url_for_logging(DATABASE_URL)}")
 
 # Ensure database exists before creating engine (SQLite only)
 _ensure_database_exists(DATABASE_URL)
@@ -183,7 +184,15 @@ API_PASSWORD = os.getenv('JUTSU_API_PASSWORD', '')
 # JWT configuration
 SECRET_KEY = os.getenv('SECRET_KEY', 'default-dev-secret-change-in-production')
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_DAYS = 7  # 7-day persistent sessions
+
+# Token expiration - configurable via environment variables
+# Access tokens: short-lived (15 minutes default) for security
+# Refresh tokens: longer-lived (7 days default) for session persistence
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv('ACCESS_TOKEN_EXPIRE_MINUTES', '15'))
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv('REFRESH_TOKEN_EXPIRE_DAYS', '7'))
+
+# Legacy compatibility - used when refresh tokens not enabled
+ACCESS_TOKEN_EXPIRE_DAYS = int(os.getenv('ACCESS_TOKEN_EXPIRE_DAYS', '7'))
 
 # Password hashing using bcrypt directly (bcrypt 5.0+ compatible)
 # Note: passlib 1.7.4 is incompatible with bcrypt 5.0+ due to __about__ attribute removal
@@ -219,13 +228,19 @@ def get_password_hash(password: str) -> str:
     return hashed.decode('utf-8')  # Return as string for database storage
 
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+def create_access_token(
+    data: dict,
+    expires_delta: Optional[timedelta] = None,
+    use_short_expiry: bool = True
+) -> str:
     """
     Create a JWT access token.
 
     Args:
         data: Token payload (e.g., {"sub": username})
-        expires_delta: Token expiry (default: ACCESS_TOKEN_EXPIRE_DAYS)
+        expires_delta: Custom token expiry time
+        use_short_expiry: If True (default), use short ACCESS_TOKEN_EXPIRE_MINUTES.
+                         If False, use legacy ACCESS_TOKEN_EXPIRE_DAYS.
 
     Returns:
         Encoded JWT token string
@@ -239,10 +254,43 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
+    elif use_short_expiry:
+        expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     else:
         expire = datetime.now(timezone.utc) + timedelta(days=ACCESS_TOKEN_EXPIRE_DAYS)
 
-    to_encode.update({"exp": expire})
+    to_encode.update({"exp": expire, "type": "access"})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+
+def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    """
+    Create a JWT refresh token with longer expiration.
+
+    Refresh tokens are used to obtain new access tokens without re-authentication.
+    They have longer expiration (default: REFRESH_TOKEN_EXPIRE_DAYS).
+
+    Args:
+        data: Token payload (e.g., {"sub": username})
+        expires_delta: Custom expiry (default: REFRESH_TOKEN_EXPIRE_DAYS)
+
+    Returns:
+        Encoded JWT refresh token string
+    """
+    if not JWT_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="JWT not available. Install: pip install python-jose[cryptography]"
+        )
+
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+
+    to_encode.update({"exp": expire, "type": "refresh"})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 

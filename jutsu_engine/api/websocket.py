@@ -7,16 +7,48 @@ Provides real-time streaming of:
 - Portfolio updates (positions, equity)
 - Trade executions
 - Indicator values
+
+Security:
+- WebSocket authentication via query parameter token when AUTH_REQUIRED=true
+- Connection refused if token is invalid/expired
 """
 
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Set, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 
 logger = logging.getLogger("API.WEBSOCKET")
+
+
+def _verify_websocket_token(token: Optional[str]) -> Optional[str]:
+    """
+    Verify WebSocket authentication token.
+
+    Args:
+        token: JWT token from query parameter
+
+    Returns:
+        Username if valid, None if invalid
+    """
+    if not token:
+        return None
+
+    try:
+        from jutsu_engine.api.dependencies import decode_access_token
+        payload = decode_access_token(token)
+
+        if payload is None:
+            return None
+
+        username = payload.get("sub")
+        return username
+    except Exception as e:
+        logger.warning(f"WebSocket token verification failed: {e}")
+        return None
 
 
 class ConnectionManager:
@@ -112,6 +144,11 @@ async def websocket_endpoint(websocket: WebSocket):
     """
     WebSocket endpoint handler.
 
+    Authentication:
+    - If AUTH_REQUIRED=true, requires valid JWT token as query parameter
+    - Connect with: ws://host/ws?token=<jwt_token>
+    - Connection closed with 4001 code if authentication fails
+
     Messages sent by server:
     - status_update: Regular status broadcasts
     - trade_executed: When a trade executes
@@ -123,6 +160,31 @@ async def websocket_endpoint(websocket: WebSocket):
     - unsubscribe: Unsubscribe from update types
     - ping: Keep-alive ping (server responds with pong)
     """
+    # Check if authentication is required
+    auth_required = os.getenv('AUTH_REQUIRED', 'false').lower() == 'true'
+
+    if auth_required:
+        # Get token from query parameters
+        token = websocket.query_params.get('token')
+
+        if not token:
+            # No token provided - reject connection
+            await websocket.close(code=4001, reason="Authentication required. Provide token as query parameter.")
+            logger.warning("WebSocket connection rejected: no token provided")
+            return
+
+        username = _verify_websocket_token(token)
+
+        if not username:
+            # Invalid token - reject connection
+            await websocket.close(code=4001, reason="Invalid or expired token")
+            logger.warning("WebSocket connection rejected: invalid token")
+            return
+
+        logger.info(f"WebSocket authenticated for user: {username}")
+    else:
+        username = "anonymous"
+
     await manager.connect(websocket)
 
     try:
@@ -130,7 +192,8 @@ async def websocket_endpoint(websocket: WebSocket):
         await manager.send_personal_message({
             "type": "connected",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "message": "WebSocket connection established"
+            "message": "WebSocket connection established",
+            "user": username
         }, websocket)
 
         # Handle incoming messages

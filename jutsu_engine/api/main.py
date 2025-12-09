@@ -2,17 +2,33 @@
 FastAPI Main Application
 
 Main entry point for the Jutsu trading dashboard API.
-Configures CORS, routes, and middleware.
+Configures CORS, routes, rate limiting, and middleware.
+
+Security Features:
+- Rate limiting via slowapi (configurable limits)
+- CORS with environment-configurable origins
+- JWT authentication
+- Security event logging
 """
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, Request, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+
+# Rate limiting
+try:
+    from slowapi import Limiter, _rate_limit_exceeded_handler
+    from slowapi.util import get_remote_address
+    from slowapi.errors import RateLimitExceeded
+    RATE_LIMITING_AVAILABLE = True
+except ImportError:
+    RATE_LIMITING_AVAILABLE = False
 
 from jutsu_engine.api.websocket import websocket_endpoint, manager
 from jutsu_engine.api.routes import (
@@ -25,6 +41,43 @@ from jutsu_engine.api.routes import (
     control_router,
     indicators_router,
 )
+
+# ==============================================================================
+# RATE LIMITING CONFIGURATION
+# ==============================================================================
+
+# Rate limit configuration from environment
+# Format: "X/timeunit" where timeunit is second, minute, hour, or day
+LOGIN_RATE_LIMIT = os.getenv('LOGIN_RATE_LIMIT', '5/minute')
+API_RATE_LIMIT = os.getenv('API_RATE_LIMIT', '100/minute')
+
+# Create global limiter instance (if slowapi available)
+if RATE_LIMITING_AVAILABLE:
+    # Custom key function that gets real client IP (handles proxies/Cloudflare)
+    def get_real_client_ip(request: Request) -> str:
+        """Get real client IP, handling Cloudflare and reverse proxies."""
+        # Cloudflare's real IP header
+        cf_ip = request.headers.get('CF-Connecting-IP')
+        if cf_ip:
+            return cf_ip
+
+        # X-Forwarded-For (may have multiple IPs)
+        xff = request.headers.get('X-Forwarded-For')
+        if xff:
+            return xff.split(',')[0].strip()
+
+        # X-Real-IP (nginx)
+        real_ip = request.headers.get('X-Real-IP')
+        if real_ip:
+            return real_ip
+
+        # Fall back to direct connection
+        return get_remote_address(request)
+
+    limiter = Limiter(key_func=get_real_client_ip)
+else:
+    limiter = None
+
 
 # Configure logging
 logging.basicConfig(
@@ -157,7 +210,26 @@ def create_app(
 
     Returns:
         Configured FastAPI application
+
+    Security:
+        - Set DISABLE_DOCS=true in production to hide /docs, /redoc, /openapi.json
+        - OpenAPI endpoints expose API structure which could aid attackers
     """
+    # Determine if docs should be enabled
+    # In production, set DISABLE_DOCS=true to hide API documentation
+    disable_docs = os.getenv('DISABLE_DOCS', 'false').lower() == 'true'
+
+    if disable_docs:
+        docs_url = None
+        redoc_url = None
+        openapi_url = None
+        logger.info("OpenAPI docs disabled (DISABLE_DOCS=true)")
+    else:
+        docs_url = "/docs"
+        redoc_url = "/redoc"
+        openapi_url = "/openapi.json"
+        logger.info("OpenAPI docs enabled at /docs, /redoc")
+
     app = FastAPI(
         title=title,
         version=version,
@@ -201,28 +273,48 @@ def create_app(
         - `online_live`: Real trading via Schwab API
 
         """,
-        docs_url="/docs",
-        redoc_url="/redoc",
-        openapi_url="/openapi.json",
+        docs_url=docs_url,
+        redoc_url=redoc_url,
+        openapi_url=openapi_url,
         lifespan=lifespan,
         debug=debug,
     )
 
-    # Configure CORS
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[
+    # Configure CORS from environment or use defaults
+    # CORS_ORIGINS can be comma-separated list: "https://app.example.com,https://admin.example.com"
+    cors_origins_env = os.getenv('CORS_ORIGINS', '')
+
+    if cors_origins_env:
+        # Production: use environment-configured origins
+        cors_origins = [origin.strip() for origin in cors_origins_env.split(',') if origin.strip()]
+        logger.info(f"CORS configured for production origins: {cors_origins}")
+    else:
+        # Development: allow localhost variants
+        cors_origins = [
             "http://localhost:3000",  # React dev server
             "http://localhost:5173",  # Vite dev server
             "http://localhost:8080",  # Alternative dev port
             "http://127.0.0.1:3000",
             "http://127.0.0.1:5173",
             "http://127.0.0.1:8080",
-        ],
+        ]
+        logger.info("CORS configured for local development (localhost only)")
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Configure rate limiting (if available)
+    if RATE_LIMITING_AVAILABLE and limiter is not None:
+        app.state.limiter = limiter
+        app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+        logger.info(f"Rate limiting enabled: login={LOGIN_RATE_LIMIT}, api={API_RATE_LIMIT}")
+    else:
+        logger.warning("Rate limiting not available - install slowapi: pip install slowapi")
 
     # Include routers
     app.include_router(auth_router)  # Authentication endpoints
