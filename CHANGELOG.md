@@ -1,3 +1,69 @@
+#### **Dashboard: Fix "Invalid Date" in Header Last Updated Display** (2025-12-09)
+
+**Fixed dashboard header showing "Invalid Date" for Last Updated timestamp**
+
+**Problem**:
+Dashboard header showed "Last Updated: Invalid Date" instead of the actual timestamp.
+
+**Root Cause** (Evidence-Based):
+1. `Layout.tsx` lines 47-61 used inline `new Date()` parsing without error handling
+2. ISO 8601 timestamps with microseconds (e.g., `2025-12-09T18:41:24.610234+00:00`) don't parse consistently across all browsers
+3. When `new Date()` returns invalid date, `.toLocaleString()` outputs "Invalid Date"
+
+**Fix**:
+Added `formatDateTime()` helper function in `Layout.tsx` that:
+1. Normalizes timestamps by truncating microseconds to milliseconds
+2. Validates parsed date with `isNaN(date.getTime())` check
+3. Returns "N/A" on parse failure instead of "Invalid Date"
+4. Uses try-catch for additional safety
+
+**Files Modified**:
+- `dashboard/src/components/Layout.tsx`: Added formatDateTime helper (lines 18-46), simplified date display (line 80)
+
+**Verification**:
+Screenshot confirmed header now shows "Last Updated: Dec 9, 11:04 AM" correctly.
+
+---
+
+#### **Performance Table: Fix Missing Regime (trend_state) in Snapshots** (2025-12-09)
+
+**Fixed Performance table showing "-" for regime when snapshots created without indicators**
+
+**Problem**:
+Dec 9 snapshots IDs 9, 10 showed NULL regime data (trend_state, vol_state, strategy_cell all NULL) while ID 6 had correct data (Cell 3, Sideways, Low).
+
+**Root Cause** (Evidence-Based):
+1. `data_refresh.py` line 589: `trend_state = indicators.get('trend') if indicators else None`
+2. When `indicators` wasn't passed to `save_performance_snapshot()`, trend_state was always None
+3. Vol_state was already fixed to read from state.json, but trend_state wasn't
+
+**Fix**:
+1. Added state.json fallback for trend_state in `data_refresh.py`:
+```python
+# Read trend_state from state.json if not from indicators
+if trend_state is None:
+    trend_state_raw = state.get('trend_state')
+    if trend_state_raw:
+        trend_state = trend_state_raw
+    else:
+        trend_state = 'Sideways'  # Default fallback
+```
+2. Added `trend_state: "Sideways"` to state/state.json
+3. Deleted bad snapshots (IDs 9, 10) from database
+
+**Files Modified**:
+- `jutsu_engine/live/data_refresh.py`: Lines 593-604
+- `state/state.json`: Added trend_state field
+- PostgreSQL: Deleted snapshots IDs 9, 10
+
+**Prevention**:
+Future snapshots will always have regime data because:
+1. trend_state reads from state.json as primary source
+2. Falls back to 'Sideways' if not specified
+3. vol_state already reads from state.json (previous fix)
+
+---
+
 #### **Docker: Fix schwab-py Interactive OAuth Blocking** (2025-12-09)
 
 **Fixed Docker container hanging due to schwab-py waiting for interactive browser OAuth when no token exists**

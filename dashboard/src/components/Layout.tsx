@@ -15,6 +15,37 @@ import { useStatus } from '../hooks/useStatus'
 import { useLiveUpdates } from '../hooks/useWebSocket'
 import { useAuth } from '../contexts/AuthContext'
 
+/**
+ * Safely format a date string for display.
+ * Handles ISO 8601 formats including microseconds and timezone offsets.
+ */
+function formatDateTime(isoString: string | null | undefined): string {
+  if (!isoString) return 'N/A'
+  try {
+    // Handle timestamps with microseconds by truncating to milliseconds
+    // e.g., "2025-12-09T18:41:24.610234+00:00" -> "2025-12-09T18:41:24.610+00:00"
+    let normalized = isoString
+    const microMatch = isoString.match(/(\.\d{3})\d+/)
+    if (microMatch) {
+      normalized = isoString.replace(/(\.\d{3})\d+/, '$1')
+    }
+
+    const date = new Date(normalized)
+    if (isNaN(date.getTime())) {
+      return 'N/A'
+    }
+    return date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    })
+  } catch {
+    return 'N/A'
+  }
+}
+
 function Layout() {
   const { data: status, isLoading } = useStatus()
   const { isConnected: wsConnected } = useLiveUpdates()
@@ -46,18 +77,7 @@ function Layout() {
               {/* Data Updated timestamp */}
               {status?.last_execution && (
                 <div className="text-xs text-gray-500">
-                  Last Updated: {new Date(
-                    // Append 'Z' if missing to ensure UTC interpretation
-                    status.last_execution.endsWith('Z') || status.last_execution.includes('+')
-                      ? status.last_execution
-                      : status.last_execution + 'Z'
-                  ).toLocaleString('en-US', {
-                    month: 'short',
-                    day: 'numeric',
-                    hour: 'numeric',
-                    minute: '2-digit',
-                    hour12: true,
-                  })}
+                  Last Updated: {formatDateTime(status.last_execution)}
                 </div>
               )}
 

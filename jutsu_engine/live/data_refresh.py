@@ -585,10 +585,13 @@ class DashboardDataRefresher:
             else:
                 drawdown = 0.0
             
-            # Extract strategy context from indicators
+            # Extract strategy context from indicators or state.json
+            # Prefer indicators if available, fall back to state.json
             trend_state = indicators.get('trend') if indicators else None
-            # Vol state will be read from state.json below
             vol_state = None
+            
+            # If trend_state not from indicators, try to get from state.json
+            # This ensures regime data is always available for dashboard display
 
             # Build positions JSON
             positions_json = json.dumps(positions) if positions else None
@@ -610,6 +613,18 @@ class DashboardDataRefresher:
                         vol_state_map = {0: 'Low', 1: 'High'}
                         vol_state = vol_state_map.get(vol_state_num, 'Low')
                         logger.debug(f"Vol state from state.json: {vol_state_num} -> {vol_state}")
+                    
+                    # Read trend_state from state.json if not from indicators
+                    # This ensures regime is always available for dashboard display
+                    if trend_state is None:
+                        trend_state_raw = state.get('trend_state')
+                        if trend_state_raw:
+                            trend_state = trend_state_raw
+                            logger.debug(f"Trend state from state.json: {trend_state}")
+                        else:
+                            # Default to Sideways if not specified (most common/neutral state)
+                            trend_state = 'Sideways'
+                            logger.debug(f"Trend state defaulted to: {trend_state}")
 
                     initial_qqq_price = state.get('initial_qqq_price')
 
