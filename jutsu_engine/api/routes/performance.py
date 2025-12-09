@@ -235,17 +235,23 @@ async def get_equity_curve(
             )
         ).order_by(PerformanceSnapshot.timestamp).all()
 
-        # Format for charting
-        data = []
+        # Format for charting - deduplicate by date (keep latest per day)
+        # lightweight-charts requires unique ascending timestamps
+        data_by_date = {}
         for snapshot in snapshots:
-            data.append({
-                "time": snapshot.timestamp.strftime('%Y-%m-%d'),
+            date_key = snapshot.timestamp.strftime('%Y-%m-%d')
+            # Later entries overwrite earlier ones (keeping latest per day)
+            data_by_date[date_key] = {
+                "time": date_key,
                 "value": float(snapshot.total_equity),
                 "return": float(snapshot.cumulative_return) if snapshot.cumulative_return else 0.0,
                 "regime": snapshot.strategy_cell,
                 "baseline_value": float(snapshot.baseline_value) if snapshot.baseline_value is not None else None,
                 "baseline_return": float(snapshot.baseline_return) if snapshot.baseline_return is not None else None,
-            })
+            }
+
+        # Convert to sorted list (ascending by date)
+        data = [data_by_date[k] for k in sorted(data_by_date.keys())]
 
         return {
             "mode": effective_mode,

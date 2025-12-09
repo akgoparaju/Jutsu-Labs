@@ -213,11 +213,25 @@ class SchwabDataFetcher(DataFetcher):
             token_exists = os.path.exists(self.token_path)
 
             if not token_exists:
-                logger.info(
-                    f"No token file found at {self.token_path}. "
-                    "Browser will open for first-time authentication."
-                )
-                logger.info("Please log in to Schwab in the browser window that opens.")
+                # CRITICAL: In Docker/headless environments, easy_client blocks forever
+                # waiting for interactive OAuth flow if no token exists
+                # See: https://schwab-py.readthedocs.io/en/latest/auth.html
+                if Path('/app').exists():
+                    logger.error(
+                        f"No Schwab token found at {self.token_path}. "
+                        "In Docker, authenticate via dashboard /config page first. "
+                        "Cannot proceed without valid token."
+                    )
+                    raise FileNotFoundError(
+                        f"Schwab token not found at {self.token_path}. "
+                        "Please authenticate via dashboard /config page."
+                    )
+                else:
+                    logger.info(
+                        f"No token file found at {self.token_path}. "
+                        "Browser will open for first-time authentication."
+                    )
+                    logger.info("Please log in to Schwab in the browser window that opens.")
             else:
                 logger.info(f"Using existing token from {self.token_path}")
 

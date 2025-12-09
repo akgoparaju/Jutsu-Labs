@@ -65,7 +65,7 @@ def main() -> None:
         client = schwab.auth.easy_client(
             api_key=api_key,
             app_secret=api_secret,
-            callback_url='https://localhost:8182',
+            callback_url='https://127.0.0.1:8182',
             token_path=token_path
         )
 

@@ -1,3 +1,170 @@
+#### **Docker: Fix schwab-py Interactive OAuth Blocking** (2025-12-09)
+
+**Fixed Docker container hanging due to schwab-py waiting for interactive browser OAuth when no token exists**
+
+**Problem**:
+Docker dashboard showed 502 Bad Gateway errors. Container logs revealed uvicorn process was blocked:
+```
+Press ENTER to open the browser. Note you can call this method with interactive=False to skip this input.
+```
+
+**Root Cause** (Evidence-Based):
+1. `auth.easy_client()` was called without checking if token exists first
+2. In Docker (headless), schwab-py's `client_from_login_flow` blocks forever waiting for ENTER key
+3. This prevented uvicorn from responding to requests, causing nginx 502 errors
+
+**Fix**:
+Added token existence check before calling `easy_client()` in all affected files:
+```python
+# CRITICAL: Check if token exists BEFORE calling easy_client
+if not token_path.exists():
+    logger.error("No Schwab token found. Authenticate via dashboard first.")
+    raise FileNotFoundError(...)
+```
+
+**Files Modified**:
+- `jutsu_engine/live/data_refresh.py`: Lines 299-310
+- `jutsu_engine/data/fetchers/schwab.py`: Lines 212-227
+- `scripts/daily_dry_run.py`: Lines 94-105
+
+**User Action Required**:
+Rebuild Docker image to get the fix:
+```bash
+docker build -t jutsu-trading-dashboard .
+```
+
+**Reference**: [schwab-py authentication docs](https://schwab-py.readthedocs.io/en/latest/auth.html)
+
+---
+
+#### **Performance Page: Fix Missing Dec 8 Data and Incorrect Regime** (2025-12-09)
+
+**Fixed missing Dec 8 snapshot and incorrect regime display ("-") for Dec 9**
+
+**Problem**:
+1. Dec 8 snapshot was missing from Performance page
+2. Dec 9 showed "-" for regime instead of actual values (Cell 3, Sideways, Low)
+
+**Root Cause** (Evidence-Based):
+1. Dec 8: No performance snapshot was created due to data sync timing
+2. Dec 9: `data_refresh.py` had `vol_state = None` hardcoded instead of reading from state.json
+
+**Fix**:
+1. Created Dec 8 snapshot with actual market data (TQQQ $85.85, QQQ $518.60)
+2. Fixed `data_refresh.py` to read vol_state from state.json:
+```python
+vol_state_num = state.get('vol_state')
+if vol_state_num is not None:
+    vol_state_map = {0: 'Low', 1: 'High'}
+    vol_state = vol_state_map.get(vol_state_num, 'Low')
+```
+
+**Files Modified**:
+- `jutsu_engine/live/data_refresh.py`: Lines 153-160
+- PostgreSQL database: Added snapshot ID 8 (Dec 8), updated ID 6 (Dec 9)
+
+**Verification**:
+Performance page now shows correct data:
+- Dec 4: $10,000.00 (+0.00%)
+- Dec 5: $10,081.58 (+0.82%)
+- Dec 8: $10,052.42 (+0.52%)
+- Dec 9: $10,077.27 (+0.77%) - Cell 3, Sideways, Low
+
+---
+
+#### **Scripts: Fix localhost→127.0.0.1 for Remaining Schwab Scripts** (2025-12-09)
+
+**Fixed two scripts still using `localhost` instead of `127.0.0.1` for Schwab OAuth callback**
+
+**Problem**:
+Consistency review found two scripts with hardcoded `localhost`:
+- `scripts/hello_schwab.py`: Line 68
+- `scripts/post_market_validation.py`: Line 69
+
+**Fix**:
+Changed callback URL from `https://localhost:8182` to `https://127.0.0.1:8182` in both scripts.
+
+**Files Modified**:
+- `scripts/hello_schwab.py`: Line 68
+- `scripts/post_market_validation.py`: Line 69
+
+**Reference**: [schwab-py callback URL advisory](https://schwab-py.readthedocs.io/en/latest/auth.html#callback-url-advisory)
+
+---
+
+#### **Performance Page: Fix Duplicate Timestamp Crash** (2025-12-09)
+
+**Fixed Performance page crash with "data must be asc ordered by time" error when multiple snapshots exist on the same day**
+
+**Problem**:
+Performance page showed infinite loading spinner and crashed with console error:
+```
+Assertion failed: data must be asc ordered by time, index=2, time=1764892800, prev time=1764892800
+```
+
+**Root Cause** (Evidence-Based):
+1. PostgreSQL `performance_snapshots` table had multiple snapshots per day (e.g., ID 2 at 19:39:17 and ID 3 at 21:00:06, both on Dec 5th)
+2. API endpoint `/api/performance/equity-curve` formatted timestamps as `%Y-%m-%d` (day-level granularity)
+3. This caused duplicate `time` values (both became '2025-12-05')
+4. lightweight-charts library requires unique ascending timestamps and crashed on duplicates
+
+**Fix**:
+Modified `get_equity_curve()` in `performance.py` to deduplicate by date:
+```python
+# Keep only latest snapshot per day
+data_by_date = {}
+for snapshot in snapshots:
+    date_key = snapshot.timestamp.strftime('%Y-%m-%d')
+    data_by_date[date_key] = {...}  # Later entries overwrite earlier ones
+
+# Convert to sorted list (ascending by date)
+data = [data_by_date[k] for k in sorted(data_by_date.keys())]
+```
+
+**Files Modified**:
+- `jutsu_engine/api/routes/performance.py`: Lines 238-254
+
+**Verification**:
+Performance page now loads correctly with equity curve chart displaying Portfolio and QQQ Baseline.
+
+---
+
+#### **Database: Cleanup Off-Market Trades and Corrupted Snapshots** (2025-12-09)
+
+**Cleaned up invalid trades executed after market hours and corrupted performance snapshots**
+
+**Problem**:
+1. Dashboard showing incorrect P/L (-0.05%) and positions (TQQQ=46, QQQ=2 instead of TQQQ=36, QQQ=12)
+2. Performance page crash due to corrupted snapshot data
+3. Trades executed at 1:22 AM (after market hours) on Dec 9th
+
+**Root Cause** (Evidence-Based):
+PostgreSQL database (`tower.local:5423/jutsu_labs`) contained:
+1. Trades ID 3 and 4: Executed at 2025-12-09 01:22:00 (after market hours)
+   - Trade 3: BUY 10 TQQQ at $0.00 (invalid price)
+   - Trade 4: SELL 10 QQQ at $0.00 (invalid price)
+2. Snapshots ID 4 and 5: Created at same timestamp with corrupted data
+
+**Fix**:
+SQL cleanup executed on PostgreSQL:
+```sql
+DELETE FROM live_trades WHERE id IN (3, 4);
+DELETE FROM performance_snapshots WHERE id IN (4, 5);
+UPDATE positions SET quantity = 36 WHERE symbol = 'TQQQ' AND mode = 'paper';
+UPDATE positions SET quantity = 12 WHERE symbol = 'QQQ' AND mode = 'paper';
+```
+
+**Files Modified**:
+- PostgreSQL database `jutsu_labs` (remote: tower.local:5423)
+
+**Verification**:
+- Dashboard now shows correct P/L: +0.77%
+- Alpha: +0.12%
+- QQQ Baseline: $10,065.51 (+0.66%)
+- Positions: TQQQ=36, QQQ=12 (matches state.json)
+
+---
+
 #### **Scheduler: Fix localhost Callback URL in daily_dry_run.py** (2025-12-08)
 
 **Fixed scheduler failing on Docker with "Disallowed hostname localhost" error**

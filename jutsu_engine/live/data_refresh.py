@@ -287,7 +287,26 @@ class DashboardDataRefresher:
                 load_dotenv()
                 
                 project_root = Path(__file__).parent.parent.parent
-                token_path = project_root / 'token.json'
+                token_path_raw = 'token.json'
+                
+                # Handle Docker paths - match logic in schwab_auth.py and schwab.py
+                # In Docker, /app exists and token files are stored in /app/data/
+                if Path('/app').exists():
+                    token_path = Path('/app/data') / token_path_raw
+                else:
+                    token_path = project_root / token_path_raw
+                
+                # CRITICAL: Check if token exists BEFORE calling easy_client
+                # In Docker/headless environments, easy_client blocks forever waiting for
+                # interactive OAuth flow if no token exists
+                # See: https://schwab-py.readthedocs.io/en/latest/auth.html
+                if not token_path.exists():
+                    logger.warning(
+                        f"No Schwab token found at {token_path}. "
+                        "Please authenticate via dashboard /config page first. "
+                        "Falling back to database prices."
+                    )
+                    raise FileNotFoundError(f"Token not found: {token_path}")
                 
                 # IMPORTANT: schwab-py only allows 127.0.0.1, NOT localhost
                 # See: https://schwab-py.readthedocs.io/en/latest/auth.html#callback-url-advisory
@@ -568,7 +587,7 @@ class DashboardDataRefresher:
             
             # Extract strategy context from indicators
             trend_state = indicators.get('trend') if indicators else None
-            # Vol state would need VIX data - simplified here
+            # Vol state will be read from state.json below
             vol_state = None
 
             # Build positions JSON
@@ -579,11 +598,18 @@ class DashboardDataRefresher:
             baseline_return = None
 
             try:
-                # Load state for initial_qqq_price
+                # Load state for initial_qqq_price and vol_state
                 state_path = Path(__file__).parent.parent.parent / 'state' / 'state.json'
                 if state_path.exists():
                     with open(state_path, 'r') as f:
                         state = json.load(f)
+
+                    # Read vol_state from state.json (0 = "Low", 1 = "High")
+                    vol_state_num = state.get('vol_state')
+                    if vol_state_num is not None:
+                        vol_state_map = {0: 'Low', 1: 'High'}
+                        vol_state = vol_state_map.get(vol_state_num, 'Low')
+                        logger.debug(f"Vol state from state.json: {vol_state_num} -> {vol_state}")
 
                     initial_qqq_price = state.get('initial_qqq_price')
 

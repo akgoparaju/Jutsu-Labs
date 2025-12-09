@@ -91,6 +91,20 @@ def initialize_schwab_client():
     else:
         token_path = project_root / token_path_raw
 
+    # CRITICAL: Check if token exists BEFORE calling easy_client
+    # In Docker/headless environments, easy_client blocks forever waiting for
+    # interactive OAuth flow if no token exists
+    # See: https://schwab-py.readthedocs.io/en/latest/auth.html
+    if not token_path.exists():
+        logger.error(
+            f"No Schwab token found at {token_path}. "
+            "Please authenticate via dashboard /config page first."
+        )
+        raise FileNotFoundError(
+            f"Schwab token not found at {token_path}. "
+            "Authenticate via dashboard before running dry-run."
+        )
+
     try:
         # IMPORTANT: schwab-py only allows 127.0.0.1, NOT localhost
         # See: https://schwab-py.readthedocs.io/en/latest/auth.html#callback-url-advisory
