@@ -1,3 +1,29 @@
+#### **Security: Bandit SAST Scan Fixes (B104, B108)** (2025-12-09)
+
+**Fixed Bandit security scan failures with documented nosec annotations**
+
+**Issues Addressed**:
+1. **B104:hardcoded_bind_all_interfaces** (`jutsu_engine/api/main.py:424`)
+   - Server binds to `0.0.0.0` by default
+   - **Justification**: Required for Docker/container deployments. Server runs behind Cloudflare tunnel with rate limiting and authentication enabled.
+
+2. **B108:hardcoded_tmp_directory** (`jutsu_engine/live/mock_order_executor.py:594`)
+   - Uses `/tmp/test_mock_trades.csv` in `if __name__ == "__main__"` block
+   - **Justification**: This is test/example code for development purposes only. Not used in production paths.
+
+**Solution**:
+Added `# nosec` annotations with inline justification comments:
+- `# nosec B104` for intentional 0.0.0.0 binding in containerized deployments
+- `# nosec B108` for ephemeral test data in development scripts
+
+**Files Modified**:
+- `jutsu_engine/api/main.py`: Added nosec B104 annotation with justification
+- `jutsu_engine/live/mock_order_executor.py`: Added nosec B108 annotation with justification
+
+**Risk Assessment**: Low risk - both are intentional design decisions with documented security mitigations
+
+---
+
 #### **Security: CVE-2024-23342 (ecdsa) Exception Documented** (2025-12-09)
 
 **Added documented exception for CVE-2024-23342 in pip-audit security scan**
