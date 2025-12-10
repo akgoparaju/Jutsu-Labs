@@ -630,16 +630,41 @@ class DashboardDataRefresher:
                         trend_state = 'Sideways'
                         logger.debug(f"Trend state defaulted to: {trend_state}")
 
-                    # Calculate QQQ baseline
+                    # Calculate QQQ baseline (with initialization if needed)
                     initial_qqq_price = state.get('initial_qqq_price')
-                    if initial_qqq_price and 'QQQ' in prices:
+                    logger.info(
+                        f"Baseline check: initial_qqq_price={initial_qqq_price}, "
+                        f"'QQQ' in prices={('QQQ' in prices)}, prices_keys={list(prices.keys())}"
+                    )
+                    
+                    if 'QQQ' in prices:
                         current_qqq_price = float(prices['QQQ'])
-                        qqq_return = (current_qqq_price / initial_qqq_price) - 1
-                        baseline_value = float(initial_capital) * (1 + qqq_return)
-                        baseline_return = qqq_return * 100
-                        logger.debug(
-                            f"Baseline calculated: QQQ ${initial_qqq_price:.2f} -> ${current_qqq_price:.2f}, "
-                            f"baseline=${baseline_value:.2f} ({baseline_return:+.2f}%)"
+                        
+                        if initial_qqq_price is None:
+                            # First run - initialize with current QQQ price
+                            initial_qqq_price = current_qqq_price
+                            state['initial_qqq_price'] = initial_qqq_price
+                            # Save updated state back to file
+                            with open(state_path, 'w') as f:
+                                json.dump(state, f, indent=2, default=str)
+                            baseline_value = float(initial_capital)
+                            baseline_return = 0.0
+                            logger.info(
+                                f"QQQ baseline INITIALIZED: ${initial_qqq_price:.2f}, "
+                                f"baseline=${baseline_value:.2f} (0.00%)"
+                            )
+                        else:
+                            # Calculate baseline based on QQQ price change since inception
+                            qqq_return = (current_qqq_price / initial_qqq_price) - 1
+                            baseline_value = float(initial_capital) * (1 + qqq_return)
+                            baseline_return = qqq_return * 100
+                            logger.info(
+                                f"Baseline calculated: QQQ ${initial_qqq_price:.2f} -> ${current_qqq_price:.2f}, "
+                                f"baseline=${baseline_value:.2f} ({baseline_return:+.2f}%)"
+                            )
+                    else:
+                        logger.warning(
+                            f"Baseline NOT calculated: 'QQQ' not in prices (keys={list(prices.keys())})"
                         )
                 else:
                     logger.warning(f"state.json not found at {state_path}")

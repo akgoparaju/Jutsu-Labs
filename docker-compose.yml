@@ -95,6 +95,71 @@ services:
     networks:
       - jutsu-network
 
+# ==============================================================================
+  # PostgreSQL Backup Service (Automated Daily Backups)
+  # ==============================================================================
+  # This service creates version-independent SQL dumps that can be restored
+  # to ANY PostgreSQL version - solving upgrade data loss issues.
+  #
+  # NOTE: For Unraid, if your PostgreSQL container is separate (not in this compose),
+  # you may need to configure network_mode or use your Unraid server IP as POSTGRES_HOST.
+  # ==============================================================================
+  postgres-backup:
+    image: prodrigestivill/postgres-backup-local
+    container_name: jutsu-postgres-backup
+    restart: unless-stopped
+
+    environment:
+      # PostgreSQL connection (adjust for your Unraid setup)
+      - POSTGRES_HOST=${POSTGRES_HOST:-jutsu-postgres}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DATABASE:-jutsu_labs}
+      - POSTGRES_USER=${POSTGRES_USER:-jutsudB}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+
+      # Backup schedule (cron format)
+      # Default: Daily at 2:00 AM
+      - SCHEDULE=${BACKUP_SCHEDULE:-0 2 * * *}
+
+      # Retention policy (grandfather-father-son)
+      - BACKUP_KEEP_DAYS=7        # Keep 7 daily backups
+      - BACKUP_KEEP_WEEKS=4       # Keep 4 weekly backups
+      - BACKUP_KEEP_MONTHS=6      # Keep 6 monthly backups
+
+      # Health check port
+      - HEALTHCHECK_PORT=8788
+
+      # Timezone (same as dashboard)
+      - TZ=${TZ:-America/New_York}
+
+    volumes:
+      # Backup storage location on Unraid
+      # Adjust path for your Unraid share structure
+      - ${BACKUP_PATH:-/mnt/user/backup/jutsu-postgres}:/backups
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8788/"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+    # Network - same as dashboard to reach PostgreSQL
+    # If your PostgreSQL is on a different network, you may need:
+    # network_mode: "host"  # OR
+    # external_links:
+    #   - jutsu-postgres:postgres
+    networks:
+      - jutsu-network
+
 networks:
   jutsu-network:
     driver: bridge

@@ -28,7 +28,7 @@ from jutsu_engine.api.dependencies import (
 
 logger = logging.getLogger('API.AUTH')
 
-router = APIRouter(prefix="/auth", tags=["authentication"])
+router = APIRouter(prefix="/api/auth", tags=["authentication"])
 
 
 # ==============================================================================

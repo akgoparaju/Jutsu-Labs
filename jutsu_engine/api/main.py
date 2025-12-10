@@ -180,7 +180,7 @@ def create_app(
 
         **JWT Authentication (Recommended)**:
         Set `AUTH_REQUIRED=true` to enable JWT authentication.
-        - Login: POST /auth/login with username/password
+        - Login: POST /api/auth/login with username/password
         - Use returned token in Authorization header: `Bearer <token>`
         - Tokens expire after 7 days
 

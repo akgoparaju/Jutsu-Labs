@@ -570,6 +570,9 @@ def load_config(force_reload: bool = False) -> dict:
     # The Dockerfile copies default config to /app/config.default/
     default_config_path = Path('/app/config.default/live_trading_config.yaml')
 
+    logger.info(f"Loading config - primary path: {config_path}, exists: {config_path.exists()}")
+    logger.info(f"Fallback path: {default_config_path}, exists: {default_config_path.exists()}")
+
     if not config_path.exists():
         # Check fallback path (Docker default config)
         if default_config_path.exists():
@@ -579,11 +582,19 @@ def load_config(force_reload: bool = False) -> dict:
             logger.warning(f"Config file not found: {config_path} (no fallback available)")
             return {}
 
-    with open(config_path, 'r') as f:
-        _config_cache = yaml.safe_load(f)
+    try:
+        with open(config_path, 'r') as f:
+            _config_cache = yaml.safe_load(f)
 
-    logger.info(f"Config loaded from {config_path}")
-    return _config_cache
+        # Log strategy name for diagnostic purposes
+        strategy_config = _config_cache.get('strategy', {}) if _config_cache else {}
+        strategy_name = strategy_config.get('name', 'NOT_FOUND')
+        logger.info(f"Config loaded from {config_path}, strategy.name: {strategy_name}")
+
+        return _config_cache
+    except Exception as e:
+        logger.error(f"Failed to load config from {config_path}: {e}")
+        return {}
 
 
 def get_config() -> dict:

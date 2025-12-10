@@ -1,3 +1,194 @@
+#### **Docker: Fix strategy:unknown in Decision Tree Tab** (2025-12-09)
+
+**Fixed Decision Tree tab showing "Strategy: Unknown" in Docker deployment**
+
+**Problem**:
+Decision Tree tab displayed "Strategy: Unknown" in Docker deployment while other tabs worked correctly.
+
+**Root Cause** (Evidence-Based):
+1. `DecisionTree.tsx:33` used hardcoded `fetch('http://localhost:8000/api/config')`
+2. Other components used `configApi.getConfig()` from `client.ts` which uses relative path `/api`
+3. In Docker, nginx proxies `/api` to backend container, but `localhost:8000` doesn't resolve
+4. Browser's localhost != container's localhost → API call failed silently
+5. `config?.strategy_name` was undefined → fallback to "Unknown"
+
+**Fix**:
+Changed `DecisionTree.tsx` to use shared `configApi` instead of hardcoded URL:
+```typescript
+// Before:
+const response = await fetch('http://localhost:8000/api/config')
+return response.json()
+
+// After:
+const response = await configApi.getConfig()
+return response.data
+```
+
+**Files Modified**:
+- `dashboard/src/pages/DecisionTree.tsx`: Lines 1-25 (import configApi, use instead of fetch)
+
+**User Action Required**:
+Rebuild Docker image: `docker-compose build --no-cache && docker-compose up -d`
+
+---
+
+#### **Dashboard: Fix Baseline Missing on App Restart** (2025-12-09)
+
+**Fixed app restart snapshots having baseline_value=None instead of calculated baseline**
+
+**Problem**:
+Performance snapshots created on app restart had `baseline_value=None`, causing N/A display in Performance chart for that day.
+
+**Root Cause** (Evidence-Based):
+1. Three snapshot triggers per day: trigger time (15 min after market open), end of market (1 PM Pacific), app restart
+2. App restart calls `save_performance_snapshot()` in `data_refresh.py`
+3. Docker `state.json` had `"initial_qqq_price": null` (never initialized)
+4. `data_refresh.py:638` checked `if initial_qqq_price and 'QQQ' in prices:` - failed because `initial_qqq_price` was None
+5. Unlike `daily_dry_run.py` which initializes `initial_qqq_price` when None, `data_refresh.py` just logged warning and left baseline as None
+
+**Evidence**:
+```bash
+# Local state.json (initialized by daily_dry_run.py):
+"initial_qqq_price": 621.29  ✅
+
+# Docker state.json (never initialized):
+"initial_qqq_price": null    ❌
+```
+
+**Fix**:
+Added initialization logic to `data_refresh.py:632-666` matching `daily_dry_run.py` pattern:
+```python
+if 'QQQ' in prices:
+    current_qqq_price = float(prices['QQQ'])
+
+    if initial_qqq_price is None:
+        # First run - initialize with current QQQ price
+        initial_qqq_price = current_qqq_price
+        state['initial_qqq_price'] = initial_qqq_price
+        # Save updated state back to file
+        with open(state_path, 'w') as f:
+            json.dump(state, f, indent=2, default=str)
+        baseline_value = float(initial_capital)
+        baseline_return = 0.0
+        logger.info(f"QQQ baseline INITIALIZED: ${initial_qqq_price:.2f}")
+    else:
+        # Calculate baseline based on QQQ price change since inception
+        qqq_return = (current_qqq_price / initial_qqq_price) - 1
+        baseline_value = float(initial_capital) * (1 + qqq_return)
+        baseline_return = qqq_return * 100
+```
+
+**Files Modified**:
+- `jutsu_engine/live/data_refresh.py`: Lines 632-666 (baseline initialization logic)
+
+**User Action Required**:
+For Docker: Rebuild image with `docker-compose build --no-cache && docker-compose up -d`
+First restart after deploy will initialize baseline, subsequent restarts will calculate normally.
+
+---
+
+#### **Docker: Fix AUTH_REQUIRED Not Working** (2025-12-09)
+
+**Fixed AUTH_REQUIRED=true not displaying login/logout UI in Docker deployment**
+
+**Problem**:
+Setting `AUTH_REQUIRED=true` in docker-compose.yml did not show login/logout UI. Dashboard allowed anonymous access regardless of environment setting.
+
+**Root Cause** (Evidence-Based):
+1. Frontend `AuthContext.tsx` calls `${API_BASE}/auth/status` where `API_BASE='/api'`
+2. Expected endpoint: `/api/auth/status`
+3. Backend `routes/auth.py` had prefix `/auth` → actual endpoint was `/auth/status`
+4. Frontend received 404 → catch block set `isAuthRequired=false`, `isAuthenticated=true`
+5. Result: Auth bypassed silently due to router prefix mismatch
+
+**Fix**:
+Changed auth router prefix from `/auth` to `/api/auth` in `routes/auth.py`:
+```python
+# Before:
+router = APIRouter(prefix="/auth", tags=["authentication"])
+
+# After:
+router = APIRouter(prefix="/api/auth", tags=["authentication"])
+```
+
+**Files Modified**:
+- `jutsu_engine/api/routes/auth.py`: Line 31 (router prefix)
+- `jutsu_engine/api/main.py`: API documentation updated
+
+**User Action Required**:
+Rebuild Docker image: `docker-compose build --no-cache && docker-compose up -d`
+
+---
+
+#### **Docker: Add PostgreSQL Backup Service** (2025-12-09)
+
+**Added automated PostgreSQL backup service with grandfather-father-son retention**
+
+**Implementation**:
+Added `postgres-backup` service to docker-compose.yml using `prodrigestivill/postgres-backup-local` image.
+
+**Configuration**:
+- POSTGRES_HOST: jutsu-postgres (via `POSTGRES_HOST` env var)
+- POSTGRES_DB: jutsu_labs
+- POSTGRES_USER: jutsudB
+- HEALTHCHECK_PORT: 8788
+- Schedule: Daily at 2:00 AM (`0 2 * * *`)
+- Retention: 7 daily, 4 weekly, 6 monthly backups
+- Volume: `${BACKUP_PATH:-/mnt/user/backup/jutsu-postgres}:/backups`
+
+**Files Modified**:
+- `docker-compose.yml`: Lines 98-161 (postgres-backup service)
+
+**User Action Required**:
+1. Set `POSTGRES_PASSWORD` environment variable
+2. Create backup directory: `mkdir -p /mnt/user/backup/jutsu-postgres`
+3. Start backup service: `docker-compose up -d postgres-backup`
+
+---
+
+#### **Docker: Add Config Loading Diagnostics** (2025-12-09)
+
+**Added diagnostic logging to config loading for troubleshooting "Unknown" strategy issues**
+
+**Enhancement**:
+Added logging to `load_config()` in `dependencies.py` to help diagnose strategy:unknown issues:
+```python
+logger.info(f"Loading config - primary path: {config_path}, exists: {config_path.exists()}")
+logger.info(f"Fallback path: {default_config_path}, exists: {default_config_path.exists()}")
+# ... after loading ...
+logger.info(f"Config loaded from {config_path}, strategy.name: {strategy_name}")
+```
+
+**Files Modified**:
+- `jutsu_engine/api/dependencies.py`: Lines 571-589 (diagnostic logging)
+
+**User Action Required**:
+After rebuilding Docker image, check logs: `docker logs jutsu-trading-dashboard | grep "config"`
+
+---
+
+#### **Dashboard: Document Baseline Data Behavior** (2025-12-09)
+
+**Documented expected behavior for missing baseline data on fresh deployments**
+
+**Behavior**:
+Performance tab baseline (QQQ comparison) shows "N/A" on fresh Docker deployments.
+
+**Root Cause** (Expected Behavior):
+1. `state.json.template` has `"initial_qqq_price": null`
+2. Baseline calculation in `data_refresh.py:633` requires `initial_qqq_price`
+3. `initial_qqq_price` is set by first strategy execution run
+4. Fresh deployments have no strategy history → no initial price → no baseline
+
+**Resolution**:
+This is expected behavior, not a bug. Baseline will populate automatically after:
+1. First strategy execution sets `initial_qqq_price` in state.json
+2. Next performance snapshot captures the baseline value
+
+**No Code Changes Required** - This is by design for fresh deployments.
+
+---
+
 #### **Docker: Fix "Unknown" Strategy in Decision Tree Tab** (2025-12-09)
 
 **Fixed Docker deployment showing "Unknown" strategy instead of "Hierarchical_Adaptive_v3_5b"**

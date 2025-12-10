@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { indicatorsApi, IndicatorsResponse } from '../api/client'
+import { indicatorsApi, configApi, IndicatorsResponse, ConfigResponse } from '../api/client'
 import {
   GitBranch,
   TrendingUp,
@@ -12,26 +12,14 @@ import {
   Circle,
 } from 'lucide-react'
 
-interface ConfigParameter {
-  name: string
-  value: number | string | boolean
-  original_value?: number | string | boolean
-  is_overridden: boolean
-}
-
-interface LocalConfigResponse {
-  strategy_name: string
-  parameters: ConfigParameter[]
-  active_overrides: number
-}
-
 function DecisionTree() {
-  // Fetch config for thresholds
-  const { data: config, isLoading: configLoading } = useQuery<LocalConfigResponse>({
+  // Fetch config for thresholds using the shared API client
+  // This uses relative paths that work through nginx in Docker
+  const { data: config, isLoading: configLoading } = useQuery<ConfigResponse>({
     queryKey: ['config'],
     queryFn: async () => {
-      const response = await fetch('http://localhost:8000/api/config')
-      return response.json()
+      const response = await configApi.getConfig()
+      return response.data
     },
     refetchInterval: 30000,
   })
