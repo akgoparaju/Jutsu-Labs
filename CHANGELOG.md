@@ -1,3 +1,46 @@
+#### **Fix: Scheduler Using SQLite Instead of PostgreSQL in Docker** (2025-12-10)
+
+**Fixed scheduler database connection error in Docker deployments**
+
+**Problem**:
+Scheduler failing with error: `sqlite3.OperationalError: no such table: live_trades`
+The scheduler was connecting to SQLite instead of PostgreSQL in Docker deployments.
+
+**Root Cause** (Evidence-Based):
+1. When PostgreSQL support was added in commit `f97fe3d` (Dec 6), the centralized `get_database_url()` was created in `config.py`
+2. However, two files were NOT updated to use the centralized config:
+   - `jutsu_engine/live/mock_order_executor.py:30` - hardcoded `os.getenv('DATABASE_URL', 'sqlite:///...')`
+   - `scripts/daily_dry_run.py:297` - hardcoded `os.getenv('DATABASE_URL', 'sqlite:///...')`
+3. These files defaulted to SQLite when `DATABASE_URL` env var was not set
+4. The `live_trades` table exists in PostgreSQL but not in the SQLite fallback database
+5. The scheduler's `_execute_trading_job()` calls `daily_dry_run_main()` which uses `MockOrderExecutor`
+
+**Fix**:
+Updated both files to use the centralized database configuration:
+
+1. **`jutsu_engine/live/mock_order_executor.py`**:
+   - Added import: `from jutsu_engine.utils.config import get_database_url, get_database_type, DATABASE_TYPE_SQLITE`
+   - Changed `__init__` to use `get_database_url()` and `get_database_type()` instead of hardcoded `DATABASE_URL`
+   - Added conditional `check_same_thread=False` only for SQLite
+
+2. **`scripts/daily_dry_run.py`**:
+   - Added import: `from jutsu_engine.utils.config import get_database_url, get_database_type, DATABASE_TYPE_SQLITE`
+   - Changed database connection at line 297 to use centralized config
+   - Added conditional `check_same_thread=False` only for SQLite
+
+**Files Modified**:
+- `jutsu_engine/live/mock_order_executor.py`: Use centralized database config
+- `scripts/daily_dry_run.py`: Use centralized database config
+
+**Verification**:
+- Python syntax check passed for both files
+- Docker rebuild required: `docker-compose build --no-cache`
+
+**User Action Required**:
+Rebuild Docker image to apply fix: `docker-compose build --no-cache && docker-compose up -d`
+
+---
+
 #### **Fix: Docker Login Screen Not Showing (API_BASE URL Issue)** (2025-12-09)
 
 **Fixed authentication screens not appearing in Docker deployments**

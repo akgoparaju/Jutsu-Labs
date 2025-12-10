@@ -55,6 +55,7 @@ from jutsu_engine.live.mode import TradingMode
 from jutsu_engine.live.executor_router import ExecutorRouter
 from jutsu_engine.live.data_freshness import DataFreshnessChecker, DataFreshnessError
 from jutsu_engine.data.models import Position
+from jutsu_engine.utils.config import get_database_url, get_database_type, DATABASE_TYPE_SQLITE
 
 # Setup logging
 logging.basicConfig(
@@ -294,8 +295,14 @@ def main(check_freshness: bool = False):
 
         # Load current positions from DATABASE (primary source of truth)
         # This prevents duplicate trades when scheduler "Run Now" loads stale state.json
-        db_url = os.getenv('DATABASE_URL', 'sqlite:///data/market_data.db')
-        engine = create_engine(db_url, connect_args={'check_same_thread': False})
+        # FIX: Use centralized get_database_url() instead of hardcoded SQLite default
+        # This ensures Docker deployments use PostgreSQL correctly
+        db_url = get_database_url()
+        db_type = get_database_type()
+        if db_type == DATABASE_TYPE_SQLITE:
+            engine = create_engine(db_url, connect_args={'check_same_thread': False})
+        else:
+            engine = create_engine(db_url)
         Session = sessionmaker(bind=engine)
         db_session = Session()
 

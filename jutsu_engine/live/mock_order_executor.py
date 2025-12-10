@@ -23,11 +23,9 @@ from jutsu_engine.live.executor_router import ExecutorInterface
 from jutsu_engine.live.mode import TradingMode
 from jutsu_engine.live.market_calendar import is_trading_day
 from jutsu_engine.data.models import LiveTrade, Position, PerformanceSnapshot
+from jutsu_engine.utils.config import get_database_url, get_database_type, DATABASE_TYPE_SQLITE
 
 logger = logging.getLogger('LIVE.MOCK_EXECUTOR')
-
-# Database configuration
-DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///data/market_data.db')
 
 
 class MockOrderExecutor(ExecutorInterface):
@@ -81,17 +79,23 @@ class MockOrderExecutor(ExecutorInterface):
             self._session = db_session
             self._owns_session = False
         else:
-            # Create database engine and session
-            if DATABASE_URL.startswith('sqlite'):
+            # Create database engine and session using centralized config
+            # FIX: Use get_database_url() instead of hardcoded SQLite default
+            # This ensures Docker deployments use PostgreSQL correctly
+            database_url = get_database_url()
+            db_type = get_database_type()
+
+            if db_type == DATABASE_TYPE_SQLITE:
                 engine = create_engine(
-                    DATABASE_URL,
+                    database_url,
                     connect_args={'check_same_thread': False}
                 )
             else:
-                engine = create_engine(DATABASE_URL)
+                engine = create_engine(database_url)
             SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
             self._session = SessionLocal()
             self._owns_session = True
+            self._database_url = database_url  # Store for logging
 
         # Create logs directory if needed (for CSV backup)
         self.trade_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,8 +104,9 @@ class MockOrderExecutor(ExecutorInterface):
         if not self.trade_log_path.exists():
             self._initialize_csv()
 
+        db_url_for_log = getattr(self, '_database_url', 'provided session')
         logger.info(
-            f"MockOrderExecutor initialized: DB={DATABASE_URL}, CSV={self.trade_log_path}, "
+            f"MockOrderExecutor initialized: DB={db_url_for_log}, CSV={self.trade_log_path}, "
             f"threshold={self.rebalance_threshold_pct}%"
         )
 
