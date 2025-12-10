@@ -38,6 +38,10 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - TZ=${TZ:-America/New_York}
       - TRADING_MODE=${TRADING_MODE:-offline_mock}
+      
+      # Engine auto-start on container startup
+      # Set to 'offline_mock' for paper trading, 'online_live' for live trading, or empty to disable
+      - ENGINE_AUTO_START=${ENGINE_AUTO_START:-offline_mock}
 
       # JWT Authentication (recommended)
       # Set AUTH_REQUIRED=true to require login before accessing dashboard

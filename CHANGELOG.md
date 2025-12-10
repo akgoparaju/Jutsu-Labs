@@ -1,3 +1,78 @@
+#### **Fix: Engine Auto-Start Not Working in Local Development** (2025-12-10)
+
+**Fixed auto-start feature not triggering when running locally (non-Docker)**
+
+**Problem**:
+After implementing the ENGINE_AUTO_START feature, it worked in Docker but NOT in local development. The engine remained in "Stopped" state despite having `ENGINE_AUTO_START=offline_mock` in `.env`.
+
+**Root Cause** (Evidence-Based):
+1. The auto-start code in `main.py` checked `os.environ.get('ENGINE_AUTO_START')` at line 157
+2. The `load_dotenv()` call was in `config.py`, which wasn't imported until AFTER the env check
+3. The import chain was: auto-start code runs → checks env (empty) → skips import → load_dotenv never called
+4. In Docker, env vars are set by compose file before Python starts, so it worked
+5. Locally, `.env` file wasn't loaded until too late
+
+**Fix**:
+Added explicit `load_dotenv()` call at the TOP of `main.py` before any env var access:
+
+```python
+import os
+from dotenv import load_dotenv
+load_dotenv()  # Load .env BEFORE any os.environ.get() calls
+```
+
+**Also Required**:
+Added `ENGINE_AUTO_START=offline_mock` to `.env` file for local development.
+
+**Files Modified**:
+- `jutsu_engine/api/main.py`: Added early `load_dotenv()` call after imports
+- `.env`: Added `ENGINE_AUTO_START=offline_mock` setting
+
+**Verification**:
+- Logs confirm: `Trading engine auto-started in offline_mock mode`
+- Dashboard shows: Engine status "Running" with uptime counter
+
+---
+
+#### **Feature: Auto-Start Paper Trading on Container Startup** (2025-12-10)
+
+**Added automatic trading engine startup in paper trading mode when Docker container starts**
+
+**Problem**:
+When Docker container restarts, user had to manually click "Start Paper Trading" button in the Engine Control module of Dashboard. This meant no automated trading until user intervention.
+
+**Solution**:
+Added `ENGINE_AUTO_START` environment variable that automatically starts the trading engine when the application starts.
+
+**Implementation**:
+
+1. **`jutsu_engine/api/main.py`** - Added auto-start logic in lifespan():
+   - Checks `ENGINE_AUTO_START` environment variable on startup
+   - If set to `offline_mock` (paper trading) or `online_live`, starts engine automatically
+   - Logs success/failure of auto-start
+   - Safe handling of invalid values
+
+2. **`docker-compose.yml`** - Added new environment variable:
+   ```yaml
+   # Engine auto-start on container startup
+   # Set to 'offline_mock' for paper trading, 'online_live' for live, or empty to disable
+   - ENGINE_AUTO_START=${ENGINE_AUTO_START:-offline_mock}
+   ```
+
+**Configuration Options**:
+- `ENGINE_AUTO_START=offline_mock` - Auto-start in paper trading mode (default in Docker)
+- `ENGINE_AUTO_START=online_live` - Auto-start in live trading mode (use with caution)
+- `ENGINE_AUTO_START=` or `ENGINE_AUTO_START=false` - Disable auto-start (manual mode)
+
+**Files Modified**:
+- `jutsu_engine/api/main.py`: Added engine auto-start in lifespan() function
+- `docker-compose.yml`: Added ENGINE_AUTO_START environment variable
+
+**User Action Required**:
+Rebuild Docker image to enable feature: `docker-compose build --no-cache && docker-compose up -d`
+
+---
+
 #### **Fix: Scheduler Using SQLite Instead of PostgreSQL in Docker** (2025-12-10)
 
 **Fixed scheduler database connection error in Docker deployments**

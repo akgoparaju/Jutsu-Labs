@@ -15,6 +15,11 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+
+# Load environment variables from .env file EARLY
+# This ensures ENGINE_AUTO_START and other env vars are available
+from dotenv import load_dotenv
+load_dotenv()
 from typing import Optional
 
 from fastapi import FastAPI, Request, HTTPException, WebSocket
@@ -150,6 +155,24 @@ async def lifespan(app: FastAPI):
         logger.info(f"Scheduler service started (enabled: {scheduler_service.state.enabled})")
     except Exception as e:
         logger.warning(f"Failed to start scheduler service: {e}")
+
+    # Auto-start trading engine if configured
+    # Set ENGINE_AUTO_START=offline_mock for paper trading, or leave empty to disable
+    try:
+        auto_start_mode = os.environ.get('ENGINE_AUTO_START', '').lower().strip()
+        if auto_start_mode in ('offline_mock', 'online_live'):
+            from jutsu_engine.api.dependencies import get_engine_state
+            engine_state = get_engine_state()
+            if not engine_state.is_running:
+                success = engine_state.start(mode=auto_start_mode)
+                if success:
+                    logger.info(f"Trading engine auto-started in {auto_start_mode} mode")
+                else:
+                    logger.warning(f"Failed to auto-start trading engine in {auto_start_mode} mode")
+        elif auto_start_mode and auto_start_mode not in ('false', 'no', 'off', '0', ''):
+            logger.warning(f"Invalid ENGINE_AUTO_START value: '{auto_start_mode}'. Use 'offline_mock' or 'online_live'")
+    except Exception as e:
+        logger.warning(f"Failed to auto-start trading engine: {e}")
 
     # Check if dashboard data is stale and refresh if needed (>1 hour old)
     try:
