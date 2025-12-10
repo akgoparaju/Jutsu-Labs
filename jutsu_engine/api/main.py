@@ -421,7 +421,9 @@ app = create_app()
 
 
 def run_server(
-    host: str = "0.0.0.0",
+    # nosec B104 - Binding to 0.0.0.0 is required for Docker/container deployments
+    # The server runs behind Cloudflare tunnel with rate limiting and auth enabled
+    host: str = "0.0.0.0",  # nosec B104
     port: int = 8000,
     reload: bool = False,
     workers: int = 1,

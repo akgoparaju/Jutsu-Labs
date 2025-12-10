@@ -589,9 +589,11 @@ def main():
 
     config = {'execution': {'rebalance_threshold_pct': 5.0}}
 
+    # nosec B108 - /tmp/ usage is intentional for ephemeral test data in __main__ block
+    # This is test/example code, not production paths
     executor = MockOrderExecutor(
         config=config,
-        trade_log_path=Path('/tmp/test_mock_trades.csv')
+        trade_log_path=Path('/tmp/test_mock_trades.csv')  # nosec B108
     )
 
     print(f"\nMode: {executor.get_mode()}")
