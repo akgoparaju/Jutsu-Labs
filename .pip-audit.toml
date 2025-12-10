@@ -1,0 +1,41 @@
+# pip-audit configuration for Jutsu Labs
+# Documentation: https://github.com/pypa/pip-audit
+
+[tool.pip-audit]
+# Ignore specific vulnerabilities with documented justification
+
+# CVE-2024-23342: Minerva timing attack in ecdsa package (P-256 curve)
+#
+# JUSTIFICATION: This vulnerability does NOT affect Jutsu Labs because:
+#
+# 1. ALGORITHM: We use HS256 (HMAC-SHA256) for JWT tokens, NOT ECDSA
+#    - See: jutsu_engine/api/dependencies.py:186 - ALGORITHM = "HS256"
+#    - HS256 uses symmetric key hashing, not elliptic curve cryptography
+#
+# 2. DEPENDENCY CHAIN: ecdsa is a transitive dependency via python-jose
+#    - python-jose[cryptography] is our direct dependency (requirements.txt:42)
+#    - The [cryptography] extra uses the cryptography library backend
+#    - The cryptography library (v46.0.3) handles HMAC operations
+#    - ecdsa package is installed but NEVER invoked by our code
+#
+# 3. NO ECDSA USAGE: No ES256/ES384/ES512 algorithms used anywhere
+#    - Verified via: grep -r "ES256\|ES384\|ES512" jutsu_engine/
+#    - Zero matches found
+#
+# 4. CVE SCOPE: CVE-2024-23342 affects ECDSA operations only:
+#    - Signing with secp256r1/P-256 curve
+#    - Key generation
+#    - ECDH operations
+#    None of these are used in Jutsu Labs.
+#
+# RISK ASSESSMENT: Zero risk - vulnerable code path is never executed
+#
+# REVIEWED: 2025-12-09
+# REVIEWER: Claude Code (security audit)
+# NEXT REVIEW: When python-jose or ecdsa dependencies are updated
+
+[[tool.pip-audit.ignore-vulns]]
+id = "PYSEC-2024-34"  # CVE-2024-23342
+
+[[tool.pip-audit.ignore-vulns]]
+id = "GHSA-wj6h-64fc-37mp"  # Same CVE, GitHub advisory ID

@@ -1,3 +1,40 @@
+#### **Security: CVE-2024-23342 (ecdsa) Exception Documented** (2025-12-09)
+
+**Added documented exception for CVE-2024-23342 in pip-audit security scan**
+
+**Problem**:
+GitHub Actions security scan (pip-audit) was failing due to CVE-2024-23342 in the `ecdsa` package (v0.19.1). This is a Minerva timing attack vulnerability affecting ECDSA operations on P-256 curve with no planned fix from the python-ecdsa project.
+
+**Root Cause Analysis** (Evidence-Based):
+1. `ecdsa` is a transitive dependency via `python-jose`
+2. Our JWT implementation uses **HS256** (HMAC-SHA256), not ECDSA
+3. HS256 uses symmetric key hashing - completely different from elliptic curve cryptography
+4. The vulnerable ECDSA code path is **never executed** in Jutsu Labs
+
+**Evidence**:
+- `jutsu_engine/api/dependencies.py:186` - `ALGORITHM = "HS256"`
+- `requirements.txt:42` - `python-jose[cryptography]>=3.3.0` (uses cryptography backend)
+- No ES256/ES384/ES512 usage in codebase
+- cryptography library (v46.0.3) handles all JWT operations
+
+**Solution**:
+Documented exception rather than removal (pip doesn't support excluding transitive deps):
+
+1. Created `.pip-audit.toml` with comprehensive justification
+2. Updated `.github/workflows/security-scan.yml` to ignore:
+   - PYSEC-2024-34 (PyPI advisory)
+   - GHSA-wj6h-64fc-37mp (GitHub advisory)
+
+**Risk Assessment**: Zero risk - vulnerable code path never executed
+
+**Files Created/Modified**:
+- `.pip-audit.toml`: Documented CVE exception with full justification
+- `.github/workflows/security-scan.yml`: Added `--ignore-vuln` flags
+
+**Review Schedule**: Re-evaluate when python-jose or ecdsa dependencies are updated
+
+---
+
 #### **Fix: 2FA Not Prompting for Codes During Login** (2025-12-09)
 
 **Fixed login bypassing 2FA verification - users with 2FA enabled were logged in without TOTP code**
