@@ -1,7 +1,8 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
 
-// API base URL from environment or default
-const API_BASE = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8000'
+// API base URL from environment or empty for same-origin requests (required for Docker)
+// In Docker, nginx proxies /api to the backend, so relative URLs work correctly
+const API_BASE = (import.meta as any).env?.VITE_API_URL || ''
 
 interface AuthStatus {
   auth_required: boolean

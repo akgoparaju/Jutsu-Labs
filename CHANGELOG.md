@@ -1,3 +1,41 @@
+#### **Fix: Docker Login Screen Not Showing (API_BASE URL Issue)** (2025-12-09)
+
+**Fixed authentication screens not appearing in Docker deployments**
+
+**Problem**:
+Login screen and 2FA settings not showing in Docker deployment while working correctly in local development. No `/api/auth/*` requests reaching the backend in Docker logs.
+
+**Root Cause** (Evidence-Based):
+1. Docker logs showed `/api/status` requests succeeding but NO `/api/auth/*` requests
+2. `AuthContext.tsx:5` and `TwoFactorSettings.tsx:6` used hardcoded fallback:
+   ```typescript
+   const API_BASE = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8000'
+   ```
+3. When `VITE_API_URL` is not set during Docker build, frontend tries to reach `http://localhost:8000`
+4. In Docker, `localhost` refers to the USER's machine, not the container
+5. The nginx proxy correctly routes `/api` to the backend, but hardcoded URL bypasses it
+6. `client.ts` correctly uses `const API_BASE = '/api'` (relative URL) - works in Docker
+
+**Fix**:
+Changed API_BASE default from `'http://localhost:8000'` to `''` (empty string) in both files:
+- `dashboard/src/contexts/AuthContext.tsx:5`
+- `dashboard/src/components/TwoFactorSettings.tsx:6`
+
+Empty string allows relative URL paths (`${API_BASE}/api/auth/login` → `/api/auth/login`) which nginx correctly proxies to the backend container.
+
+**Files Modified**:
+- `dashboard/src/contexts/AuthContext.tsx`: Line 5 - API_BASE default to empty string
+- `dashboard/src/components/TwoFactorSettings.tsx`: Line 6 - API_BASE default to empty string
+
+**Verification**:
+- Local build: `npm run build` passes
+- Relative URLs work with nginx proxy configuration
+
+**User Action Required**:
+Rebuild Docker image: `docker-compose build --no-cache`
+
+---
+
 #### **Fix: Docker Build TS6133 Unused Variable Error** (2025-12-09)
 
 **Fixed TypeScript compilation error causing GitHub Actions Docker build to fail**
