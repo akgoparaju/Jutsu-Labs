@@ -42,6 +42,10 @@ slowapi>=0.1.9  # Rate limiting for FastAPI
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
 
+# Two-Factor Authentication (2FA/TOTP)
+pyotp>=2.9.0
+qrcode[pil]>=7.4
+
 # Form data
 python-multipart>=0.0.6
 

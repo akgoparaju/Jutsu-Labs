@@ -1,3 +1,300 @@
+#### **Fix: 2FA Not Prompting for Codes During Login** (2025-12-09)
+
+**Fixed login bypassing 2FA verification - users with 2FA enabled were logged in without TOTP code**
+
+**Problem**:
+Users with 2FA enabled could log in without being prompted for their TOTP code. The login endpoint immediately issued JWT tokens after password verification, completely skipping 2FA.
+
+**Root Cause** (Evidence-Based):
+1. Backend `/login` endpoint in `auth.py` immediately returned JWT tokens after password verification
+2. No check for `user.totp_enabled` before issuing tokens
+3. Frontend had no mechanism to detect that 2FA was required
+4. Result: 2FA setup was useless - users could bypass it entirely
+
+**Fix**:
+Implemented two-phase login flow:
+
+1. **Backend** (`jutsu_engine/api/routes/auth.py`):
+   - Added `LoginResponse` schema with `requires_2fa` field
+   - Modified `/login` endpoint to check `user.totp_enabled`
+   - When 2FA enabled: returns `requires_2fa=True` without tokens
+   - Added new `/login-2fa` endpoint for TOTP verification
+
+   ```python
+   # Login now checks for 2FA
+   if user.totp_enabled:
+       return LoginResponse(
+           requires_2fa=True,
+           username=user.username,
+           token_type="bearer"
+       )
+   ```
+
+2. **Frontend** (`dashboard/src/contexts/AuthContext.tsx`):
+   - Added 2FA state: `requires2FA`, `pendingUsername`, `pendingPassword`
+   - Updated `login()` to detect `requires_2fa` response
+   - Added `loginWith2FA()` function for second phase
+   - Added `cancel2FA()` to return to login form
+
+3. **Frontend** (`dashboard/src/pages/Login.tsx`):
+   - Added TOTP input form when `requires2FA` is true
+   - 6-digit code input with numeric keyboard
+   - Back button to cancel 2FA and retry login
+
+**Files Modified**:
+- `jutsu_engine/api/routes/auth.py`: Added `LoginResponse`, `Login2FARequest` schemas; modified `/login`; added `/login-2fa`
+- `dashboard/src/contexts/AuthContext.tsx`: Added 2FA state, `loginWith2FA()`, `cancel2FA()`
+- `dashboard/src/pages/Login.tsx`: Added TOTP verification form
+
+**Login Flow Now**:
+1. User enters username/password → `/api/auth/login`
+2. If 2FA disabled: returns `access_token` (existing behavior)
+3. If 2FA enabled: returns `requires_2fa=True` (no tokens)
+4. User enters 6-digit TOTP code → `/api/auth/login-2fa`
+5. Returns `access_token` after TOTP verified
+
+**Verification**:
+```bash
+# Step 1: Login returns requires_2fa
+curl -X POST http://localhost:8000/api/auth/login \
+  -d "username=admin&password=***"
+# Response: {"requires_2fa": true, "username": "admin", ...}
+
+# Step 2: Login-2FA returns access_token
+curl -X POST http://localhost:8000/api/auth/login-2fa \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "***", "totp_code": "123456"}'
+# Response: {"access_token": "eyJ...", ...}
+```
+
+---
+
+#### **Feature: Two-Factor Authentication (2FA) Settings UI** (2025-12-09)
+
+**Added frontend UI for 2FA setup and management**
+
+**Background**:
+Backend 2FA endpoints existed at `/api/2fa/*` but no frontend UI allowed users to configure 2FA.
+
+**Implementation**:
+1. Created `TwoFactorSettings.tsx` component with complete 2FA workflow:
+   - Status display (enabled/not enabled)
+   - QR code display for authenticator app scanning
+   - Manual secret entry option for manual TOTP configuration
+   - 6-digit verification code input
+   - Backup codes display with copy functionality
+   - Disable 2FA with password confirmation
+   - Regenerate backup codes option
+
+2. Created `Settings.tsx` page:
+   - Account information section (username, email, role, last login)
+   - Security section with TwoFactorSettings component
+   - Graceful handling when auth is disabled
+
+3. Updated routing and navigation:
+   - Added `/settings` route in `App.tsx`
+   - Added "Settings" nav link with Shield icon in `Layout.tsx`
+
+**Files Created**:
+- `dashboard/src/components/TwoFactorSettings.tsx`: 2FA management component
+- `dashboard/src/pages/Settings.tsx`: Settings page
+
+**Files Modified**:
+- `dashboard/src/App.tsx`: Added Settings route
+- `dashboard/src/components/Layout.tsx`: Added Shield icon import and Settings nav link
+
+**How to Use**:
+1. Navigate to Settings page from sidebar
+2. Click "Enable 2FA" button
+3. Scan QR code with authenticator app (Google Authenticator, Authy, etc.)
+4. Enter 6-digit verification code
+5. Save backup codes securely (shown only once)
+
+**API Endpoints Used**:
+- `GET /api/2fa/status`: Check 2FA status
+- `POST /api/2fa/setup`: Get QR code and secret
+- `POST /api/2fa/verify`: Verify code and enable 2FA
+- `POST /api/2fa/disable`: Disable 2FA with password
+- `POST /api/2fa/backup-codes`: Regenerate backup codes
+
+---
+
+#### **Fix: Database Schema Migration for 2FA Columns** (2025-12-09)
+
+#### **Dashboard: Fix QQQ Baseline NULL Values on API Restart** (2025-12-09)
+
+**Fixed snapshots created on API restart having NULL baseline_value and baseline_return**
+
+**Problem**:
+Performance snapshots created after API restart had NULL baseline values, causing the QQQ baseline comparison to disappear from the Performance tab and dashboard.
+
+**Root Cause** (Evidence-Based):
+1. `jutsu_engine/live/data_refresh.py` line 604: baseline calculation was inside `if state_path.exists():`
+2. When `state/state.json` was deleted (Docker restart, cleanup, or accidental deletion), entire baseline calculation was skipped
+3. `baseline_value` and `baseline_return` stayed None (set at lines 597-598)
+4. Snapshots saved to database with NULL baseline columns
+5. Evidence: Snapshots 16, 17, 18 had NULL baseline, while earlier snapshots (6, 14, 15) had correct values
+
+**Fix**:
+1. Modified `data_refresh.py` to create `state.json` from template if missing:
+   - Checks if `state.json.template` exists → copies to `state.json`
+   - If no template, creates minimal `state.json` with defaults
+2. Added database fallback for `initial_qqq_price`:
+   - Queries previous snapshots with baseline data
+   - Uses known inception price (622.94) if history exists
+   - Falls back to current QQQ price only for new installations
+3. Updated `state.json.template` to include `initial_qqq_price: 622.94`
+
+**Files Modified**:
+- `jutsu_engine/live/data_refresh.py`: Added state.json creation and database fallback
+- `state/state.json.template`: Added initial_qqq_price value
+
+**Verification**:
+- Deleted `state.json` to simulate restart scenario
+- Forced refresh via API
+- New snapshot ID=19 created with proper baseline values: $10,014.93 (0.15%)
+
+---
+
+**Fixed login failure (500 Internal Server Error) after security hardening**
+
+**Problem**:
+Login endpoint returned `{"error":"Internal server error","detail":null}` with 500 status. Frontend showed "Failed to connect to server" error.
+
+**Root Cause** (Evidence-Based):
+1. Security hardening added 2FA fields to User model: `totp_secret`, `totp_enabled`, `backup_codes`
+2. PostgreSQL database schema wasn't updated to include these new columns
+3. SQLAlchemy query failed: `column users.totp_secret does not exist`
+4. Any query involving User model failed → 500 error on login
+
+**Fix**:
+Added missing 2FA columns to PostgreSQL database:
+```sql
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret VARCHAR(64);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS backup_codes TEXT[];
+```
+
+**Action Required** (Existing PostgreSQL Deployments):
+Run this Python script to add missing columns:
+```python
+import psycopg2
+conn = psycopg2.connect(host='your-host', port=5423, user='your-user', password='your-pass', database='jutsu_labs')
+conn.autocommit = True
+cur = conn.cursor()
+cur.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret VARCHAR(64)')
+cur.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN DEFAULT FALSE')
+cur.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS backup_codes TEXT[]')
+conn.close()
+```
+
+---
+
+#### **Docker: Fix Login/Logout Not Appearing in Docker Deployment** (2025-12-09)
+
+**Fixed login/logout buttons not appearing in Docker deployment even with `AUTH_REQUIRED=true`**
+
+**Problem**:
+Login and logout buttons never appeared in Docker deployment, even with authentication enabled (`AUTH_REQUIRED=true`). The dashboard behaved as if authentication was disabled. This worked correctly in local development.
+
+**Root Cause** (Evidence-Based):
+1. Backend auth router uses `prefix="/api/auth"` → endpoints are `/api/auth/*`
+2. Frontend `AuthContext.tsx` called `/auth/*` (missing `/api` prefix)
+3. **Local**: Request to `http://localhost:8000/auth/status` returned 404, catch block assumed no auth required
+4. **Docker**: nginx served the request as static file (index.html), JSON parse failed, catch block assumed no auth required
+5. `isAuthRequired` stayed `false` → login/logout UI never rendered
+
+**Fix**:
+Added `/api` prefix to all auth endpoint calls in `AuthContext.tsx`:
+```typescript
+// Before (WRONG):
+fetch(`${API_BASE}/auth/status`)
+fetch(`${API_BASE}/auth/login`, ...)
+fetch(`${API_BASE}/auth/me`, ...)
+fetch(`${API_BASE}/auth/logout`, ...)
+
+// After (CORRECT):
+fetch(`${API_BASE}/api/auth/status`)
+fetch(`${API_BASE}/api/auth/login`, ...)
+fetch(`${API_BASE}/api/auth/me`, ...)
+fetch(`${API_BASE}/api/auth/logout`, ...)
+```
+
+**Files Modified**:
+- `dashboard/src/contexts/AuthContext.tsx`: Lines 57, 85, 118, 135, 170 (added `/api` prefix)
+
+**User Action Required**:
+Rebuild Docker image: `docker-compose build --no-cache && docker-compose up -d`
+
+---
+
+#### **Security: Comprehensive Security Hardening (Phase 2)** (2025-12-09)
+
+**Implemented security features from SECURITY_HARDENING.md**
+
+**Features Added**:
+
+1. **Two-Factor Authentication (2FA/TOTP)**
+   - User model extended with `totp_secret`, `totp_enabled`, `backup_codes` fields
+   - New 2FA API endpoints: `/api/2fa/status`, `/setup`, `/verify`, `/disable`, `/validate`, `/backup-codes`
+   - TOTP support via pyotp library with QR code generation
+   - 10 one-time backup codes for account recovery
+   - Security event logging for all 2FA operations
+
+2. **Request Size Limit Middleware**
+   - Prevents large payload DoS attacks
+   - Configurable via `MAX_REQUEST_SIZE` environment variable
+   - Default: 10MB limit
+   - Returns HTTP 413 for oversized requests
+
+3. **Secure Cookie Configuration for Refresh Tokens**
+   - Optional HTTP-only secure cookies for refresh tokens
+   - Enable with `USE_SECURE_COOKIES=true`
+   - Configurable: `COOKIE_SECURE`, `COOKIE_SAMESITE`, `COOKIE_DOMAIN`
+   - XSS protection - tokens not accessible via JavaScript
+   - CSRF protection via SameSite attribute
+
+4. **GitHub Security Workflows**
+   - `.github/workflows/security-scan.yml`: Automated security scanning
+     - pip-audit for Python dependency vulnerabilities
+     - Bandit for SAST (Static Application Security Testing)
+     - CodeQL for code security analysis
+     - Gitleaks for secret scanning
+   - `.github/dependabot.yml`: Automated dependency updates
+     - Weekly scans for pip, npm, docker, and GitHub Actions
+     - Grouped minor/patch updates to reduce PR noise
+
+**Files Added**:
+- `jutsu_engine/api/routes/two_factor.py`: 2FA API endpoints
+- `.github/workflows/security-scan.yml`: Security scanning workflow
+- `.github/dependabot.yml`: Dependabot configuration
+
+**Files Modified**:
+- `jutsu_engine/data/models.py`: Added 2FA fields to User model
+- `jutsu_engine/api/routes/__init__.py`: Export two_factor_router
+- `jutsu_engine/api/main.py`: Include 2FA router, add request size limit middleware
+- `jutsu_engine/api/routes/auth.py`: Secure cookie support for refresh tokens
+- `requirements.txt`: Added pyotp>=2.9.0 and qrcode[pil]>=7.4
+
+**Environment Variables Added**:
+```bash
+# Request Size Limit
+MAX_REQUEST_SIZE=10485760  # 10MB default
+
+# Secure Cookies (optional)
+USE_SECURE_COOKIES=false   # Set true to enable
+COOKIE_SECURE=true         # Require HTTPS
+COOKIE_SAMESITE=lax        # CSRF protection
+COOKIE_DOMAIN=             # Cookie domain scope
+```
+
+**User Action Required**:
+1. Install new dependencies: `pip install pyotp qrcode[pil]`
+2. Run database migration or recreate database for 2FA fields
+3. Optionally enable secure cookies with `USE_SECURE_COOKIES=true`
+
+---
+
 #### **Docker: Fix strategy:unknown in Decision Tree Tab** (2025-12-09)
 
 **Fixed Decision Tree tab showing "Strategy: Unknown" in Docker deployment**

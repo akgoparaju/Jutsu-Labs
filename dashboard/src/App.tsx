@@ -8,6 +8,7 @@ import Trades from './pages/Trades'
 import Performance from './pages/Performance'
 import Config from './pages/Config'
 import DecisionTree from './pages/DecisionTree'
+import Settings from './pages/Settings'
 
 function App() {
   return (
@@ -24,6 +25,7 @@ function App() {
             <Route path="trades" element={<Trades />} />
             <Route path="performance" element={<Performance />} />
             <Route path="config" element={<Config />} />
+            <Route path="settings" element={<Settings />} />
           </Route>
         </Route>
       </Routes>

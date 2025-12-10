@@ -5,6 +5,7 @@ Defines the schema for storing OHLCV data and metadata for incremental updates.
 """
 from datetime import datetime
 from sqlalchemy import (
+    ARRAY,
     Column,
     Integer,
     String,
@@ -436,6 +437,11 @@ class User(Base):
     # Session tracking
     last_login = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+    # Two-Factor Authentication (2FA/TOTP)
+    totp_secret = Column(String(32), nullable=True)  # Base32 secret for TOTP
+    totp_enabled = Column(Boolean, default=False)    # Whether 2FA is active
+    backup_codes = Column(ARRAY(String), nullable=True)  # Array of one-time backup codes
 
     def __repr__(self):
         return f"<User(username={self.username}, active={self.is_active})>"

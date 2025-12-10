@@ -33,6 +33,7 @@ except ImportError:
 from jutsu_engine.api.websocket import websocket_endpoint, manager
 from jutsu_engine.api.routes import (
     auth_router,
+    two_factor_router,
     schwab_auth_router,
     status_router,
     config_router,
@@ -308,6 +309,40 @@ def create_app(
         allow_headers=["*"],
     )
 
+    # Request size limit middleware
+    # Default: 10MB (configurable via MAX_REQUEST_SIZE env var)
+    max_request_size = int(os.getenv('MAX_REQUEST_SIZE', str(10 * 1024 * 1024)))  # 10MB default
+
+    @app.middleware("http")
+    async def limit_request_size(request: Request, call_next):
+        """
+        Middleware to limit request body size.
+
+        Prevents large payload attacks (DoS) by rejecting requests
+        that exceed the configured maximum size.
+
+        Configure via MAX_REQUEST_SIZE environment variable (bytes).
+        Default: 10MB
+        """
+        content_length = request.headers.get('content-length')
+        if content_length:
+            try:
+                size = int(content_length)
+                if size > max_request_size:
+                    return JSONResponse(
+                        status_code=413,
+                        content={
+                            "error": "Request Entity Too Large",
+                            "detail": f"Request body exceeds maximum size of {max_request_size} bytes"
+                        }
+                    )
+            except ValueError:
+                pass  # Invalid content-length header, let it through
+
+        return await call_next(request)
+
+    logger.info(f"Request size limit: {max_request_size / (1024*1024):.1f}MB")
+
     # Configure rate limiting (if available)
     if RATE_LIMITING_AVAILABLE and limiter is not None:
         app.state.limiter = limiter
@@ -318,6 +353,7 @@ def create_app(
 
     # Include routers
     app.include_router(auth_router)  # Authentication endpoints
+    app.include_router(two_factor_router)  # Two-factor authentication (2FA/TOTP)
     app.include_router(schwab_auth_router)  # Schwab API OAuth authentication
     app.include_router(status_router)
     app.include_router(config_router)

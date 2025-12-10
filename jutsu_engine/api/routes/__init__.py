@@ -3,6 +3,7 @@ API Routes Package
 
 Contains all FastAPI route modules:
 - auth: JWT authentication endpoints
+- two_factor: Two-factor authentication (2FA/TOTP)
 - schwab_auth: Schwab API OAuth authentication
 - status: System status and regime information
 - config: Configuration management
@@ -13,6 +14,7 @@ Contains all FastAPI route modules:
 """
 
 from jutsu_engine.api.routes.auth import router as auth_router
+from jutsu_engine.api.routes.two_factor import router as two_factor_router
 from jutsu_engine.api.routes.schwab_auth import router as schwab_auth_router
 from jutsu_engine.api.routes.status import router as status_router
 from jutsu_engine.api.routes.config import router as config_router
@@ -23,6 +25,7 @@ from jutsu_engine.api.routes.indicators import router as indicators_router
 
 __all__ = [
     'auth_router',
+    'two_factor_router',
     'schwab_auth_router',
     'status_router',
     'config_router',
