@@ -1,3 +1,44 @@
+#### **Fix: Docker Build TS6133 Unused Variable Error** (2025-12-09)
+
+**Fixed TypeScript compilation error causing GitHub Actions Docker build to fail**
+
+**Problem**:
+GitHub Actions Docker build failing at frontend-builder stage with TypeScript error:
+```
+error TS6133: 'pendingPassword' is declared but its value is never read
+```
+Location: `dashboard/src/contexts/AuthContext.tsx:49`
+
+**Root Cause** (Evidence-Based):
+1. State variable `pendingPassword` was added for 2FA credential storage (see memory: `2fa_login_flow_fix`)
+2. `setPendingPassword` IS used (lines 141, 209, 242) to store/clear password during 2FA flow
+3. But `pendingPassword` value was never read - password passed as parameter to `loginWith2FA()` instead
+4. TypeScript strict mode (`noUnusedLocals`) rejects unused variables
+
+**Fix**:
+Changed line 49 from:
+```typescript
+const [pendingPassword, setPendingPassword] = useState<string | null>(null)
+```
+To:
+```typescript
+const [_pendingPassword, setPendingPassword] = useState<string | null>(null)
+```
+
+The underscore prefix is TypeScript convention for intentionally unused variables. This:
+- Preserves design symmetry with `pendingUsername` (which IS used in Login.tsx)
+- Allows state to exist for potential future use
+- Fixes strict mode compilation without functional changes
+
+**Files Modified**:
+- `dashboard/src/contexts/AuthContext.tsx`: Line 49 - underscore prefix for unused state variable
+
+**Verification**:
+- Local build: `npm run build` passes (tsc && vite build)
+- No TypeScript errors in CI
+
+---
+
 #### **Security: Bandit SAST Scan Fixes (B104, B108)** (2025-12-09)
 
 **Fixed Bandit security scan failures with documented nosec annotations**

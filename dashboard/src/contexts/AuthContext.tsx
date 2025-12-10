@@ -46,7 +46,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // 2FA state
   const [requires2FA, setRequires2FA] = useState(false)
   const [pendingUsername, setPendingUsername] = useState<string | null>(null)
-  const [pendingPassword, setPendingPassword] = useState<string | null>(null)
+  const [_pendingPassword, setPendingPassword] = useState<string | null>(null)
 
   // Check auth status on mount
   useEffect(() => {
