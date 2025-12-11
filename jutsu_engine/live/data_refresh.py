@@ -14,13 +14,17 @@ Key Features:
 - Recalculates strategy indicators
 - Does NOT run strategy signals or execute trades
 
+Security:
+- Uses direct Python imports instead of subprocess calls
+- No command injection risk (no shell execution)
+- Works reliably in Docker environments
+
 Version: 1.0.0
 """
 
 import asyncio
 import json
 import logging
-import subprocess
 import sys
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
@@ -188,72 +192,98 @@ class DashboardDataRefresher:
         """
         Sync market data from Schwab API to local database.
         
-        Uses the existing `jutsu sync` CLI command for consistency.
+        Uses direct Python imports for security (no subprocess/CLI) and
+        reliability in Docker environments.
         
         Args:
-            symbols: List of symbols to sync (default: all)
+            symbols: List of symbols to sync (default: REFRESH_SYMBOLS)
             force_full: Whether to do a full refresh (default: incremental)
             
         Returns:
             Tuple of (success: bool, message: str)
         """
         try:
-            # Build command
-            cmd = ['jutsu', 'sync']
+            from jutsu_engine.application.data_sync import DataSync
+            from jutsu_engine.data.fetchers.schwab import SchwabDataFetcher
             
-            if symbols:
-                for symbol in symbols:
-                    cmd.extend(['--symbols', symbol])
+            # Initialize fetcher and sync service
+            logger.info("Initializing data sync service...")
+            fetcher = SchwabDataFetcher()
+            session = self._get_session()
+            sync_service = DataSync(session)
+            
+            sync_symbols = symbols or self.REFRESH_SYMBOLS
+            logger.info(f"Running market data sync for symbols: {sync_symbols}")
+            
+            success_count = 0
+            fail_count = 0
+            
+            for symbol in sync_symbols:
+                try:
+                    # Use a reasonable start_date (30 days back for incremental updates)
+                    # The sync_symbol method handles incremental updates intelligently
+                    start_date = datetime.now(timezone.utc) - timedelta(days=30)
+                    
+                    result = sync_service.sync_symbol(
+                        fetcher=fetcher,
+                        symbol=symbol,
+                        timeframe='1D',
+                        start_date=start_date,
+                        force_refresh=force_full,
+                    )
+                    
+                    logger.info(
+                        f"Synced {symbol}: {result['bars_stored']} stored, "
+                        f"{result['bars_updated']} updated"
+                    )
+                    success_count += 1
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to sync {symbol}: {e}")
+                    fail_count += 1
+            
+            if fail_count == 0:
+                return True, f"Market data synced successfully ({success_count} symbols)"
+            elif success_count > 0:
+                return True, f"Partial sync: {success_count} succeeded, {fail_count} failed"
             else:
-                cmd.append('--all')
-            
-            if force_full:
-                cmd.append('--force-full-refresh')
-            
-            logger.info(f"Running market data sync: {' '.join(cmd)}")
-            
-            # Run sync command
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=120,  # 2 minute timeout
-                cwd=Path(__file__).parent.parent.parent,  # Project root
-            )
-            
-            if result.returncode == 0:
-                logger.info("Market data sync completed successfully")
-                return True, "Market data synced successfully"
-            else:
-                error_msg = result.stderr or result.stdout or "Unknown error"
-                logger.error(f"Market data sync failed: {error_msg}")
-                return False, f"Sync failed: {error_msg}"
+                return False, f"Sync failed for all {fail_count} symbols"
                 
-        except subprocess.TimeoutExpired:
-            logger.error("Market data sync timed out after 120 seconds")
-            return False, "Sync timed out"
-        except FileNotFoundError:
-            logger.error("jutsu command not found - using fallback sync")
-            return self._fallback_sync(symbols)
+        except ImportError as e:
+            logger.error(f"Failed to import sync dependencies: {e}")
+            return False, f"Sync dependencies not available: {e}"
         except Exception as e:
             logger.error(f"Market data sync error: {e}")
             return False, str(e)
     
     def _fallback_sync(self, symbols: Optional[List[str]] = None) -> Tuple[bool, str]:
         """
-        Fallback sync when CLI is not available.
+        Deprecated fallback sync method.
+        
+        Note: This method is kept for backward compatibility but is no longer
+        used since sync_market_data now uses direct Python imports.
         
         Uses the DataSync application service directly.
         """
         try:
-            from jutsu_engine.application.data_sync import DataSyncService
+            from jutsu_engine.application.data_sync import DataSync
+            from jutsu_engine.data.fetchers.schwab import SchwabDataFetcher
             
-            service = DataSyncService()
+            fetcher = SchwabDataFetcher()
+            session = self._get_session()
+            sync_service = DataSync(session)
+            
             sync_symbols = symbols or self.REFRESH_SYMBOLS
             
             for symbol in sync_symbols:
                 try:
-                    service.sync_symbol(symbol)
+                    start_date = datetime.now(timezone.utc) - timedelta(days=30)
+                    sync_service.sync_symbol(
+                        fetcher=fetcher,
+                        symbol=symbol,
+                        timeframe='1D',
+                        start_date=start_date,
+                    )
                     logger.info(f"Synced {symbol}")
                 except Exception as e:
                     logger.warning(f"Failed to sync {symbol}: {e}")
@@ -261,7 +291,7 @@ class DashboardDataRefresher:
             return True, "Fallback sync completed"
             
         except ImportError:
-            return False, "DataSyncService not available"
+            return False, "DataSync not available"
         except Exception as e:
             return False, str(e)
     

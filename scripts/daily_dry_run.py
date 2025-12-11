@@ -154,7 +154,7 @@ def main(check_freshness: bool = False):
                 # Required symbols for strategy
                 required_symbols = ['QQQ', 'TLT', 'TQQQ', 'PSQ', 'TMF', 'TMV']
                 checker = DataFreshnessChecker(
-                    db_path='data/market_data.db',
+                    db_path=None,  # Auto-detect: uses get_database_url() for PostgreSQL or SQLite
                     required_symbols=required_symbols
                 )
 

@@ -8,8 +8,13 @@ Purpose:
 PRD Compliance:
     - Runs at 15:44 EST (5 minutes before 15:49 execution)
     - Checks all required symbols (QQQ, TLT, TQQQ, PSQ, TMF, TMV)
-    - Triggers `jutsu sync --all` if any symbol is stale
+    - Triggers data sync via direct Python imports (no subprocess/CLI)
     - Logs freshness status for audit trail
+
+Security:
+    - Uses direct Python imports instead of subprocess calls
+    - No command injection risk (no shell execution)
+    - Works reliably in Docker environments
 
 Usage:
     from jutsu_engine.live.data_freshness import DataFreshnessChecker
@@ -22,7 +27,6 @@ Usage:
 """
 
 import logging
-import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
@@ -244,67 +248,92 @@ class DataFreshnessChecker:
         timeout_seconds: int = 300
     ) -> bool:
         """
-        Trigger data sync via CLI command.
+        Trigger data sync using direct Python imports (no subprocess).
 
         If symbols provided, syncs only those symbols.
-        Otherwise, runs `jutsu sync --all`.
+        Otherwise, runs sync_all_symbols().
+
+        This method uses direct Python imports instead of subprocess calls,
+        which improves security (no command injection risk) and works
+        reliably in Docker environments where CLI entry points may not be
+        available in PATH.
 
         Args:
             symbols: Specific symbols to sync (None = all)
             timeout_seconds: Maximum time to wait for sync (default 5 min)
+                            Note: timeout is informational only for Python calls
 
         Returns:
             True if sync completed successfully
 
         Raises:
-            SyncError: If sync fails or times out
+            SyncError: If sync fails
         """
-        if symbols:
-            logger.info(f"Triggering sync for specific symbols: {symbols}")
-            # Sync each symbol individually
-            for symbol in symbols:
-                cmd = ['jutsu', 'sync', symbol]
-                logger.info(f"Running: {' '.join(cmd)}")
+        from datetime import timedelta
+        from jutsu_engine.application.data_sync import DataSync
+        from jutsu_engine.data.fetchers.schwab import SchwabDataFetcher
 
+        try:
+            # Initialize fetcher and sync service
+            logger.info("Initializing SchwabDataFetcher for sync...")
+            fetcher = SchwabDataFetcher()
+            sync_service = DataSync(self.session)
+
+            if symbols:
+                logger.info(f"Triggering sync for specific symbols: {symbols}")
+                # Sync each symbol individually
+                for symbol in symbols:
+                    logger.info(f"Syncing: {symbol}")
+                    try:
+                        # Use a reasonable start_date (30 days back for incremental updates)
+                        # The sync_symbol method handles incremental updates intelligently
+                        start_date = datetime.now(timezone.utc) - timedelta(days=30)
+
+                        result = sync_service.sync_symbol(
+                            fetcher=fetcher,
+                            symbol=symbol,
+                            timeframe=self.timeframe,
+                            start_date=start_date,
+                        )
+
+                        logger.info(
+                            f"Sync completed for {symbol}: "
+                            f"{result['bars_stored']} stored, {result['bars_updated']} updated"
+                        )
+
+                    except Exception as e:
+                        logger.error(f"Sync failed for {symbol}: {e}")
+                        raise SyncError(f"Sync failed for {symbol}: {e}")
+            else:
+                # Sync all symbols in metadata
+                logger.info("Running sync for all symbols...")
                 try:
-                    result = subprocess.run(
-                        cmd,
-                        capture_output=True,
-                        text=True,
-                        timeout=timeout_seconds // len(symbols)
+                    result = sync_service.sync_all_symbols(fetcher=fetcher)
+
+                    logger.info(
+                        f"Sync all completed: {result['successful_syncs']} successful, "
+                        f"{result['failed_syncs']} failed out of {result['total_symbols']} symbols"
                     )
 
-                    if result.returncode != 0:
-                        logger.error(f"Sync failed for {symbol}: {result.stderr}")
-                        raise SyncError(f"Sync failed for {symbol}: {result.stderr}")
+                    if result['failed_syncs'] > 0:
+                        failed_symbols = [
+                            k for k, v in result['results'].items()
+                            if v['status'] == 'failed'
+                        ]
+                        logger.warning(f"Failed symbols: {failed_symbols}")
 
-                    logger.info(f"Sync completed for {symbol}")
+                except Exception as e:
+                    logger.error(f"Sync all failed: {e}")
+                    raise SyncError(f"Sync all failed: {e}")
 
-                except subprocess.TimeoutExpired:
-                    raise SyncError(f"Sync timed out for {symbol}")
-        else:
-            # Sync all symbols
-            cmd = ['jutsu', 'sync', '--all']
-            logger.info(f"Running: {' '.join(cmd)}")
+            return True
 
-            try:
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_seconds
-                )
-
-                if result.returncode != 0:
-                    logger.error(f"Sync --all failed: {result.stderr}")
-                    raise SyncError(f"Sync --all failed: {result.stderr}")
-
-                logger.info("Sync --all completed successfully")
-
-            except subprocess.TimeoutExpired:
-                raise SyncError("Sync --all timed out")
-
-        return True
+        except ImportError as e:
+            logger.error(f"Failed to import sync dependencies: {e}")
+            raise SyncError(f"Sync dependencies not available: {e}")
+        except Exception as e:
+            logger.error(f"Sync error: {e}")
+            raise SyncError(f"Sync failed: {e}")
 
     def ensure_fresh_data(
         self,
