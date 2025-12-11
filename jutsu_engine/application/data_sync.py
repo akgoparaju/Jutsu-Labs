@@ -55,6 +55,89 @@ def _is_weekend(timestamp: datetime) -> bool:
     return timestamp.weekday() in (5, 6)  # Saturday=5, Sunday=6
 
 
+def _is_market_holiday(timestamp: datetime) -> bool:
+    """
+    Check if timestamp falls on a market holiday (NYSE closed).
+
+    Uses NYSE calendar to determine if the trading date is a holiday.
+    Converts timestamp to Eastern Time to get the correct trading date.
+
+    Args:
+        timestamp: datetime to check (should be timezone-aware)
+
+    Returns:
+        True if NYSE is closed for holiday, False otherwise
+    """
+    import pytz
+    import pandas_market_calendars as mcal
+    from datetime import date
+
+    # Convert to Eastern Time to get the correct trading date
+    et = pytz.timezone('America/New_York')
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    ts_et = timestamp.astimezone(et)
+    trading_date = ts_et.date()
+
+    # Skip weekend check (handled by _is_weekend)
+    if trading_date.weekday() >= 5:
+        return False
+
+    # Get NYSE calendar - cache this for efficiency
+    if not hasattr(_is_market_holiday, '_nyse_cache'):
+        _is_market_holiday._nyse_cache = {}
+
+    # Get trading days for the year (cached)
+    year = trading_date.year
+    if year not in _is_market_holiday._nyse_cache:
+        nyse = mcal.get_calendar('NYSE')
+        schedule = nyse.schedule(
+            start_date=date(year, 1, 1),
+            end_date=date(year, 12, 31)
+        )
+        _is_market_holiday._nyse_cache[year] = set(schedule.index.date)
+
+    trading_days = _is_market_holiday._nyse_cache[year]
+
+    # If weekday but not in trading days, it's a holiday
+    return trading_date not in trading_days
+
+
+def _is_outside_market_hours(timestamp: datetime, timeframe: str) -> bool:
+    """
+    Check if intraday bar timestamp is outside regular market hours (9:30-16:00 ET).
+
+    Only applies to intraday timeframes (5m, 15m, 1H, etc.). Daily bars are
+    not filtered by time as they represent the entire trading day.
+
+    Args:
+        timestamp: datetime to check (should be timezone-aware)
+        timeframe: Bar timeframe ('1D', '5m', '15m', etc.)
+
+    Returns:
+        True if intraday bar is outside market hours, False otherwise
+    """
+    import pytz
+    from datetime import time
+
+    # Daily bars don't need market hours filtering
+    if timeframe in ('1D', 'D', '1W', 'W', '1M', 'M'):
+        return False
+
+    # Convert to Eastern Time
+    et = pytz.timezone('America/New_York')
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    ts_et = timestamp.astimezone(et)
+    ts_time = ts_et.time()
+
+    # Market hours: 9:30 AM - 4:00 PM ET
+    market_open = time(9, 30)
+    market_close = time(16, 0)
+
+    return ts_time < market_open or ts_time >= market_close
+
+
 class DataSync:
     """
     Manages incremental data synchronization to database.
@@ -256,28 +339,56 @@ class DataSync:
         bars_fetched = len(bars)
         logger.info(f"Fetched {bars_fetched} bars from external source")
 
-        # Filter out weekend dates (data quality issue - external sources may include weekends)
-        # Weekend data is invalid for market data and should not be stored
+        # Filter out invalid data (data quality issues from external sources)
+        # 1. Weekend data (Saturday/Sunday)
+        # 2. Market holidays (NYSE closed)
+        # 3. Outside market hours (for intraday bars only)
         original_count = len(bars)
-        bars = [
-            bar for bar in bars
-            if not _is_weekend(bar['timestamp'])
-        ]
-        weekend_filtered = original_count - len(bars)
-        if weekend_filtered > 0:
+        weekend_filtered = 0
+        holiday_filtered = 0
+        off_hours_filtered = 0
+
+        valid_bars = []
+        for bar in bars:
+            ts = bar['timestamp']
+
+            # Filter 1: Weekend data
+            if _is_weekend(ts):
+                weekend_filtered += 1
+                continue
+
+            # Filter 2: Market holiday data
+            if _is_market_holiday(ts):
+                holiday_filtered += 1
+                continue
+
+            # Filter 3: Outside market hours (intraday only)
+            if _is_outside_market_hours(ts, timeframe):
+                off_hours_filtered += 1
+                continue
+
+            valid_bars.append(bar)
+
+        bars = valid_bars
+        total_filtered = weekend_filtered + holiday_filtered + off_hours_filtered
+
+        if total_filtered > 0:
             logger.warning(
-                f"Filtered {weekend_filtered} weekend bars from {symbol} "
-                f"(data quality issue - weekend dates from external source)"
+                f"Filtered {total_filtered} invalid bars from {symbol}: "
+                f"{weekend_filtered} weekend, {holiday_filtered} holiday, "
+                f"{off_hours_filtered} off-hours"
             )
         bars_fetched = len(bars)  # Update count after filtering
 
         if bars_fetched == 0:
-            logger.info("No new data to sync (after weekend filtering)")
+            logger.info("No new data to sync (after filtering)")
             return {
                 'bars_fetched': 0,
                 'bars_stored': 0,
                 'bars_updated': 0,
                 'weekend_filtered': weekend_filtered,
+                'holiday_filtered': holiday_filtered,
+                'off_hours_filtered': off_hours_filtered,
                 'start_date': actual_start_date,
                 'end_date': end_date,
                 'duration_seconds': (datetime.now(timezone.utc) - start_time).total_seconds(),
@@ -341,9 +452,11 @@ class DataSync:
             bars_affected=bars_stored + bars_updated,
         )
 
-        weekend_msg = f", {weekend_filtered} weekend filtered" if weekend_filtered > 0 else ""
+        filter_msg = ""
+        if total_filtered > 0:
+            filter_msg = f", filtered: {weekend_filtered} weekend, {holiday_filtered} holiday, {off_hours_filtered} off-hours"
         logger.info(
-            f"Sync complete: {bars_stored} stored, {bars_updated} updated{weekend_msg} "
+            f"Sync complete: {bars_stored} stored, {bars_updated} updated{filter_msg} "
             f"in {duration:.2f}s"
         )
 
@@ -352,6 +465,8 @@ class DataSync:
             'bars_stored': bars_stored,
             'bars_updated': bars_updated,
             'weekend_filtered': weekend_filtered,
+            'holiday_filtered': holiday_filtered,
+            'off_hours_filtered': off_hours_filtered,
             'start_date': actual_start_date,
             'end_date': end_date,
             'duration_seconds': duration,

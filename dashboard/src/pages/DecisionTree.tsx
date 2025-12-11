@@ -465,13 +465,14 @@ function DecisionTree() {
               </tr>
             </thead>
             <tbody>
+              {/* v3.5b Strategy Allocations - verified from Hierarchical_Adaptive_v3_5b.py */}
               {[
-                { cell: 1, regime: 'BullStrong + Low Vol', tqqq: 100, qqq: 0, psq: 0, bonds: 0, cash: 0 },
-                { cell: 2, regime: 'BullStrong + High Vol', tqqq: 40, qqq: 60, psq: 0, bonds: 0, cash: 0 },
+                { cell: 1, regime: 'BullStrong + Low Vol', tqqq: 60, qqq: 40, psq: 0, bonds: 0, cash: 0 },
+                { cell: 2, regime: 'BullStrong + High Vol', tqqq: 0, qqq: 100, psq: 0, bonds: 0, cash: 0 },
                 { cell: 3, regime: 'Sideways + Low Vol', tqqq: 20, qqq: 80, psq: 0, bonds: 0, cash: 0 },
-                { cell: 4, regime: 'Sideways + High Vol', tqqq: 0, qqq: 40, psq: 0, bonds: 40, cash: 20 },
-                { cell: 5, regime: 'BearStrong + Low Vol', tqqq: 0, qqq: 40, psq: 20, bonds: 40, cash: 0 },
-                { cell: 6, regime: 'BearStrong + High Vol', tqqq: 0, qqq: 0, psq: 40, bonds: 40, cash: 20 },
+                { cell: 4, regime: 'Sideways + High Vol', tqqq: 0, qqq: 0, psq: 0, bonds: 100, cash: 0 },
+                { cell: 5, regime: 'BearStrong + Low Vol', tqqq: 0, qqq: 50, psq: 0, bonds: 50, cash: 0 },
+                { cell: 6, regime: 'BearStrong + High Vol', tqqq: 0, qqq: 0, psq: 50, bonds: 0, cash: 50 },
               ].map(row => (
                 <tr
                   key={row.cell}

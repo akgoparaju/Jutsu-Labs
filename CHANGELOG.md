@@ -1,3 +1,33 @@
+#### **Fix: Decision Tree UI Allocation Display** (2025-12-11)
+
+**Fixed incorrect cell allocation values in Decision Tree dashboard tab**
+
+**Problem**:
+The Decision Tree tab displayed hardcoded allocation percentages that didn't match the actual v3.5b strategy allocations. Most notably, Cell 1 showed "100% TQQQ" instead of the correct "60% TQQQ + 40% QQQ".
+
+**Root Cause**:
+Hardcoded allocation values in `dashboard/src/pages/DecisionTree.tsx` (lines 468-475) were incorrect and hadn't been updated to match the v3.5b strategy logic.
+
+**Solution**:
+Updated all 6 cell allocations to match `Hierarchical_Adaptive_v3_5b.py`:
+
+| Cell | Before | After (Correct) |
+|------|--------|-----------------|
+| 1 | 100% TQQQ | 60% TQQQ + 40% QQQ |
+| 2 | 40% TQQQ + 60% QQQ | 100% QQQ |
+| 4 | 40% QQQ + 40% Bonds + 20% Cash | 100% Bonds |
+| 5 | 40% QQQ + 20% PSQ + 40% Bonds | 50% QQQ + 50% Bonds |
+| 6 | 40% PSQ + 40% Bonds + 20% Cash | 50% PSQ + 50% Cash |
+
+**Files Modified**:
+- `dashboard/src/pages/DecisionTree.tsx` - Fixed allocation table values
+
+**Verification**:
+- TypeScript compilation: PASSED
+- Values verified against `jutsu_engine/strategies/Hierarchical_Adaptive_v3_5b.py` lines 1148-1172
+
+---
+
 #### **Fix: Scheduler DataFreshnessChecker PostgreSQL Support** (2025-12-11)
 
 #### **Security Fix: Schwab API Endpoints Authentication** (2025-12-11)

@@ -59,3 +59,11 @@ pytz==2024.1
 
 # Market Calendar
 pandas-market-calendars==5.1.1
+
+# Security: Pin transitive dependencies to fix vulnerabilities (2025-12-11)
+# fonttools: CVE fix (required by matplotlib)
+fonttools>=4.60.2
+# urllib3: CVE fix (required by requests, schwab-py)
+urllib3>=2.6.0
+# werkzeug: CVE fix (required by Flask)
+werkzeug>=3.1.4
