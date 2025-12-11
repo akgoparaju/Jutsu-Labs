@@ -630,7 +630,7 @@ class DashboardDataRefresher:
                     minimal_state = {
                         "last_run": None,
                         "vol_state": 0,
-                        "trend_state": "Sideways",
+                        "trend_state": None,  # Will be set after first strategy calculation
                         "current_positions": {},
                         "account_equity": float(initial_capital),
                         "last_allocation": {},

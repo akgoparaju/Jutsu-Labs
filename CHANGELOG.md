@@ -1,3 +1,54 @@
+#### **Fix: Dashboard Regime Mismatch (Current Regime + Decision Tree)** (2025-12-11)
+
+**Fixed mismatch between Current Regime/Decision Tree displays and Performance tab**
+
+**Problem**:
+Dashboard "Current Regime" module and "Decision Tree" tab showed "Cell 1" while Performance tab correctly showed "Cell 3". The dashboard was getting stale data from the live strategy object instead of the database.
+
+**Root Cause**:
+- `/api/status`, `/api/status/regime`, and `/api/indicators` endpoints read from `get_strategy_context()` which returns the **live strategy object's** `cell_id` attribute
+- This attribute may be stale (default value 1) if the engine hasn't processed bars recently
+- Performance tab reads from `performance_snapshots` table which has the **actual computed cell** (3)
+
+**Solution**:
+Modified all three endpoints to use database snapshot as source of truth:
+1. First check the latest `performance_snapshots` entry (source of truth)
+2. Fall back to live strategy context only if no snapshot exists
+3. This ensures all dashboard components display consistent regime data
+
+**Files Modified**:
+- `jutsu_engine/api/routes/status.py` - `get_status()` and `get_regime()` functions updated
+- `jutsu_engine/api/routes/indicators.py` - `get_indicators()` function updated (includes `current_cell`, `trend_state`, `vol_state`)
+
+**Verification**:
+- Dashboard Current Regime now shows Cell 3 (matching Performance tab)
+- Decision Tree tab now shows Cell 3 (matching Performance tab)
+- Falls back to live strategy context when no snapshots exist
+
+---
+
+#### **Fix: Database Schema Migration for Security Columns** (2025-12-11)
+
+**Fixed login failure due to missing database columns**
+
+**Problem**:
+Login failed with "An unexpected error occurred" because the PostgreSQL database was missing the new security columns (`failed_login_count`, `locked_until`) that were added to the User model during security hardening.
+
+**Solution**:
+Added missing columns to the users table via ALTER TABLE:
+- `failed_login_count INTEGER DEFAULT 0` - Tracks consecutive failed login attempts
+- `locked_until TIMESTAMP WITH TIME ZONE NULL` - Account lockout expiration
+
+**Security Verification**:
+All security features verified intact:
+- ✅ Account lockout protection (10 attempts → 30 min lockout)
+- ✅ JWT token blacklisting with JTI claims
+- ✅ Two-factor authentication (TOTP)
+- ✅ Secure password hashing (bcrypt)
+- ✅ Rate limiting on login endpoints
+
+---
+
 #### **Fix: Restore Missing Database Models After Security Update** (2025-12-11)
 
 **Fixed Docker deployment crash caused by missing database models**

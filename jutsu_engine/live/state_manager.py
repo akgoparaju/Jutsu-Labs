@@ -277,6 +277,7 @@ class StateManager:
         return {
             'last_run': None,
             'vol_state': 0,
+            'trend_state': None,  # Will be set after first strategy calculation
             'current_positions': {},
             'account_equity': None,
             'last_allocation': {},

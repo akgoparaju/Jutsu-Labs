@@ -593,6 +593,7 @@ def main(check_freshness: bool = False):
         vol_state_map = {'Low': 0, 'High': 1, None: None}
         vol_state_str = signals['vol_state']
         state['vol_state'] = vol_state_map.get(vol_state_str, 0)
+        state['trend_state'] = signals.get('trend_state')  # Save trend_state for consistency
         # BUG FIX: Only update positions in state if trades executed
         if fills:
             state['current_positions'] = target_positions

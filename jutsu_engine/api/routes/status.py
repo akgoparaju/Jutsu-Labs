@@ -58,27 +58,45 @@ async def get_status(
         - Portfolio summary with positions
     """
     try:
-        # Build regime info
+        # Build regime info - prefer database snapshot over live strategy context
+        # The live strategy context may have stale/default values if the engine
+        # hasn't processed bars recently. The database snapshot is the source of truth.
         regime_info = None
         try:
-            runner = get_strategy_runner()
-            context = runner.get_strategy_context()
+            # First try to get from latest performance snapshot (source of truth)
+            latest_snapshot = db.query(PerformanceSnapshot).filter(
+                PerformanceSnapshot.mode == engine_state.mode
+            ).order_by(desc(PerformanceSnapshot.timestamp)).first()
 
-            if context:
-                # Handle None values explicitly - only create RegimeInfo if we have valid data
-                cell = context.get('current_cell')
-                trend = context.get('trend_state')
-                vol = context.get('vol_state')
-
+            if latest_snapshot and latest_snapshot.strategy_cell is not None:
+                # Use database snapshot values (most accurate)
                 regime_info = RegimeInfo(
-                    cell=cell if cell is not None else None,
-                    trend_state=trend if trend else None,
-                    vol_state=vol if vol else None,
-                    t_norm=context.get('t_norm'),
-                    z_score=context.get('z_score'),
+                    cell=latest_snapshot.strategy_cell,
+                    trend_state=latest_snapshot.trend_state,
+                    vol_state=latest_snapshot.vol_state,
+                    t_norm=None,  # Not stored in snapshot
+                    z_score=None,  # Not stored in snapshot
                 )
+                logger.debug(f"Regime from snapshot: Cell {latest_snapshot.strategy_cell}")
+            else:
+                # Fall back to live strategy context if no snapshot
+                runner = get_strategy_runner()
+                context = runner.get_strategy_context()
+
+                if context:
+                    cell = context.get('current_cell')
+                    trend = context.get('trend_state')
+                    vol = context.get('vol_state')
+
+                    regime_info = RegimeInfo(
+                        cell=cell if cell is not None else None,
+                        trend_state=trend if trend else None,
+                        vol_state=vol if vol else None,
+                        t_norm=context.get('t_norm'),
+                        z_score=context.get('z_score'),
+                    )
         except Exception as e:
-            logger.warning(f"Could not get strategy context: {e}")
+            logger.warning(f"Could not get regime info: {e}")
 
         # Build portfolio info
         portfolio_info = None
@@ -204,14 +222,33 @@ async def health_check() -> dict:
     description="Returns just the current strategy regime information."
 )
 async def get_regime(
+    db: Session = Depends(get_db),
+    engine_state: EngineState = Depends(get_engine_state),
     _auth: bool = Depends(verify_credentials),
 ) -> RegimeInfo:
     """
     Get current strategy regime.
 
     Returns cell, trend state, volatility state, and indicator values.
+    Prefers database snapshot (source of truth) over live strategy context.
     """
     try:
+        # First try to get from latest performance snapshot (source of truth)
+        latest_snapshot = db.query(PerformanceSnapshot).filter(
+            PerformanceSnapshot.mode == engine_state.mode
+        ).order_by(desc(PerformanceSnapshot.timestamp)).first()
+
+        if latest_snapshot and latest_snapshot.strategy_cell is not None:
+            # Use database snapshot values (most accurate)
+            return RegimeInfo(
+                cell=latest_snapshot.strategy_cell,
+                trend_state=latest_snapshot.trend_state,
+                vol_state=latest_snapshot.vol_state,
+                t_norm=None,  # Not stored in snapshot
+                z_score=None,  # Not stored in snapshot
+            )
+
+        # Fall back to live strategy context if no snapshot
         runner = get_strategy_runner()
         context = runner.get_strategy_context()
 
