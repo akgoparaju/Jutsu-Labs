@@ -35,7 +35,10 @@
 # NEXT REVIEW: When python-jose or ecdsa dependencies are updated
 
 [[tool.pip-audit.ignore-vulns]]
-id = "PYSEC-2024-34"  # CVE-2024-23342
+id = "CVE-2024-23342"  # Primary CVE ID
 
 [[tool.pip-audit.ignore-vulns]]
-id = "GHSA-wj6h-64fc-37mp"  # Same CVE, GitHub advisory ID
+id = "PYSEC-2024-34"  # CVE-2024-23342 (PyPI advisory ID)
+
+[[tool.pip-audit.ignore-vulns]]
+id = "GHSA-wj6h-64fc-37mp"  # CVE-2024-23342 (GitHub advisory ID)

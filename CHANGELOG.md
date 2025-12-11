@@ -1,3 +1,33 @@
+#### **Security: pip-audit CVE Ignore Configuration Fix** (2025-12-11)
+
+**Fixed pip-audit failing to recognize CVE ignore configuration**
+
+**Problem**:
+pip-audit reported CVE-2024-23342 (ecdsa) as a vulnerability even though it was documented as a justified exception in `.pip-audit.toml`. The scan returned exit code 1 causing CI/CD failures.
+
+**Root Cause**:
+The ignore configuration used alternative advisory IDs (`PYSEC-2024-34`, `GHSA-wj6h-64fc-37mp`) but pip-audit reported the vulnerability using the primary CVE ID (`CVE-2024-23342`). The ID mismatch caused the ignore to fail.
+
+**Solution**:
+1. Added `CVE-2024-23342` to `.pip-audit.toml` as the primary ignore ID
+2. Updated `.github/workflows/security-scan.yml` with the CVE ID in ignore flags
+3. Pinned `starlette>=0.49.1` in requirements.txt to prevent CVE-2025-62727 (Range header DoS)
+
+**Files Modified**:
+- `.pip-audit.toml` - Added CVE-2024-23342 to ignore list (kept PYSEC and GHSA for completeness)
+- `.github/workflows/security-scan.yml` - Added --ignore-vuln CVE-2024-23342 flag
+- `requirements.txt` - Added starlette>=0.49.1 pin for defense-in-depth
+
+**Verification**:
+- pip-audit: ✅ PASSED (0 vulnerabilities, 1 ignored)
+- Starlette 0.49.3 installed (patched for CVE-2025-62727)
+
+**Security Context**:
+- CVE-2024-23342 (ecdsa): Timing attack vulnerability that does NOT affect Jutsu Labs (uses HS256, not ECDSA)
+- CVE-2025-62727 (Starlette): Range header DoS - fixed in >=0.49.1, we run 0.49.3
+
+---
+
 #### **Fix: Decision Tree UI Allocation Display** (2025-12-11)
 
 **Fixed incorrect cell allocation values in Decision Tree dashboard tab**
