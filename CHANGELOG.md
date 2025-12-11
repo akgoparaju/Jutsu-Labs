@@ -1,3 +1,35 @@
+#### **Fix: Restore Missing Database Models After Security Update** (2025-12-11)
+
+**Fixed Docker deployment crash caused by missing database models**
+
+**Problem**:
+Docker container failed to start with `ImportError: cannot import name 'Position' from 'jutsu_engine.data.models'`. The security update (2025-12-10) accidentally replaced the entire models.py file instead of adding to it, removing 8 critical database models.
+
+**Root Cause**:
+During security hardening implementation, models.py was completely overwritten instead of being modified additively. This removed:
+- `Position` - Live trading position tracking
+- `PerformanceSnapshot` - Dashboard performance metrics
+- `LiveTrade` - Trade execution records
+- `ConfigOverride` - Runtime parameter overrides
+- `ConfigHistory` - Configuration audit log
+- `SystemState` - System state persistence
+- `DataAuditLog` - Data modification audit trail
+- `TradingModeEnum` - Trading mode enumeration
+
+**Solution**:
+1. Restored all 8 missing models from the previous version
+2. Preserved all security additions (BlacklistedToken, User lockout fields)
+3. Combined old functionality with new security features
+
+**Files Modified**:
+- `jutsu_engine/data/models.py` - Restored all models + kept security additions
+
+**Verification**:
+- All model imports verified working
+- Docker deployment should now start successfully
+
+---
+
 #### **Security: Account Lockout Protection** (2025-12-10)
 
 **Implemented account lockout after 10 failed login attempts**
