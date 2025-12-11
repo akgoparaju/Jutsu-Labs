@@ -35,7 +35,8 @@ seaborn==0.13.2
 plotly==6.5.0  # Interactive plots for backtest results
 
 # API Framework
-fastapi==0.115.12
+# FastAPI 0.120.1+ required for Starlette >=0.49.1 (CVE-2025-62727 fix)
+fastapi>=0.120.1
 uvicorn[standard]==0.34.3
 slowapi>=0.1.9  # Rate limiting for FastAPI (install if needed)
 

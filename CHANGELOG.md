@@ -1,3 +1,29 @@
+#### **Security: FastAPI/Starlette Dependency Conflict Resolution** (2025-12-11)
+
+**Fixed dependency conflict between FastAPI and Starlette security pin**
+
+**Problem**:
+After pinning `starlette>=0.49.1` for CVE-2025-62727 (Range header DoS), pip install failed with:
+```
+fastapi 0.115.12 depends on starlette<0.47.0 and >=0.40.0
+```
+
+**Root Cause**:
+FastAPI 0.115.12 had an upper bound on Starlette (<0.47.0) that conflicted with the security pin (>=0.49.1).
+
+**Solution**:
+Upgraded FastAPI from `==0.115.12` to `>=0.120.1` which supports Starlette 0.49+.
+
+**Files Modified**:
+- `requirements.txt` - Changed FastAPI from `==0.115.12` to `>=0.120.1`
+
+**Verification**:
+- pip install: ✅ PASSED
+- FastAPI 0.121.0 installed with Starlette 0.49.3
+- pip-audit: ✅ PASSED (0 vulnerabilities, 1 ignored)
+
+---
+
 #### **Security: pip-audit CVE Ignore Configuration Fix** (2025-12-11)
 
 **Fixed pip-audit failing to recognize CVE ignore configuration**
