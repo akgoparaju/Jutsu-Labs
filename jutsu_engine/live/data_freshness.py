@@ -32,7 +32,7 @@ from sqlalchemy.orm import sessionmaker
 
 from jutsu_engine.data.models import DataMetadata, MarketData
 from jutsu_engine.live.market_calendar import get_previous_trading_day, is_trading_day
-from jutsu_engine.utils.config import get_database_url, get_database_path
+from jutsu_engine.utils.config import get_database_url, get_database_path, get_database_type, DATABASE_TYPE_SQLITE
 
 logger = logging.getLogger('LIVE.DATA_FRESHNESS')
 
@@ -75,30 +75,42 @@ class DataFreshnessChecker:
         Initialize DataFreshnessChecker.
 
         Args:
-            db_path: Path to SQLite database (auto-detected if None)
+            db_path: Path to database (auto-detected if None, ignored for PostgreSQL)
             timeframe: Bar timeframe to check
             required_symbols: Symbols that must be fresh (default: strategy universe)
         """
-        # Use centralized utility for database path detection
-        if db_path is None:
-            db_url = get_database_url()
-            db_path = get_database_path()
-        else:
+        # Use centralized utility for database configuration
+        db_url = get_database_url()
+        db_type = get_database_type()
+        
+        # Handle explicit db_path for SQLite (backward compatibility)
+        if db_path is not None and db_type == DATABASE_TYPE_SQLITE:
             db_url = f'sqlite:///{db_path}'
 
-        self.db_path = Path(db_path)
+        self.db_type = db_type
         self.timeframe = timeframe
         self.required_symbols = required_symbols or self.DEFAULT_REQUIRED_SYMBOLS
 
-        # Initialize database connection
-        if not self.db_path.exists():
-            raise DataFreshnessError(f"Database not found: {self.db_path}")
+        # Initialize database connection with type-specific args
+        if db_type == DATABASE_TYPE_SQLITE:
+            db_file_path = get_database_path() if db_path is None else db_path
+            if db_file_path:
+                self.db_path = Path(db_file_path)
+                if not self.db_path.exists():
+                    raise DataFreshnessError(f"Database not found: {self.db_path}")
+            else:
+                self.db_path = None
+            engine = create_engine(db_url, connect_args={'check_same_thread': False})
+        else:
+            # PostgreSQL - no file path, use URL directly
+            self.db_path = None
+            engine = create_engine(db_url)
 
-        engine = create_engine(db_url)
         Session = sessionmaker(bind=engine)
         self.session = Session()
 
-        logger.info(f"DataFreshnessChecker initialized: db={self.db_path}, symbols={self.required_symbols}")
+        db_info = str(self.db_path) if self.db_path else f"{db_type} database"
+        logger.info(f"DataFreshnessChecker initialized: db={db_info}, symbols={self.required_symbols}")
 
     def get_expected_last_bar_date(self) -> datetime:
         """

@@ -1,3 +1,64 @@
+#### **Fix: Scheduler DataFreshnessChecker PostgreSQL Support** (2025-12-11)
+
+#### **Security Fix: Schwab API Endpoints Authentication** (2025-12-11)
+
+**Fixed security exposure in Schwab API endpoints that were accessible without authentication**
+
+**Problem**:
+Three Schwab OAuth management endpoints were intentionally designed without authentication, exposing sensitive information:
+- `GET /api/schwab/status` - Exposed `token_age_days`, `expires_in_days`, `callback_url`
+- `POST /api/schwab/initiate` - Could start OAuth flow without auth
+- `POST /api/schwab/callback` - OAuth callback handler without auth
+
+**Security Risk**:
+Attackers could access token status information and potentially manipulate OAuth flow.
+
+**Solution**:
+Added `verify_credentials` dependency to all three endpoints:
+1. `/api/schwab/status` - Now requires authentication
+2. `/api/schwab/initiate` - Now requires authentication  
+3. `/api/schwab/callback` - Now requires authentication
+
+**Files Modified**:
+- `jutsu_engine/api/routes/schwab_auth.py` - Added `verify_credentials` import and dependency to 3 endpoints
+
+**Verification**:
+- Full API route audit confirmed all 32 endpoints now require authentication
+- Only intentionally public endpoints remain: login, login-2fa, auth status, 2fa validate (login flow)
+
+**Note**: The `/api/schwab/token` DELETE endpoint already had authentication via `get_current_user`.
+
+---
+
+**Fixed scheduler error: `sqlite3.OperationalError: no such table: data_metadata`**
+
+**Problem**:
+When scheduler triggered the trading job with `check_freshness=True`, the `DataFreshnessChecker` attempted to use SQLite instead of PostgreSQL, causing the "no such table" error.
+
+**Root Cause**:
+In `jutsu_engine/live/data_freshness.py`, the `__init__` method had SQLite-specific assumptions:
+- `get_database_path()` returns `None` for PostgreSQL (no file path)
+- Code tried `Path(None)` which creates `PosixPath('.')`
+- File existence check `self.db_path.exists()` is SQLite-specific
+- Missing database type detection for proper connection args
+
+**Solution**:
+Updated `DataFreshnessChecker.__init__()` to use centralized config pattern:
+1. Import `get_database_type()` and `DATABASE_TYPE_SQLITE` from config
+2. Detect database type and handle PostgreSQL vs SQLite appropriately
+3. Skip file existence check for PostgreSQL (no file to check)
+4. Use proper SQLite connection args (`check_same_thread=False`) only for SQLite
+
+**Files Modified**:
+- `jutsu_engine/live/data_freshness.py` - Fixed database connection handling
+
+**Verification**:
+- `DataFreshnessChecker` now initializes correctly with PostgreSQL
+- `db_type` attribute properly set to 'postgresql'
+- `db_path` is `None` for PostgreSQL (correct behavior)
+
+---
+
 #### **Fix: Dashboard Regime Mismatch (Current Regime + Decision Tree)** (2025-12-11)
 
 **Fixed mismatch between Current Regime/Decision Tree displays and Performance tab**
