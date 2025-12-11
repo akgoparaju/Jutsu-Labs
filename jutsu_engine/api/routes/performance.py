@@ -195,7 +195,7 @@ async def get_performance(
 
     except Exception as e:
         logger.error(f"Performance get error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get(
@@ -263,7 +263,7 @@ async def get_equity_curve(
 
     except Exception as e:
         logger.error(f"Equity curve error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get(
@@ -353,7 +353,7 @@ async def get_drawdown_analysis(
 
     except Exception as e:
         logger.error(f"Drawdown analysis error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get(
@@ -421,4 +421,4 @@ async def get_regime_breakdown(
 
     except Exception as e:
         logger.error(f"Regime breakdown error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")

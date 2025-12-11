@@ -91,7 +91,19 @@ class DashboardDataRefresher:
         # Initialize database connection
         # Note: check_same_thread is SQLite-only, don't use for PostgreSQL
         if self._is_postgresql:
-            self._engine = create_engine(db_url)
+            # PostgreSQL: Add TCP keepalive to prevent connection timeouts
+            self._engine = create_engine(
+                db_url,
+                pool_pre_ping=True,  # Validate connections before use
+                pool_recycle=300,  # Recycle connections every 5 minutes
+                connect_args={
+                    'keepalives': 1,           # Enable TCP keepalives
+                    'keepalives_idle': 60,     # Start probes after 60s idle
+                    'keepalives_interval': 10,  # Probe every 10s
+                    'keepalives_count': 5,      # Fail after 5 failed probes
+                    'connect_timeout': 10,      # Connection timeout in seconds
+                },
+            )
         else:
             self._engine = create_engine(
                 db_url,

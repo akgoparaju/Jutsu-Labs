@@ -161,7 +161,7 @@ async def get_configuration(
 
     except Exception as e:
         logger.error(f"Config get error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.put(
@@ -299,7 +299,7 @@ async def update_configuration(
     except Exception as e:
         db.rollback()
         logger.error(f"Config update error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.delete(
@@ -382,7 +382,7 @@ async def reset_parameter(
     except Exception as e:
         db.rollback()
         logger.error(f"Config reset error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 def _convert_value(value_str: str, value_type: str):

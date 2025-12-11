@@ -141,7 +141,7 @@ async def get_trades(
 
     except Exception as e:
         logger.error(f"Trades list error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get(
@@ -254,7 +254,7 @@ async def export_trades(
 
     except Exception as e:
         logger.error(f"Trades export error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get(
@@ -304,7 +304,7 @@ async def get_trade(
         raise
     except Exception as e:
         logger.error(f"Trade get error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get(
@@ -390,7 +390,7 @@ async def get_trade_stats(
 
     except Exception as e:
         logger.error(f"Trade stats error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post(
@@ -542,7 +542,7 @@ async def execute_trade(
         raise
     except Exception as e:
         logger.error(f"Trade execution error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 async def _get_current_price(symbol: str) -> Optional[Decimal]:

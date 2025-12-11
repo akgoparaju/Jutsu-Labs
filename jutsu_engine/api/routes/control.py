@@ -112,7 +112,7 @@ async def start_engine(
         raise
     except Exception as e:
         logger.error(f"Start engine error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post(
@@ -167,7 +167,7 @@ async def stop_engine(
         raise
     except Exception as e:
         logger.error(f"Stop engine error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post(
@@ -241,7 +241,7 @@ async def restart_engine(
         raise
     except Exception as e:
         logger.error(f"Restart engine error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get(
@@ -332,7 +332,7 @@ async def switch_mode(
         raise
     except Exception as e:
         logger.error(f"Mode switch error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ==============================================================================
@@ -361,7 +361,7 @@ async def get_scheduler_status(
         return SchedulerStatus(**status)
     except Exception as e:
         logger.error(f"Scheduler status error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post(
@@ -409,7 +409,7 @@ async def enable_scheduler(
         raise
     except Exception as e:
         logger.error(f"Enable scheduler error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post(
@@ -435,7 +435,7 @@ async def disable_scheduler(
 
     except Exception as e:
         logger.error(f"Disable scheduler error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post(
@@ -477,7 +477,7 @@ async def trigger_scheduler(
         raise
     except Exception as e:
         logger.error(f"Trigger scheduler error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.put(
@@ -521,7 +521,7 @@ async def update_scheduler(
         raise
     except Exception as e:
         logger.error(f"Update scheduler error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ==============================================================================
@@ -572,7 +572,7 @@ async def check_data_staleness(
         
     except Exception as e:
         logger.error(f"Check staleness error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post(
@@ -626,4 +626,4 @@ async def trigger_data_refresh(
         raise
     except Exception as e:
         logger.error(f"Data refresh error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")

@@ -1,3 +1,214 @@
+#### **Security: Fix Error Information Disclosure in API Responses** (2025-12-10)
+
+**Fixed SQL/exception details leaking in API error responses**
+
+**Problem**:
+API endpoints returned raw exception messages in error responses, exposing:
+- SQL query syntax and errors (e.g., "relation does not exist")
+- Database connection details
+- Internal file paths
+- Stack trace fragments
+
+This is an information disclosure vulnerability (CWE-209) that helps attackers understand the internal system.
+
+**Root Cause**:
+27 instances of `raise HTTPException(status_code=500, detail=str(e))` across 6 route files were directly exposing exception messages to API clients.
+
+**Fix**:
+1. Replaced all `detail=str(e)` with generic `detail="Internal server error"` in:
+   - `config.py`: 3 instances
+   - `control.py`: 12 instances
+   - `indicators.py`: 2 instances
+   - `trades.py`: 5 instances
+   - `performance.py`: 4 instances
+   - `status.py`: 2 instances
+
+2. Fixed global exception handler in `main.py` to never leak exception details:
+   ```python
+   # Before (leaked on debug=True):
+   "detail": str(exc) if debug else None
+   
+   # After (always safe):
+   "detail": "An unexpected error occurred. Please try again later."
+   ```
+
+**Security Principle**: Error messages are logged server-side for debugging, but NEVER exposed to API clients.
+
+**Files Modified**:
+- `jutsu_engine/api/routes/config.py`
+- `jutsu_engine/api/routes/control.py`
+- `jutsu_engine/api/routes/indicators.py`
+- `jutsu_engine/api/routes/trades.py`
+- `jutsu_engine/api/routes/performance.py`
+- `jutsu_engine/api/routes/status.py`
+- `jutsu_engine/api/main.py`
+
+---
+
+#### **CRITICAL Security: Fix Authentication Bypass on ALL API Endpoints** (2025-12-10)
+
+**Fixed critical vulnerability where ALL 29 API endpoints were accessible without authentication even with `AUTH_REQUIRED=true`**
+
+**Problem**:
+After deploying to production with `AUTH_REQUIRED=true`, attackers could:
+- Start/stop/restart trading engine without authentication
+- Switch between `offline_mock` and `online_live` modes
+- Control scheduler (enable/disable/trigger)
+- Access all trade history, performance data, and configuration
+- **This explains the reported "weird behavior" and system disconnections**
+
+**Root Cause Analysis** (Evidence-Based):
+1. `verify_credentials()` function in `dependencies.py` (line 416-446) only checked **legacy HTTP Basic auth** (`JUTSU_API_USERNAME`/`JUTSU_API_PASSWORD`)
+2. If legacy env vars not set, function returned `True` (allowed access) on line 423: `if not API_USERNAME or not API_PASSWORD: return True`
+3. This function did NOT check `AUTH_REQUIRED` which controls JWT authentication
+4. 29 endpoints across 6 route files used `verify_credentials`, making them all unprotected:
+   - `control.py`: 11 endpoints (start, stop, restart, mode, scheduler) - **CRITICAL**
+   - `config.py`: 3 endpoints
+   - `trades.py`: 5 endpoints
+   - `performance.py`: 4 endpoints
+   - `status.py`: 2 endpoints
+   - `indicators.py`: 3 endpoints
+
+**Fix**:
+
+1. **`jutsu_engine/api/dependencies.py`** - Rewrote `verify_credentials()` to check JWT auth:
+   ```python
+   async def verify_credentials(request: Request, credentials, db):
+       auth_required = os.getenv('AUTH_REQUIRED', 'false').lower() == 'true'
+       
+       # JWT Authentication (primary - when AUTH_REQUIRED=true)
+       if auth_required:
+           auth_header = request.headers.get("Authorization")
+           # ... validate Bearer token using get_user_from_token()
+       
+       # Legacy HTTP Basic (fallback if configured)
+       # Development mode (no auth) only if neither configured
+   ```
+
+2. **`docker-compose.yml`** - Changed default to secure:
+   ```yaml
+   # OLD (insecure): AUTH_REQUIRED=${AUTH_REQUIRED:-false}
+   # NEW (secure):   AUTH_REQUIRED=${AUTH_REQUIRED:-true}
+   ```
+
+**Security Principle**: Defense in depth - both the function AND the default are now secure.
+
+**Files Modified**:
+- `jutsu_engine/api/dependencies.py`: Rewrote `verify_credentials()` to check `AUTH_REQUIRED` and validate JWT tokens
+- `docker-compose.yml`: Changed `AUTH_REQUIRED` default from `false` to `true`
+
+**Deployment**:
+```bash
+docker-compose build --no-cache && docker-compose up -d
+```
+
+After deployment, verify:
+- All API endpoints return 401 Unauthorized without login
+- After login, endpoints work normally with JWT token
+
+**IMPORTANT**: If you previously deployed without setting `AUTH_REQUIRED=true`, your system was exposed. Review logs for unauthorized access.
+
+---
+
+#### **Security: Restrict OpenAPI/Docs Endpoints from Public Access** (2025-12-10)
+
+**Fixed exposure of `/openapi.json`, `/docs`, and `/redoc` endpoints in production deployments**
+
+**Problem**:
+After deploying to `jutsu.goparaju.ai`, the OpenAPI documentation endpoints were publicly accessible:
+- `jutsu.goparaju.ai/openapi.json` - Exposed full API schema
+- `jutsu.goparaju.ai/docs` - Swagger UI accessible
+- `jutsu.goparaju.ai/redoc` - ReDoc accessible
+
+This exposes API structure which could aid attackers in understanding attack vectors.
+
+**Root Cause Analysis** (Evidence-Based):
+1. `DISABLE_DOCS` environment variable was implemented in `main.py` but NOT configured in `docker-compose.yml`
+2. Default value is `false` (docs enabled) - designed for development convenience
+3. Secondary issue: `/` and `/api` endpoints always advertised docs URLs even when docs were disabled
+
+**Fix**:
+
+1. **`docker-compose.yml`** - Added `DISABLE_DOCS` with secure default:
+   ```yaml
+   # API Documentation Security
+   # Set to 'true' to disable /docs, /redoc, /openapi.json endpoints in production
+   - DISABLE_DOCS=${DISABLE_DOCS:-true}
+   ```
+   Default is now `true` (secure by default for production)
+
+2. **`jutsu_engine/api/main.py`** - Fixed information disclosure:
+   - `root()` endpoint: Conditionally includes "docs" key only when docs enabled
+   - `api_info()` endpoint: Conditionally includes "docs" section only when docs enabled
+
+**Security Principle**: No information disclosure - even endpoint metadata should not reveal disabled features.
+
+**Files Modified**:
+- `docker-compose.yml`: Added `DISABLE_DOCS` environment variable
+- `jutsu_engine/api/main.py`: Updated `root()` and `api_info()` endpoints
+
+**Deployment**:
+```bash
+docker-compose build --no-cache && docker-compose up -d
+```
+
+After deployment, verify:
+- `jutsu.goparaju.ai/openapi.json` → 404 Not Found
+- `jutsu.goparaju.ai/docs` → 404 Not Found
+- `jutsu.goparaju.ai/` → No "docs" key in response
+
+**Development Override**: Set `DISABLE_DOCS=false` in `.env` to re-enable docs for local development.
+
+---
+
+#### **Fix: Docker PostgreSQL Connection Timeout After ~50 Minutes** (2025-12-10)
+
+**Fixed database connection dropping in Docker deployments after extended uptime**
+
+**Problem**:
+Docker container running for ~50 minutes would experience PostgreSQL connection failure:
+```
+psycopg2.OperationalError: connection to server at "192.168.7.100", port 5423 failed:
+server closed the connection unexpectedly
+```
+After the connection dropped, the container would receive SIGTERM and restart.
+
+**Root Cause Analysis** (Evidence-Based):
+1. Analyzed Docker container logs showing successful startup at 23:13:15
+2. Connection failure occurred at 00:03:38 (~50 minutes later)
+3. Error message: "server closed the connection unexpectedly" indicates SERVER-side closure
+4. Existing `pool_recycle=3600` (1 hour) was too long - network firewalls/NAT typically timeout idle TCP connections at 15-60 minutes
+5. No TCP keepalive was configured to prevent network devices from closing idle connections
+
+**Fix**:
+Updated PostgreSQL connection settings in two files:
+
+1. **`jutsu_engine/api/dependencies.py`** - Main API database connection:
+   - Reduced `pool_recycle` from 3600 to 300 (5 minutes)
+   - Added TCP keepalive settings via `connect_args`:
+     - `keepalives=1` - Enable TCP keepalives
+     - `keepalives_idle=60` - Start probes after 60s idle
+     - `keepalives_interval=10` - Probe every 10s
+     - `keepalives_count=5` - Fail after 5 failed probes
+     - `connect_timeout=10` - Connection timeout
+
+2. **`jutsu_engine/live/data_refresh.py`** - Data refresh module:
+   - Same TCP keepalive settings for consistency
+
+**Technical Details**:
+- TCP keepalives send periodic probes to prevent network devices (firewalls, NAT, routers) from closing idle connections
+- Shorter `pool_recycle` ensures connections are refreshed before they can become stale
+- `pool_pre_ping=True` was already enabled and validates connections before use
+
+**Files Modified**:
+- `jutsu_engine/api/dependencies.py`: Updated `_create_engine()` function
+- `jutsu_engine/live/data_refresh.py`: Updated PostgreSQL engine creation
+
+**Deployment**:
+Rebuild Docker image: `docker-compose build --no-cache && docker-compose up -d`
+
+---
+
 #### **Fix: Engine Auto-Start Not Working in Local Development** (2025-12-10)
 
 **Fixed auto-start feature not triggering when running locally (non-Docker)**

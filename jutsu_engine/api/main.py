@@ -391,15 +391,17 @@ def create_app(
         """WebSocket endpoint for real-time updates."""
         await websocket_endpoint(websocket)
 
-    # Global exception handler
+    # Global exception handler - NEVER leak exception details to client
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
+        # Log the full error for debugging (server-side only)
         logger.error(f"Unhandled exception: {exc}", exc_info=True)
+        # Return generic message to client - NEVER expose internal details
         return JSONResponse(
             status_code=500,
             content={
                 "error": "Internal server error",
-                "detail": str(exc) if debug else None,
+                "detail": "An unexpected error occurred. Please try again later.",
             }
         )
 
@@ -407,18 +409,21 @@ def create_app(
     @app.get("/", tags=["root"])
     async def root():
         """API root - returns basic info."""
-        return {
+        response = {
             "name": title,
             "version": version,
-            "docs": "/docs",
             "status": "/api/status",
         }
+        # Only advertise docs if they're enabled (security: no info disclosure)
+        if not disable_docs:
+            response["docs"] = "/docs"
+        return response
 
     # API info endpoint
     @app.get("/api", tags=["root"])
     async def api_info():
         """API information."""
-        return {
+        response = {
             "name": title,
             "version": version,
             "endpoints": {
@@ -429,12 +434,15 @@ def create_app(
                 "control": "/api/control",
                 "indicators": "/api/indicators",
             },
-            "docs": {
+        }
+        # Only advertise docs if they're enabled (security: no info disclosure)
+        if not disable_docs:
+            response["docs"] = {
                 "swagger": "/docs",
                 "redoc": "/redoc",
                 "openapi": "/openapi.json",
             }
-        }
+        return response
 
     return app
 

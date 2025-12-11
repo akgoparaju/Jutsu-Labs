@@ -172,7 +172,7 @@ async def get_status(
 
     except Exception as e:
         logger.error(f"Status endpoint error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get(
@@ -237,4 +237,4 @@ async def get_regime(
         raise
     except Exception as e:
         logger.error(f"Regime endpoint error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")

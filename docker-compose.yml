@@ -43,11 +43,16 @@ services:
       # Set to 'offline_mock' for paper trading, 'online_live' for live trading, or empty to disable
       - ENGINE_AUTO_START=${ENGINE_AUTO_START:-offline_mock}
 
-      # JWT Authentication (recommended)
-      # Set AUTH_REQUIRED=true to require login before accessing dashboard
-      - AUTH_REQUIRED=${AUTH_REQUIRED:-false}
+      # JWT Authentication (REQUIRED for production security)
+      # AUTH_REQUIRED=true enforces login before accessing ANY API endpoint
+      # WARNING: Setting to 'false' exposes ALL endpoints without authentication!
+      - AUTH_REQUIRED=${AUTH_REQUIRED:-true}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
       - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
+
+      # API Documentation Security
+      # Set to 'true' to disable /docs, /redoc, /openapi.json endpoints in production
+      - DISABLE_DOCS=${DISABLE_DOCS:-true}
 
       # Legacy API authentication (deprecated, use JWT instead)
       - JUTSU_API_USERNAME=${JUTSU_API_USERNAME:-}

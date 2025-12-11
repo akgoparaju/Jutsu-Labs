@@ -280,7 +280,7 @@ async def get_indicators(
         raise
     except Exception as e:
         logger.error(f"Indicators endpoint error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get(
@@ -310,7 +310,7 @@ async def get_indicator_history(
 
     except Exception as e:
         logger.error(f"Indicator history error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get(

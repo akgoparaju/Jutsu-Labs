@@ -17,7 +17,7 @@ from contextlib import contextmanager
 import pandas as pd
 from sqlalchemy import create_engine, and_
 from sqlalchemy.orm import sessionmaker, Session
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials, OAuth2PasswordBearer
 import secrets
 
@@ -106,14 +106,25 @@ def _create_engine(db_url: str):
             pool_pre_ping=True,
         )
     else:
-        # PostgreSQL: Connection pooling settings
+        # PostgreSQL: Connection pooling with TCP keepalive settings
+        # These settings prevent connections from being closed by firewalls/NAT devices
+        # that timeout idle TCP connections (typically 15-60 minutes)
         return create_engine(
             db_url,
             echo=False,
             pool_size=5,
             max_overflow=10,
-            pool_pre_ping=True,
-            pool_recycle=3600,  # Recycle connections after 1 hour
+            pool_pre_ping=True,  # Validate connections before use
+            pool_recycle=300,  # Recycle connections every 5 minutes (was 1 hour)
+            connect_args={
+                # TCP keepalive settings for PostgreSQL (psycopg2)
+                # These tell the OS to send periodic TCP keepalive probes
+                'keepalives': 1,           # Enable TCP keepalives
+                'keepalives_idle': 60,     # Start probes after 60s idle
+                'keepalives_interval': 10,  # Probe every 10s
+                'keepalives_count': 5,      # Fail after 5 failed probes
+                'connect_timeout': 10,      # Connection timeout in seconds
+            },
         )
 
 
@@ -403,36 +414,78 @@ async def require_auth(
     return user
 
 
-def verify_credentials(credentials: Optional[HTTPBasicCredentials] = Depends(security)) -> bool:
+async def verify_credentials(
+    request: Request,
+    credentials: Optional[HTTPBasicCredentials] = Depends(security),
+    db: Session = Depends(get_db),
+) -> bool:
     """
-    Verify HTTP Basic credentials (legacy - for backward compatibility).
+    Verify authentication - supports both JWT and legacy HTTP Basic.
 
-    If JUTSU_API_USERNAME and JUTSU_API_PASSWORD are not set,
-    authentication is disabled (returns True).
+    Authentication priority:
+    1. If AUTH_REQUIRED=true, require JWT token (Bearer auth) - RECOMMENDED
+    2. If JUTSU_API_USERNAME/PASSWORD set, use HTTP Basic (legacy)
+    3. If neither configured, allow access (development mode only)
+
+    Security note: AUTH_REQUIRED=true should ALWAYS be set in production.
     """
-    # If no credentials configured, allow access
-    if not API_USERNAME or not API_PASSWORD:
+    auth_required = os.getenv('AUTH_REQUIRED', 'false').lower() == 'true'
+
+    # JWT Authentication (primary - when AUTH_REQUIRED=true)
+    if auth_required:
+        # Extract token from Authorization header
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required. Please login first.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        token = auth_header[7:]  # Remove "Bearer " prefix
+        user = get_user_from_token(db, token)
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired token. Please login again.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User account disabled",
+            )
+
+        logger.debug(f"JWT auth successful for user: {user.username}")
         return True
 
-    # If credentials configured but not provided, deny
-    if not credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-            headers={"WWW-Authenticate": "Basic"},
-        )
+    # Legacy HTTP Basic Authentication (if configured)
+    if API_USERNAME and API_PASSWORD:
+        if not credentials:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+                headers={"WWW-Authenticate": "Basic"},
+            )
 
-    # Verify credentials (constant-time comparison)
-    username_ok = secrets.compare_digest(credentials.username, API_USERNAME)
-    password_ok = secrets.compare_digest(credentials.password, API_PASSWORD)
+        # Verify credentials (constant-time comparison)
+        username_ok = secrets.compare_digest(credentials.username, API_USERNAME)
+        password_ok = secrets.compare_digest(credentials.password, API_PASSWORD)
 
-    if not (username_ok and password_ok):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
-            headers={"WWW-Authenticate": "Basic"},
-        )
+        if not (username_ok and password_ok):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid credentials",
+                headers={"WWW-Authenticate": "Basic"},
+            )
 
+        logger.debug("HTTP Basic auth successful")
+        return True
+
+    # No authentication configured - allow access (development mode)
+    # WARNING: This should never happen in production!
+    logger.warning("No authentication configured - allowing unauthenticated access")
     return True
 
 
