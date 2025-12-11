@@ -1,3 +1,87 @@
+#### **Security: Account Lockout Protection** (2025-12-10)
+
+**Implemented account lockout after 10 failed login attempts**
+
+**Problem**:
+Attackers could attempt unlimited brute force password attacks, even with rate limiting (which only limits per IP, not per account).
+
+**Solution**:
+1. Added `failed_login_count` and `locked_until` fields to User model
+2. After 10 failed attempts, account is locked for 30 minutes
+3. Successful login resets the counter
+4. Lockout applies to both password and 2FA verification
+
+**Security Features**:
+- Configurable threshold (default: 10 attempts)
+- Configurable duration (default: 30 minutes)
+- Automatic unlock after time expires
+- Security event logging for lockout events
+- Clear error messages with remaining lockout time
+
+**Files Modified**:
+- `jutsu_engine/data/models.py` - Added lockout fields to User
+- `jutsu_engine/api/routes/auth.py` - Added lockout check and tracking logic
+
+**OWASP Compliance**: V2.2.1, V2.2.2 (Account Lockout)
+**CWE Mitigation**: CWE-307 (Improper Restriction of Excessive Authentication Attempts)
+
+---
+
+#### **Security: Token Blacklist for Logout/Revocation** (2025-12-10)
+
+**Implemented server-side token revocation via blacklist table**
+
+**Problem**:
+JWT tokens are stateless - once issued, they remain valid until expiry. Users who "logged out" still had valid tokens that attackers could reuse if stolen.
+
+**Solution**:
+1. Added `BlacklistedToken` model for storing revoked token JTIs
+2. Added unique `jti` (JWT ID) claim to all access and refresh tokens
+3. Token validation now checks blacklist before accepting tokens
+4. Logout endpoint blacklists the current token
+5. Backward compatible with legacy tokens (no jti = skip blacklist check)
+
+**Security Features**:
+- Fast O(log n) blacklist lookup via indexed JTI column
+- Distinguishes access vs refresh tokens
+- Stores original expiry for cleanup purposes
+- Optional user_id link for auditing
+- Security warning logged when blacklisted tokens are attempted
+
+**Files Modified**:
+- `jutsu_engine/data/models.py` - Added BlacklistedToken model
+- `jutsu_engine/api/dependencies.py` - Added JTI to tokens, blacklist check
+- `jutsu_engine/api/routes/auth.py` - Modified logout to blacklist tokens
+
+**Database Migration**:
+Table auto-creates on startup via SQLAlchemy.
+
+---
+
+#### **Security: Pin Dependency Versions** (2025-12-10)
+
+**Pinned exact dependency versions in requirements.txt for reproducible builds**
+
+**Problem**:
+Using `>=` version specifiers allowed non-reproducible builds and potential supply chain attacks via dependency confusion.
+
+**Solution**:
+Changed all dependencies from `>=X.Y.Z` to `==X.Y.Z` format, pinning to currently installed and tested versions.
+
+**Key Versions Pinned**:
+- sqlalchemy==2.0.41
+- fastapi==0.115.12
+- python-jose==3.5.0
+- bcrypt==4.3.0
+- pydantic==2.10.6
+- pandas==2.3.2
+- numpy==2.2.6
+
+**Files Modified**:
+- `requirements.txt` - Pinned all versions
+
+---
+
 #### **Security: Fix Error Information Disclosure in API Responses** (2025-12-10)
 
 **Fixed SQL/exception details leaking in API error responses**

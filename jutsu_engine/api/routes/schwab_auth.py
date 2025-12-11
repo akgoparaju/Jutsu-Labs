@@ -300,7 +300,7 @@ async def initiate_schwab_auth():
         logger.error(f"Failed to initiate Schwab auth: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to initiate authentication: {str(e)}"
+            detail="Failed to initiate authentication. Check server logs for details."
         )
 
 
@@ -407,7 +407,7 @@ async def complete_schwab_auth(data: SchwabAuthCallback):
         logger.error(f"Failed to complete Schwab auth: {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to complete authentication: {str(e)}"
+            detail="Failed to complete authentication. Check server logs for details."
         )
 
 
@@ -459,7 +459,7 @@ async def delete_schwab_token(
             logger.error(f"Failed to delete token: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to delete token: {str(e)}"
+                detail="Failed to delete token. Check server logs for details."
             )
     else:
         return {"success": True, "message": "No token file exists"}

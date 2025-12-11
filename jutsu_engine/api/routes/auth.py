@@ -12,11 +12,13 @@ Security Features:
 - Long-lived refresh tokens (configurable, default 7 days)
 - Secure HTTP-only cookies for refresh tokens (optional, USE_SECURE_COOKIES=true)
 - Security event logging for audit trails
+- Account lockout after 10 failed login attempts (30 minute lockout)
+- Automatic unlock after lockout period expires
 """
 
 import os
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response, Cookie
@@ -58,6 +60,12 @@ COOKIE_SECURE = os.getenv('COOKIE_SECURE', 'true').lower() == 'true'  # Require 
 COOKIE_SAMESITE = os.getenv('COOKIE_SAMESITE', 'lax')  # lax, strict, or none
 COOKIE_DOMAIN = os.getenv('COOKIE_DOMAIN')  # None = current domain only
 REFRESH_TOKEN_COOKIE_NAME = 'refresh_token'
+
+# ==============================================================================
+# ACCOUNT LOCKOUT CONFIGURATION
+# ==============================================================================
+LOCKOUT_THRESHOLD = 10  # Failed login attempts before lockout
+LOCKOUT_DURATION_MINUTES = 30  # Account lockout duration
 
 router = APIRouter(prefix="/api/auth", tags=["authentication"])
 
@@ -111,6 +119,102 @@ class Login2FARequest(BaseModel):
     username: str
     password: str
     totp_code: str  # 6-digit TOTP code or backup code
+
+
+# ==============================================================================
+# HELPER FUNCTIONS
+# ==============================================================================
+
+def check_account_lockout(user, username: str, client_ip: str, user_agent: str):
+    """
+    Check if account is locked due to failed login attempts.
+
+    Args:
+        user: User object from database
+        username: Username for logging
+        client_ip: Client IP for logging
+        user_agent: User agent for logging
+
+    Raises:
+        HTTPException: If account is currently locked
+    """
+    if user.locked_until:
+        now = datetime.now(timezone.utc)
+        if user.locked_until > now:
+            # Account is locked
+            remaining_minutes = int((user.locked_until - now).total_seconds() / 60)
+            security_logger.log_login_failure(
+                username=username,
+                ip_address=client_ip,
+                user_agent=user_agent,
+                reason="account_locked"
+            )
+            logger.warning(f"Login attempt for locked account '{username}' - {remaining_minutes} min remaining")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Account is locked due to too many failed login attempts. Try again in {remaining_minutes} minutes.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+
+def handle_failed_login(user, db: Session, username: str, client_ip: str, user_agent: str, reason: str):
+    """
+    Handle failed login attempt - increment counter and potentially lock account.
+
+    Args:
+        user: User object from database
+        db: Database session
+        username: Username for logging
+        client_ip: Client IP for logging
+        user_agent: User agent for logging
+        reason: Reason for failure (for logging)
+    """
+    user.failed_login_count += 1
+
+    if user.failed_login_count >= LOCKOUT_THRESHOLD:
+        # Lock the account
+        user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=LOCKOUT_DURATION_MINUTES)
+        db.commit()
+
+        security_logger.log_security_event(
+            event_type="account_locked",
+            username=username,
+            ip_address=client_ip,
+            user_agent=user_agent,
+            details=f"Account locked after {user.failed_login_count} failed login attempts"
+        )
+        logger.warning(f"Account '{username}' locked after {user.failed_login_count} failed login attempts")
+
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Account locked due to too many failed login attempts. Try again in {LOCKOUT_DURATION_MINUTES} minutes.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    else:
+        # Just increment counter
+        db.commit()
+        security_logger.log_login_failure(
+            username=username,
+            ip_address=client_ip,
+            user_agent=user_agent,
+            reason=reason
+        )
+        logger.warning(f"Failed login attempt for '{username}' - attempt {user.failed_login_count}/{LOCKOUT_THRESHOLD}")
+
+
+def handle_successful_login(user, db: Session):
+    """
+    Handle successful login - reset failed login counter and unlock account.
+
+    Args:
+        user: User object from database
+        db: Database session
+    """
+    # Reset lockout fields on successful login
+    user.failed_login_count = 0
+    user.locked_until = None
+    user.last_login = datetime.now(timezone.utc)
+    db.commit()
 
 
 # ==============================================================================
@@ -168,6 +272,9 @@ async def login(
 
     Rate limited to prevent brute force attacks (default: 5 attempts/minute per IP).
 
+    Account lockout: After 10 failed login attempts, account is locked for 30 minutes.
+    Counter resets on successful login.
+
     If user has 2FA enabled, returns requires_2fa=True instead of tokens.
     User must then call /login-2fa with username and TOTP code to complete login.
 
@@ -183,7 +290,7 @@ async def login(
         JWT access and refresh tokens, or requires_2fa indicator
 
     Raises:
-        HTTPException 401: Invalid credentials
+        HTTPException 401: Invalid credentials or account locked
         HTTPException 503: JWT not available
     """
     client_ip = get_client_ip(request)
@@ -213,14 +320,12 @@ async def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # Check if account is locked
+    check_account_lockout(user, form_data.username, client_ip, user_agent)
+
     # Verify password
     if not verify_password(form_data.password, user.password_hash):
-        security_logger.log_login_failure(
-            username=form_data.username,
-            ip_address=client_ip,
-            user_agent=user_agent,
-            reason="invalid_password"
-        )
+        handle_failed_login(user, db, form_data.username, client_ip, user_agent, "invalid_password")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password",
@@ -249,9 +354,8 @@ async def login(
             token_type="bearer"
         )
 
-    # Update last login
-    user.last_login = datetime.now(timezone.utc)
-    db.commit()
+    # Successful login - reset failed login counter and update last login
+    handle_successful_login(user, db)
 
     # Create tokens
     token_data = {"sub": user.username}
@@ -326,6 +430,9 @@ async def login_with_2fa(
     Called after initial login returns requires_2fa=True.
     Validates username, password, and TOTP code, then issues tokens.
 
+    Account lockout: After 10 failed login attempts, account is locked for 30 minutes.
+    Counter resets on successful login.
+
     Args:
         request: FastAPI request (for client IP logging)
         login_request: Login credentials with TOTP code
@@ -334,7 +441,7 @@ async def login_with_2fa(
         JWT access and refresh tokens
 
     Raises:
-        HTTPException 401: Invalid credentials or TOTP code
+        HTTPException 401: Invalid credentials, TOTP code, or account locked
         HTTPException 503: JWT not available
     """
     client_ip = get_client_ip(request)
@@ -364,14 +471,12 @@ async def login_with_2fa(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # Check if account is locked
+    check_account_lockout(user, login_request.username, client_ip, user_agent)
+
     # Verify password
     if not verify_password(login_request.password, user.password_hash):
-        security_logger.log_login_failure(
-            username=login_request.username,
-            ip_address=client_ip,
-            user_agent=user_agent,
-            reason="invalid_password"
-        )
+        handle_failed_login(user, db, login_request.username, client_ip, user_agent, "invalid_password")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials or 2FA code",
@@ -418,21 +523,15 @@ async def login_with_2fa(
                 break
 
     if not totp_valid:
-        security_logger.log_login_failure(
-            username=login_request.username,
-            ip_address=client_ip,
-            user_agent=user_agent,
-            reason="invalid_2fa_code"
-        )
+        handle_failed_login(user, db, login_request.username, client_ip, user_agent, "invalid_2fa_code")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials or 2FA code",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Update last login
-    user.last_login = datetime.now(timezone.utc)
-    db.commit()
+    # Successful login - reset failed login counter and update last login
+    handle_successful_login(user, db)
 
     # Create tokens
     token_data = {"sub": user.username}
@@ -519,14 +618,53 @@ async def get_current_user_info(
 
 
 @router.post("/logout")
-async def logout(response: Response):
+async def logout(
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db)
+):
     """
     Logout endpoint.
 
-    JWT tokens are stateless, so this is mainly for client-side cleanup.
-    If secure cookies are enabled, this clears the refresh token cookie.
-    Returns success message - client should discard the access token.
+    Blacklists the current access token to prevent further use.
+    Also clears refresh token cookie if secure cookies are enabled.
+
+    Requires valid access token in Authorization header.
     """
+    from jutsu_engine.data.models import BlacklistedToken
+
+    # Extract token from Authorization header
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header[7:]  # Remove "Bearer " prefix
+
+        # Decode token to get JTI and expiration
+        payload = decode_access_token(token)
+        if payload:
+            jti = payload.get("jti")
+            exp = payload.get("exp")
+
+            # Only blacklist if token has JTI (new tokens)
+            if jti and exp:
+                # Convert expiration timestamp to datetime
+                expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
+
+                # Get user for logging
+                username = payload.get("sub")
+
+                # Add to blacklist
+                blacklisted = BlacklistedToken(
+                    jti=jti,
+                    token_type="access",
+                    expires_at=expires_at,
+                    user_id=None  # Could lookup user_id if needed
+                )
+                db.add(blacklisted)
+                db.commit()
+
+                logger.info(f"Token blacklisted for user '{username}': {jti}")
+
+    # Clear refresh token cookie if enabled
     if USE_SECURE_COOKIES:
         response.delete_cookie(
             key=REFRESH_TOKEN_COOKIE_NAME,
@@ -537,7 +675,7 @@ async def logout(response: Response):
             samesite=COOKIE_SAMESITE,
         )
 
-    return {"message": "Logged out successfully. Please discard your access token."}
+    return {"message": "Logged out successfully. Your token has been revoked."}
 
 
 @router.post("/refresh", response_model=Token)

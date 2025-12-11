@@ -1,407 +1,301 @@
 """
-SQLAlchemy database models for market data storage.
+Database models for Jutsu Backtesting Engine.
 
-Defines the schema for storing OHLCV data and metadata for incremental updates.
+Defines SQLAlchemy ORM models for:
+- Market Data (OHLCV bars)
+- Data Metadata (tracking and synchronization)
+- User Authentication (JWT-based auth)
+- Two-Factor Authentication (TOTP)
+
+Models use:
+- Decimal type for precise financial calculations (avoid float errors)
+- Timezone-aware datetime for consistent time handling
+- Proper indexing for performance (symbol, timestamp lookups)
+
+Design decisions:
+- Immutable history: Never delete/update existing market data
+- UTC timestamps: All datetimes stored in UTC for consistency
+- Decimal precision: Use DECIMAL(20,8) for prices/volumes to avoid float errors
 """
-from datetime import datetime
+
+from decimal import Decimal
+from typing import Optional
+from datetime import datetime, timezone
+
 from sqlalchemy import (
-    ARRAY,
-    Column,
-    Integer,
-    String,
-    DateTime,
-    Numeric,
-    BigInteger,
-    Boolean,
-    Text,
-    Enum,
-    UniqueConstraint,
-    Index,
+    Column, Integer, String, DECIMAL, DateTime, Enum, Index, ForeignKey, Boolean, ARRAY
 )
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import DeclarativeBase
 import enum
 
-Base = declarative_base()
+
+class Base(DeclarativeBase):
+    """Base class for all database models."""
+    pass
+
+
+# ==============================================================================
+# MARKET DATA MODELS
+# ==============================================================================
+
+class Timeframe(str, enum.Enum):
+    """
+    Supported timeframes for market data.
+
+    Each bar represents data aggregated over the timeframe period.
+    For example, timeframe '1m' means each bar represents 1 minute of trading.
+
+    Values:
+        1m: 1 minute
+        5m: 5 minutes
+        15m: 15 minutes
+        30m: 30 minutes
+        1h: 1 hour
+        1d: 1 day
+    """
+    ONE_MINUTE = '1m'
+    FIVE_MINUTES = '5m'
+    FIFTEEN_MINUTES = '15m'
+    THIRTY_MINUTES = '30m'
+    ONE_HOUR = '1h'
+    ONE_DAY = '1d'
 
 
 class MarketData(Base):
     """
-    Historical OHLCV market data.
+    OHLCV bar data for a specific symbol and timeframe.
 
-    Stores individual bars (candles) with source tracking and timestamps.
-    Unique constraint prevents duplicate bars.
+    Stores individual price bars (candlesticks) retrieved from data sources.
+    Each bar represents trading activity over a specific timeframe period.
+
+    Design decisions:
+    - DECIMAL(20,8) for prices (8 decimals = sub-cent precision, 12 integer digits)
+    - DECIMAL(20,4) for volume (4 decimals for fractional shares, 16 integer digits)
+    - UTC timestamps with timezone awareness
+    - Composite primary key (symbol, timeframe, timestamp) for uniqueness
+    - Individual indexes on symbol, timestamp for common query patterns
+
+    Example:
+        bar = MarketData(
+            symbol='AAPL',
+            timeframe=Timeframe.ONE_DAY,
+            timestamp=datetime(2024, 1, 15, tzinfo=timezone.utc),
+            open=Decimal('150.50'),
+            high=Decimal('152.00'),
+            low=Decimal('149.75'),
+            close=Decimal('151.25'),
+            volume=Decimal('75000000.0')
+        )
 
     Indexes:
-        - (symbol, timeframe, timestamp) for fast queries
-        - timestamp for date range queries
+        - Primary: (symbol, timeframe, timestamp)
+        - symbol for filtering by ticker
+        - timestamp for time-based queries
+        - Combined (symbol, timestamp) for typical range queries
     """
 
     __tablename__ = 'market_data'
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    symbol = Column(String(10), nullable=False, index=True)
-    timeframe = Column(String(10), nullable=False)  # '1D', '1H', '5m', etc.
-    timestamp = Column(DateTime(timezone=True), nullable=False, index=True)
+    # Primary key components
+    symbol = Column(String(10), primary_key=True)
+    timeframe = Column(Enum(Timeframe), primary_key=True)
+    timestamp = Column(DateTime(timezone=True), primary_key=True)
 
-    # OHLCV data - use Numeric for financial precision
-    open = Column(Numeric(18, 6), nullable=False)
-    high = Column(Numeric(18, 6), nullable=False)
-    low = Column(Numeric(18, 6), nullable=False)
-    close = Column(Numeric(18, 6), nullable=False)
-    volume = Column(BigInteger, nullable=False)
+    # OHLCV data
+    open = Column(DECIMAL(20, 8), nullable=False)
+    high = Column(DECIMAL(20, 8), nullable=False)
+    low = Column(DECIMAL(20, 8), nullable=False)
+    close = Column(DECIMAL(20, 8), nullable=False)
+    volume = Column(DECIMAL(20, 4), nullable=False)
+
+    # Data quality tracking
+    is_valid = Column(Boolean, default=True)  # Flag for invalid/suspect data
 
     # Metadata
-    data_source = Column(String(20), nullable=False)  # 'schwab', 'csv', 'yahoo', etc.
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-    is_valid = Column(Boolean, default=True)  # For marking bad data without deleting
+    source = Column(String(50))  # Data source identifier (e.g., 'schwab', 'yahoo')
 
-    # Unique constraint: one bar per symbol/timeframe/timestamp
+    # Indexes for common query patterns
     __table_args__ = (
-        UniqueConstraint('symbol', 'timeframe', 'timestamp', name='uix_symbol_tf_ts'),
-        Index('idx_market_data_lookup', 'symbol', 'timeframe', 'timestamp'),
+        Index('idx_symbol', 'symbol'),
+        Index('idx_timestamp', 'timestamp'),
+        Index('idx_symbol_timestamp', 'symbol', 'timestamp'),
     )
 
     def __repr__(self):
-        return (
-            f"<MarketData(symbol={self.symbol}, timeframe={self.timeframe}, "
-            f"timestamp={self.timestamp}, close={self.close})>"
-        )
+        return f"<MarketData(symbol={self.symbol}, timeframe={self.timeframe}, timestamp={self.timestamp}, close={self.close})>"
+
+
+class DataSourceType(str, enum.Enum):
+    """
+    Supported data source types.
+
+    Each source may have different data formats, rate limits, and availability.
+
+    Values:
+        schwab: Schwab API data
+        yahoo: Yahoo Finance data
+        csv: CSV file import
+        polygon: Polygon.io API (future)
+        alpaca: Alpaca API (future)
+    """
+    SCHWAB = 'schwab'
+    YAHOO = 'yahoo'
+    CSV = 'csv'
+    POLYGON = 'polygon'
+    ALPACA = 'alpaca'
+
+
+class DataSyncStatus(str, enum.Enum):
+    """
+    Data synchronization status for tracking progress.
+
+    Tracks whether data for a symbol/timeframe is up-to-date or needs refresh.
+
+    Values:
+        pending: Not yet synced
+        syncing: Currently in progress
+        complete: Successfully synced
+        error: Failed to sync
+    """
+    PENDING = 'pending'
+    SYNCING = 'syncing'
+    COMPLETE = 'complete'
+    ERROR = 'error'
 
 
 class DataMetadata(Base):
     """
-    Metadata for tracking available data and enabling incremental updates.
+    Metadata about market data availability and synchronization.
 
-    Stores information about what data we have for each symbol/timeframe
-    combination. Used to determine what new data to fetch from APIs.
+    Tracks the date range and quality of data for each symbol/timeframe combination.
+    Used to determine what data is available and what needs to be fetched.
+
+    Design decisions:
+    - Separate table for metadata vs actual data (denormalized for performance)
+    - Track first/last available date for each symbol/timeframe
+    - Store error information for debugging sync failures
+    - Use updated_at to know when data was last refreshed
 
     Example:
-        If last_bar_timestamp is 2024-10-30, next sync will fetch from 2024-10-31.
+        metadata = DataMetadata(
+            symbol='AAPL',
+            timeframe=Timeframe.ONE_DAY,
+            source=DataSourceType.SCHWAB,
+            first_date=datetime(2020, 1, 1, tzinfo=timezone.utc),
+            last_date=datetime(2024, 1, 15, tzinfo=timezone.utc),
+            bar_count=1000,
+            sync_status=DataSyncStatus.COMPLETE
+        )
+
+    Indexes:
+        - Primary: (symbol, timeframe, source)
+        - symbol for filtering
+        - sync_status for finding data needing refresh
     """
 
     __tablename__ = 'data_metadata'
 
+    # Composite primary key: one row per symbol/timeframe/source
+    symbol = Column(String(10), primary_key=True)
+    timeframe = Column(Enum(Timeframe), primary_key=True)
+    source = Column(Enum(DataSourceType), primary_key=True)
+
+    # Data availability window
+    first_date = Column(DateTime(timezone=True))  # Earliest available bar
+    last_date = Column(DateTime(timezone=True))   # Most recent available bar
+    bar_count = Column(Integer, default=0)        # Total bars available
+
+    # Synchronization tracking
+    sync_status = Column(Enum(DataSyncStatus), default=DataSyncStatus.PENDING)
+    last_sync_attempt = Column(DateTime(timezone=True))  # When we last tried to sync
+    last_sync_success = Column(DateTime(timezone=True))  # When we last succeeded
+    sync_error = Column(String(500))  # Error message if sync failed
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Indexes
+    __table_args__ = (
+        Index('idx_metadata_symbol', 'symbol'),
+        Index('idx_metadata_sync_status', 'sync_status'),
+    )
+
+    def __repr__(self):
+        return (f"<DataMetadata(symbol={self.symbol}, timeframe={self.timeframe}, "
+                f"source={self.source}, bars={self.bar_count}, status={self.sync_status})>")
+
+
+class BacktestRun(Base):
+    """
+    Record of a completed backtest run.
+
+    Stores the configuration and results of each backtest execution.
+    Allows viewing historical backtests and comparing strategy performance.
+
+    Design decisions:
+    - Store strategy parameters as JSON for flexibility
+    - Link to strategy class name for reproducibility
+    - Track both execution time and data range tested
+    - Store summary metrics for quick comparison
+
+    Example:
+        run = BacktestRun(
+            strategy_name='SimpleSMA',
+            symbol='AAPL',
+            timeframe=Timeframe.ONE_DAY,
+            start_date=datetime(2023, 1, 1, tzinfo=timezone.utc),
+            end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            initial_capital=Decimal('10000.00'),
+            final_value=Decimal('12500.00'),
+            total_return=Decimal('0.25'),
+            sharpe_ratio=Decimal('1.85')
+        )
+
+    Indexes:
+        - Primary: id (auto-incrementing)
+        - strategy_name for filtering by strategy
+        - created_at for chronological sorting
+    """
+
+    __tablename__ = 'backtest_runs'
+
     id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Strategy identification
+    strategy_name = Column(String(100), nullable=False, index=True)
+    strategy_params = Column(String(1000))  # JSON string of strategy parameters
+
+    # Backtest configuration
     symbol = Column(String(10), nullable=False)
-    timeframe = Column(String(10), nullable=False)
+    timeframe = Column(Enum(Timeframe), nullable=False)
+    start_date = Column(DateTime(timezone=True), nullable=False)
+    end_date = Column(DateTime(timezone=True), nullable=False)
 
-    # Data range tracking
-    last_bar_timestamp = Column(DateTime(timezone=True))  # Latest bar we have
-    total_bars = Column(Integer, default=0)  # Count for validation
-    last_updated = Column(DateTime(timezone=True))  # When we last synced
+    # Portfolio configuration
+    initial_capital = Column(DECIMAL(20, 2), nullable=False)
+    position_size = Column(DECIMAL(5, 4))  # Position sizing (e.g., 0.1 = 10% per trade)
 
-    # Unique constraint: one metadata entry per symbol/timeframe
-    __table_args__ = (
-        UniqueConstraint('symbol', 'timeframe', name='uix_metadata'),
-        Index('idx_metadata_lookup', 'symbol', 'timeframe'),
-    )
+    # Results summary
+    final_value = Column(DECIMAL(20, 2))
+    total_return = Column(DECIMAL(10, 4))  # e.g., 0.25 = 25% return
+    sharpe_ratio = Column(DECIMAL(10, 4))
+    max_drawdown = Column(DECIMAL(10, 4))  # e.g., -0.15 = -15% max drawdown
+    total_trades = Column(Integer)
+    winning_trades = Column(Integer)
 
-    def __repr__(self):
-        return (
-            f"<DataMetadata(symbol={self.symbol}, timeframe={self.timeframe}, "
-            f"bars={self.total_bars}, last_bar={self.last_bar_timestamp})>"
-        )
-
-
-class DataAuditLog(Base):
-    """
-    Audit log for tracking all data modifications.
-
-    Required for financial data compliance - tracks who changed what and when.
-    Provides complete audit trail for data lineage.
-
-    Example uses:
-        - Track when data was corrected
-        - Investigate data quality issues
-        - Regulatory compliance
-    """
-
-    __tablename__ = 'data_audit_log'
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    symbol = Column(String(10))  # Stock symbol
-    timeframe = Column(String(10))  # Timeframe (1D, 1H, etc.)
-    operation = Column(String(20), nullable=False)  # 'sync', 'fetch', 'update', 'delete'
-    status = Column(String(20), nullable=False)  # 'success', 'error', 'warning'
-    message = Column(String(500))  # Operation details
-    bars_affected = Column(Integer, default=0)  # Number of bars changed
-    timestamp = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-
-    __table_args__ = (Index('idx_audit_log_timestamp', 'timestamp'),)
+    # Execution metadata
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, index=True)
+    duration_seconds = Column(Integer)  # How long the backtest took to run
 
     def __repr__(self):
-        return (
-            f"<DataAuditLog(operation={self.operation}, status={self.status}, "
-            f"symbol={self.symbol}, timestamp={self.timestamp})>"
-        )
+        return f"<BacktestRun(id={self.id}, strategy={self.strategy_name}, symbol={self.symbol}, return={self.total_return})>"
 
 
 # ==============================================================================
-# LIVE TRADING MODELS (Phase 0 - Foundation Enhancement)
+# AUTHENTICATION MODELS
 # ==============================================================================
-
-
-class TradingModeEnum(enum.Enum):
-    """Trading mode enumeration for distinguishing offline mock vs online live trades."""
-    OFFLINE_MOCK = "offline_mock"
-    ONLINE_LIVE = "online_live"
-
-
-class LiveTrade(Base):
-    """
-    Live trading transaction record.
-
-    Stores all live trades (both mock and real) with execution details,
-    strategy context, and slippage analysis. Required for audit trail
-    and post-trade analysis.
-
-    Indexes:
-        - timestamp for chronological queries
-        - (symbol, mode) for filtering by symbol and trading mode
-        - (mode, timestamp) for querying trades by mode
-    """
-
-    __tablename__ = 'live_trades'
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-
-    # Trade identification
-    symbol = Column(String(10), nullable=False, index=True)
-    timestamp = Column(DateTime(timezone=True), nullable=False, index=True)
-
-    # Execution details
-    action = Column(String(10), nullable=False)  # 'BUY' or 'SELL'
-    quantity = Column(Integer, nullable=False)
-    target_price = Column(Numeric(18, 6), nullable=False)  # Price at signal time
-    fill_price = Column(Numeric(18, 6))  # Actual execution price (null for mock)
-    fill_value = Column(Numeric(18, 6))  # Total trade value (qty * price)
-
-    # Slippage analysis
-    slippage_pct = Column(Numeric(10, 6))  # (fill - target) / target * 100
-
-    # External references
-    schwab_order_id = Column(String(50))  # Schwab API order ID (online only)
-
-    # Strategy context (for trade analysis)
-    strategy_cell = Column(Integer)  # Regime cell (1-6)
-    trend_state = Column(String(20))  # BullStrong, Sideways, BearStrong
-    vol_state = Column(String(10))  # Low, High
-    t_norm = Column(Numeric(10, 6))  # Normalized trend indicator
-    z_score = Column(Numeric(10, 6))  # Volatility z-score
-
-    # Trade classification
-    reason = Column(String(50))  # 'Rebalance', 'Signal Change', etc.
-    mode = Column(String(20), nullable=False)  # 'offline_mock' or 'online_live'
-
-    # Metadata
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-
-    __table_args__ = (
-        Index('idx_live_trades_mode_ts', 'mode', 'timestamp'),
-        Index('idx_live_trades_symbol_mode', 'symbol', 'mode'),
-    )
-
-    def __repr__(self):
-        return (
-            f"<LiveTrade(symbol={self.symbol}, action={self.action}, "
-            f"qty={self.quantity}, mode={self.mode}, ts={self.timestamp})>"
-        )
-
-
-class Position(Base):
-    """
-    Current position holdings for live trading.
-
-    Tracks real-time position state for each symbol. Updated after
-    each trade execution. Separate records for each trading mode.
-
-    Indexes:
-        - (symbol, mode) for unique position lookup
-    """
-
-    __tablename__ = 'positions'
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-
-    symbol = Column(String(10), nullable=False)
-    quantity = Column(Integer, nullable=False, default=0)
-    avg_cost = Column(Numeric(18, 6))  # Average cost basis
-    market_value = Column(Numeric(18, 6))  # Current market value
-    unrealized_pnl = Column(Numeric(18, 6))  # Unrealized profit/loss
-
-    mode = Column(String(20), nullable=False)  # 'offline_mock' or 'online_live'
-
-    last_updated = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-
-    __table_args__ = (
-        UniqueConstraint('symbol', 'mode', name='uix_position_symbol_mode'),
-        Index('idx_positions_mode', 'mode'),
-    )
-
-    def __repr__(self):
-        return (
-            f"<Position(symbol={self.symbol}, qty={self.quantity}, "
-            f"mode={self.mode})>"
-        )
-
-
-class PerformanceSnapshot(Base):
-    """
-    Daily performance snapshot for tracking strategy performance.
-
-    Captures end-of-day portfolio state including equity, returns,
-    drawdown, and current regime. Used for dashboard visualization
-    and performance analysis.
-
-    Indexes:
-        - (mode, timestamp) for time-series queries by mode
-    """
-
-    __tablename__ = 'performance_snapshots'
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-
-    timestamp = Column(DateTime(timezone=True), nullable=False, index=True)
-
-    # Portfolio metrics - Decimal precision (18,6) for financial accuracy
-    total_equity = Column(Numeric(18, 6), nullable=False)
-    cash = Column(Numeric(18, 6))
-    positions_value = Column(Numeric(18, 6))
-
-    # Return metrics
-    daily_return = Column(Numeric(10, 6))  # Day-over-day return %
-    cumulative_return = Column(Numeric(10, 6))  # Total return since inception %
-    drawdown = Column(Numeric(10, 6))  # Current drawdown from high water mark %
-
-    # Strategy state at snapshot time
-    strategy_cell = Column(Integer)  # Current regime cell (1-6)
-    trend_state = Column(String(20))  # BullStrong, Sideways, BearStrong
-    vol_state = Column(String(10))  # Low, High
-
-    # Position breakdown at snapshot time (JSON: [{symbol, quantity, value}])
-    positions_json = Column(Text)  # JSON string of position breakdown
-
-    # QQQ Baseline comparison (buy-and-hold benchmark)
-    baseline_value = Column(Numeric(18, 6))  # QQQ buy-and-hold portfolio value
-    baseline_return = Column(Numeric(10, 6))  # QQQ buy-and-hold cumulative return %
-
-    mode = Column(String(20), nullable=False)  # 'offline_mock' or 'online_live'
-
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-
-    __table_args__ = (
-        Index('idx_perf_snapshot_mode_ts', 'mode', 'timestamp'),
-        UniqueConstraint('mode', 'timestamp', name='uix_perf_snapshot_mode_ts'),
-    )
-
-    def __repr__(self):
-        return (
-            f"<PerformanceSnapshot(equity={self.total_equity}, "
-            f"return={self.daily_return}%, mode={self.mode}, ts={self.timestamp})>"
-        )
-
-
-class ConfigOverride(Base):
-    """
-    Runtime parameter overrides for live trading.
-
-    Allows modifying strategy parameters without restarting.
-    Changes are validated and logged. Only active overrides
-    are applied; inactive ones are kept for audit trail.
-
-    Indexes:
-        - (parameter_name, is_active) for fast active override lookup
-    """
-
-    __tablename__ = 'config_overrides'
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-
-    parameter_name = Column(String(50), nullable=False)  # Flat parameter name
-    original_value = Column(String(100))  # Value before override
-    override_value = Column(String(100), nullable=False)  # New value
-    value_type = Column(String(20), nullable=False)  # 'int', 'float', 'decimal', 'bool', 'str'
-
-    is_active = Column(Boolean, default=True)  # Currently applied
-    reason = Column(String(200))  # Why override was created
-
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-    deactivated_at = Column(DateTime(timezone=True))  # When override was removed
-
-    __table_args__ = (
-        Index('idx_config_override_active', 'parameter_name', 'is_active'),
-    )
-
-    def __repr__(self):
-        return (
-            f"<ConfigOverride({self.parameter_name}: {self.override_value}, "
-            f"active={self.is_active})>"
-        )
-
-
-class ConfigHistory(Base):
-    """
-    Audit log for configuration changes.
-
-    Tracks all parameter modifications for regulatory compliance
-    and debugging. Immutable - never modified after creation.
-
-    Indexes:
-        - timestamp for chronological queries
-        - parameter_name for filtering by parameter
-    """
-
-    __tablename__ = 'config_history'
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-
-    parameter_name = Column(String(50), nullable=False, index=True)
-    old_value = Column(String(100))
-    new_value = Column(String(100), nullable=False)
-    change_type = Column(String(20), nullable=False)  # 'override', 'restore', 'update'
-
-    changed_by = Column(String(50))  # 'user', 'system', 'dashboard'
-    reason = Column(String(200))
-
-    timestamp = Column(DateTime(timezone=True), nullable=False, index=True, default=datetime.utcnow)
-
-    def __repr__(self):
-        return (
-            f"<ConfigHistory({self.parameter_name}: {self.old_value} → {self.new_value}, "
-            f"ts={self.timestamp})>"
-        )
-
-
-class SystemState(Base):
-    """
-    Key-value store for system state persistence.
-
-    Stores critical system state like last run timestamp, current
-    regime, and recovery information. Used for crash recovery
-    and cross-session state management.
-
-    Indexes:
-        - key for fast lookups
-    """
-
-    __tablename__ = 'system_state'
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-
-    key = Column(String(50), nullable=False, unique=True, index=True)
-    value = Column(Text)  # JSON-serialized value
-    value_type = Column(String(20))  # 'string', 'int', 'float', 'json', 'datetime'
-
-    last_updated = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-
-    def __repr__(self):
-        return f"<SystemState({self.key}={self.value[:50] if self.value else None}...)>"
-
-
-# ==============================================================================
-# USER AUTHENTICATION MODELS
-# ==============================================================================
-
 
 class User(Base):
     """
@@ -414,6 +308,14 @@ class User(Base):
     - Single user mode by default (admin user)
     - JWT tokens with 7-day expiry for persistent sessions
     - Email optional (not required for single user mode)
+    - Account lockout after 10 failed login attempts (30 minute lockout)
+    - Failed login counter reset on successful authentication
+
+    Security features:
+    - failed_login_count: Tracks consecutive failed login attempts
+    - locked_until: Timestamp when account lockout expires (None if not locked)
+    - Account automatically unlocks after 30 minutes
+    - Counter resets to 0 on successful login
 
     Indexes:
         - username for fast login lookups
@@ -434,6 +336,10 @@ class User(Base):
     is_active = Column(Boolean, default=True)  # Can disable without deleting
     is_admin = Column(Boolean, default=True)  # Admin flag (all users admin for now)
 
+    # Account lockout (brute force protection)
+    failed_login_count = Column(Integer, default=0)  # Consecutive failed login attempts
+    locked_until = Column(DateTime(timezone=True), nullable=True)  # Lockout expiration timestamp
+
     # Session tracking
     last_login = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
@@ -445,3 +351,32 @@ class User(Base):
 
     def __repr__(self):
         return f"<User(username={self.username}, active={self.is_active})>"
+
+
+class BlacklistedToken(Base):
+    """
+    Blacklisted JWT tokens for logout/revocation.
+
+    Tokens added here are rejected even if cryptographically valid.
+    A background job should clean up expired entries periodically.
+
+    Design decisions:
+    - jti (JWT ID) is the unique identifier for each token
+    - Store token type to differentiate access vs refresh tokens
+    - Store expiration time to enable automatic cleanup of old entries
+    - Optional user_id link for auditing and user-specific token revocation
+
+    Indexes:
+        - jti for fast blacklist lookups during token validation
+    """
+    __tablename__ = 'blacklisted_tokens'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    jti = Column(String(36), unique=True, nullable=False, index=True)  # JWT ID
+    token_type = Column(String(10), nullable=False)  # 'access' or 'refresh'
+    blacklisted_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    expires_at = Column(DateTime(timezone=True), nullable=False)  # Original token expiry for cleanup
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True)  # Optional link to user
+
+    def __repr__(self):
+        return f"<BlacklistedToken(jti={self.jti}, type={self.token_type})>"

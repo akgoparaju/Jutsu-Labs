@@ -102,6 +102,13 @@ async def lifespan(app: FastAPI):
     """
     # Startup
     logger.info("Jutsu API starting up...")
+    
+    # SECURITY CHECK: Verify no default credentials in production
+    try:
+        from jutsu_engine.api.dependencies import check_security_configuration
+        check_security_configuration()
+    except Exception as e:
+        logger.error(f"Security configuration check failed: {e}")
 
     # Create database tables if they don't exist
     try:

@@ -20,6 +20,7 @@ from sqlalchemy.orm import sessionmaker, Session
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials, OAuth2PasswordBearer
 import secrets
+import uuid
 
 # JWT and password hashing imports
 try:
@@ -196,6 +197,57 @@ API_PASSWORD = os.getenv('JUTSU_API_PASSWORD', '')
 SECRET_KEY = os.getenv('SECRET_KEY', 'default-dev-secret-change-in-production')
 ALGORITHM = "HS256"
 
+# Security check for default credentials
+_DEFAULT_SECRET = 'default-dev-secret-change-in-production'
+_DEFAULT_ADMIN_PASSWORD = 'admin'
+
+
+def check_security_configuration() -> None:
+    """
+    Check for insecure default configurations.
+    
+    CRITICAL: This should be called at startup to ensure production
+    deployments don't use default credentials.
+    
+    Raises warnings for development, errors in production mode.
+    """
+    auth_required = os.getenv('AUTH_REQUIRED', 'false').lower() == 'true'
+    
+    issues = []
+    
+    # Check SECRET_KEY
+    if SECRET_KEY == _DEFAULT_SECRET:
+        issues.append(
+            "SECRET_KEY is using the default value! "
+            "Set a strong random key: openssl rand -hex 32"
+        )
+    
+    # Check ADMIN_PASSWORD (only relevant if auth required)
+    if auth_required:
+        admin_password = os.getenv('ADMIN_PASSWORD', 'admin')
+        if admin_password == _DEFAULT_ADMIN_PASSWORD:
+            issues.append(
+                "ADMIN_PASSWORD is using the default 'admin'! "
+                "Set a strong password in your environment."
+            )
+    
+    if issues:
+        if auth_required:
+            # In production mode (AUTH_REQUIRED=true), this is CRITICAL
+            for issue in issues:
+                logger.critical(f"SECURITY VULNERABILITY: {issue}")
+            logger.critical(
+                "=== SECURITY WARNING ===\n"
+                "Your deployment is using insecure default credentials!\n"
+                "This is a CRITICAL security vulnerability.\n"
+                "Fix these issues before exposing this service to the internet.\n"
+                "========================="
+            )
+        else:
+            # In development mode, just warn
+            for issue in issues:
+                logger.warning(f"Security notice (dev mode): {issue}")
+
 # Token expiration - configurable via environment variables
 # Access tokens: short-lived (15 minutes default) for security
 # Refresh tokens: longer-lived (7 days default) for session persistence
@@ -270,7 +322,9 @@ def create_access_token(
     else:
         expire = datetime.now(timezone.utc) + timedelta(days=ACCESS_TOKEN_EXPIRE_DAYS)
 
-    to_encode.update({"exp": expire, "type": "access"})
+    # Add JWT ID for token revocation/blacklisting
+    jti = str(uuid.uuid4())
+    to_encode.update({"exp": expire, "type": "access", "jti": jti})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
@@ -301,7 +355,9 @@ def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None) 
     else:
         expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
 
-    to_encode.update({"exp": expire, "type": "refresh"})
+    # Add JWT ID for token revocation/blacklisting
+    jti = str(uuid.uuid4())
+    to_encode.update({"exp": expire, "type": "refresh", "jti": jti})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
@@ -326,9 +382,29 @@ def decode_access_token(token: str) -> Optional[dict]:
         return None
 
 
+def is_token_blacklisted(jti: str, db: Session) -> bool:
+    """
+    Check if a token JTI is blacklisted.
+
+    Args:
+        jti: JWT ID to check
+        db: Database session
+
+    Returns:
+        True if token is blacklisted, False otherwise
+    """
+    from jutsu_engine.data.models import BlacklistedToken
+
+    result = db.query(BlacklistedToken).filter(BlacklistedToken.jti == jti).first()
+    return result is not None
+
+
 def get_user_from_token(db: Session, token: str) -> Optional["User"]:
     """
     Get user from JWT token.
+
+    Checks token blacklist before returning user.
+    If token has no JTI (legacy tokens), skip blacklist check for backward compatibility.
 
     Args:
         db: Database session
@@ -341,6 +417,12 @@ def get_user_from_token(db: Session, token: str) -> Optional["User"]:
 
     payload = decode_access_token(token)
     if payload is None:
+        return None
+
+    # Check if token is blacklisted (if it has a JTI)
+    jti = payload.get("jti")
+    if jti and is_token_blacklisted(jti, db):
+        logger.warning(f"Blacklisted token attempted use: {jti}")
         return None
 
     username: str = payload.get("sub")

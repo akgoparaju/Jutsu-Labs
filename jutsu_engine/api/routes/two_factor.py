@@ -36,6 +36,23 @@ from jutsu_engine.utils.security_logger import security_logger, get_client_ip
 
 logger = logging.getLogger('API.2FA')
 
+# Rate limiting (optional - falls back to no limiting if slowapi not available)
+try:
+    from jutsu_engine.api.main import limiter, RATE_LIMITING_AVAILABLE
+except ImportError:
+    limiter = None
+    RATE_LIMITING_AVAILABLE = False
+
+# Rate limit for 2FA validation (prevent brute force attacks on 6-digit codes)
+TWO_FA_RATE_LIMIT = "5/minute"
+
+
+def _rate_limit_2fa(func):
+    """Apply rate limiting to 2FA validation endpoint if available."""
+    if RATE_LIMITING_AVAILABLE and limiter is not None:
+        return limiter.limit(TWO_FA_RATE_LIMIT)(func)
+    return func
+
 router = APIRouter(prefix="/api/2fa", tags=["two-factor-auth"])
 
 # Check if pyotp is available
@@ -438,6 +455,7 @@ async def disable_2fa(
 
 
 @router.post("/validate", response_model=TwoFactorValidateResponse)
+@_rate_limit_2fa
 async def validate_2fa(
     request: Request,
     validate_request: TwoFactorValidateRequest,
