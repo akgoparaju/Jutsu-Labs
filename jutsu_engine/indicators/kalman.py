@@ -75,10 +75,13 @@ class AdaptiveKalmanFilter:
         X: 2x1 state vector [position, velocity]
         innovation_buffer: Circular buffer for innovations
         oscillator_buffer: Circular buffer for oscillators
+        smoothed_oscillator_buffer: Buffer for double smoothing intermediate values
         prev_high: Previous bar high price
         prev_low: Previous bar low price
         prev_volume: Previous bar volume
         bar_count: Number of bars processed
+        symmetric_volume_adjustment: If True, volume adjustment is bidirectional
+        double_smoothing: If True, applies double WMA smoothing
     """
 
     def __init__(
@@ -91,7 +94,9 @@ class AdaptiveKalmanFilter:
         trend_lookback: int = 10,
         osc_smoothness: int = 10,
         strength_smoothness: int = 10,
-        return_signed: bool = False
+        return_signed: bool = False,
+        symmetric_volume_adjustment: bool = False,
+        double_smoothing: bool = False
     ):
         """
         Initialize Adaptive Kalman Filter.
@@ -108,6 +113,12 @@ class AdaptiveKalmanFilter:
             return_signed: Return signed trend_strength (default: False for backward compatibility)
                           If True, returns signed trend_strength in [-100, +100] range
                           If False, returns abs(trend_strength) in [0, 100] range (legacy)
+            symmetric_volume_adjustment: Enable symmetric volume-based noise adjustment (default: False)
+                          If True, noise INCREASES when volume drops (more skeptical on low-volume days)
+                          If False, noise only decreases when volume increases (original behavior)
+            double_smoothing: Enable double WMA smoothing for trend strength (default: False)
+                          If True, applies two WMA passes: first with osc_smoothness, second with strength_smoothness
+                          If False, applies single WMA pass with osc_smoothness (original behavior)
 
         Raises:
             ValueError: If parameters are invalid
@@ -135,6 +146,8 @@ class AdaptiveKalmanFilter:
         self.osc_smoothness = min(osc_smoothness, trend_lookback)
         self.strength_smoothness = min(strength_smoothness, sigma_lookback)
         self.return_signed = return_signed
+        self.symmetric_volume_adjustment = symmetric_volume_adjustment
+        self.double_smoothing = double_smoothing
 
         # Initialize Kalman filter matrices (NumPy for efficiency)
         self.F = np.array([[1.0, 1.0], [0.0, 1.0]])  # State transition
@@ -153,6 +166,7 @@ class AdaptiveKalmanFilter:
         # Buffers for trend strength calculation
         self.innovation_buffer: List[float] = []
         self.oscillator_buffer: List[float] = []
+        self.smoothed_oscillator_buffer: List[float] = []  # For double smoothing
 
         # Previous values for noise adjustment
         self.prev_high: Optional[float] = None
@@ -293,10 +307,18 @@ class AdaptiveKalmanFilter:
             # Adjust based on volume ratio
             if self.prev_volume is not None and volume is not None:
                 if volume > 0:
-                    # Higher volume = lower noise (more confidence)
-                    vol_ratio = self.prev_volume / max(self.prev_volume, volume)
+                    if self.symmetric_volume_adjustment:
+                        # Symmetric: noise INCREASES when volume drops, DECREASES when volume rises
+                        # Volume 100→50: ratio=2.0 (more skeptical on low-volume days)
+                        # Volume 100→200: ratio=0.5 (more confident on high-volume days)
+                        vol_ratio = self.prev_volume / volume
+                    else:
+                        # Original: noise only decreases when volume increases
+                        # Volume 100→50: ratio=1.0 (baseline, no change)
+                        # Volume 100→200: ratio=0.5 (more confident)
+                        vol_ratio = self.prev_volume / max(self.prev_volume, volume)
                     R_adjusted = R_base * vol_ratio
-                    logger.debug(f"Volume adjustment: ratio={vol_ratio:.4f}")
+                    logger.debug(f"Volume adjustment: ratio={vol_ratio:.4f}, symmetric={self.symmetric_volume_adjustment}")
                     return R_adjusted
             return R_base
 
@@ -348,12 +370,32 @@ class AdaptiveKalmanFilter:
             if len(self.oscillator_buffer) > self.trend_lookback:
                 self.oscillator_buffer.pop(0)
 
-            # Calculate WMA of oscillator
+            # Calculate WMA of oscillator (first smoothing pass)
             if len(self.oscillator_buffer) >= self.osc_smoothness:
-                trend_strength = self._wma(
+                first_smoothed = self._wma(
                     self.oscillator_buffer,
                     self.osc_smoothness
                 )
+                
+                if self.double_smoothing:
+                    # Double smoothing: apply second WMA pass using strength_smoothness
+                    self.smoothed_oscillator_buffer.append(first_smoothed)
+                    if len(self.smoothed_oscillator_buffer) > self.trend_lookback:
+                        self.smoothed_oscillator_buffer.pop(0)
+                    
+                    if len(self.smoothed_oscillator_buffer) >= self.strength_smoothness:
+                        # Second WMA pass
+                        trend_strength = self._wma(
+                            self.smoothed_oscillator_buffer,
+                            self.strength_smoothness
+                        )
+                    else:
+                        # Not enough data for second pass yet, use first pass result
+                        trend_strength = first_smoothed
+                else:
+                    # Original single smoothing behavior
+                    trend_strength = first_smoothed
+                
                 # Return signed or unsigned based on configuration
                 if self.return_signed:
                     return trend_strength  # Preserve sign for directional strategies
@@ -394,6 +436,7 @@ class AdaptiveKalmanFilter:
         self.P = np.array([[1.0, 0.0], [0.0, 1.0]])
         self.innovation_buffer.clear()
         self.oscillator_buffer.clear()
+        self.smoothed_oscillator_buffer.clear()  # Clear double smoothing buffer
         self.prev_high = None
         self.prev_low = None
         self.prev_volume = None

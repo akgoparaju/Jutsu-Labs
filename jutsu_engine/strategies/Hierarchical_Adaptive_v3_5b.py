@@ -119,6 +119,8 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         osc_smoothness: int = 15,
         strength_smoothness: int = 15,
         T_max: Decimal = Decimal("50.0"),
+        symmetric_volume_adjustment: bool = False,
+        double_smoothing: bool = False,
 
         # ==================================================================
         # STRUCTURAL TREND PARAMETERS (4 parameters - NEW)
@@ -201,6 +203,12 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
             osc_smoothness: Oscillator smoothing period (default: 15)
             strength_smoothness: Trend strength smoothing period (default: 15)
             T_max: Trend normalization threshold (default: 50.0)
+            symmetric_volume_adjustment: Enable symmetric volume-based noise adjustment (default: False)
+                If True, noise INCREASES when volume drops (more skeptical on low-volume days)
+                If False, noise only decreases when volume increases (original behavior)
+            double_smoothing: Enable double WMA smoothing for trend strength (default: False)
+                If True, applies two WMA passes: first with osc_smoothness, second with strength_smoothness
+                If False, applies single WMA pass with osc_smoothness (original behavior)
             sma_fast: Fast structural trend SMA period (default: 50, range: [40, 60])
             sma_slow: Slow structural trend SMA period (default: 200, range: [180, 220])
             t_norm_bull_thresh: T_norm threshold for BullStrong (default: 0.3)
@@ -299,6 +307,8 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         self.osc_smoothness = osc_smoothness
         self.strength_smoothness = strength_smoothness
         self.T_max = T_max
+        self.symmetric_volume_adjustment = symmetric_volume_adjustment
+        self.double_smoothing = double_smoothing
 
         self.sma_fast = sma_fast
         self.sma_slow = sma_slow
@@ -367,7 +377,9 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
             process_noise_2=float(self.process_noise_2),
             osc_smoothness=self.osc_smoothness,
             strength_smoothness=self.strength_smoothness,
-            return_signed=True
+            return_signed=True,
+            symmetric_volume_adjustment=self.symmetric_volume_adjustment,
+            double_smoothing=self.double_smoothing
         )
 
         # Initialize hysteresis state

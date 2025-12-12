@@ -108,8 +108,8 @@ symbol_sets:
 base_config:
   # Date range - Full history (2010-2024)
   # Includes: Financial crisis recovery, bull market, COVID crash, 2022 bear, recovery
-  start_date: "2010-12-31"
-  end_date: "2025-12-03"
+  start_date: "2025-12-01"
+  end_date: "2025-12-11"
 
   # Market data
   timeframe: "1D"
@@ -170,11 +170,13 @@ parameters:
   # ===========================================================================
   # TREND CLASSIFICATION THRESHOLDS (Fixed at spec defaults)
   # ===========================================================================
+  symmetric_volume_adjustment: [false, true]
+  double_smoothing: [false, true]
   # Controls Bull/Bear/Sideways regime classification
 
   # Bull threshold (Fixed at spec)
   # T_norm > 0.3 AND SMA_fast > SMA_slow → Bull
-  t_norm_bull_thresh: [0.20, 0.05]    # Fixed
+  t_norm_bull_thresh: [0.05]    # Fixed
 
   # Bear threshold (Fixed at spec)
   # T_norm < -0.3 AND SMA_fast < SMA_slow → Bear
@@ -192,7 +194,7 @@ parameters:
 
   # Volatility baseline window (Fixed at spec)
   # 126-day (6-month) rolling mean/std for z-score
-  vol_baseline_window: [126, 160]   # Fixed
+  vol_baseline_window: [160]   # Fixed
 
   # Upper hysteresis threshold (3 values)
   # Default: +1.0 (1 std dev above 6-month average)
@@ -204,7 +206,7 @@ parameters:
   # Default: 0.0 (returned to 6-month average)
   # Range: [-0.2, 0.0, 0.2] - test sensitivity to vol normalization
   # Lower = requires deeper vol drop to exit High regime (more conservative)
-  lower_thresh_z: [0.2, 0.0]  # 3 values - OPTIMIZE
+  lower_thresh_z: [0.2]  # 3 values - OPTIMIZE
 
   # ===========================================================================
   # VOL-CRUSH OVERRIDE PARAMETERS (GRID-SEARCH - 3 values)

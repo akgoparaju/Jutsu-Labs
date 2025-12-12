@@ -1,3 +1,171 @@
+#### **Bug Fix: Kalman Experimental Parameters Not Wired to Strategy** (2025-12-12)
+
+**Fixed parameter wiring bug where `symmetric_volume_adjustment` and `double_smoothing` had no effect in grid search**
+
+**Problem**:
+- Parameters existed in `kalman.py` (AdaptiveKalmanFilter) ✅
+- Parameters configured in grid search YAML files ✅
+- Parameters NOT accepted by `Hierarchical_Adaptive_v3_5b.__init__` ❌
+- Parameters NOT passed to `AdaptiveKalmanFilter()` in `init()` ❌
+
+**Root Cause**:
+When experimental Kalman parameters were added to `kalman.py`, the strategy class was not updated to:
+1. Accept the parameters in `__init__` signature
+2. Store them as instance variables
+3. Pass them to the Kalman filter instantiation
+
+**Solution - 4 Surgical Edits**:
+1. Added `symmetric_volume_adjustment: bool = False` and `double_smoothing: bool = False` to `__init__` signature (Kalman parameters section)
+2. Added instance variable storage: `self.symmetric_volume_adjustment = symmetric_volume_adjustment`, etc.
+3. Added parameters to `AdaptiveKalmanFilter()` instantiation in `init()` method
+4. Updated docstring with parameter documentation
+
+**Files Modified**:
+- `jutsu_engine/strategies/Hierarchical_Adaptive_v3_5b.py` - 4 locations
+
+**Verification**:
+```python
+strategy = Hierarchical_Adaptive_v3_5b(symmetric_volume_adjustment=True, double_smoothing=True)
+strategy.init()
+assert strategy.kalman_filter.symmetric_volume_adjustment == True  # ✅ Now works
+assert strategy.kalman_filter.double_smoothing == True  # ✅ Now works
+```
+
+---
+
+#### **Performance: Grid Search Baseline Timezone Fix** (2025-12-12)
+
+**Fixed tz-aware datetime conversion error in PerformanceAnalyzer**
+
+**Problem**:
+Grid search baseline calculation failed with:
+```
+ValueError: Tz-aware datetime.datetime cannot be converted to datetime64 unless utc=True, at position 49
+```
+
+**Root Cause**:
+- `grid_search_runner.py` creates equity_curve with UTC timestamps from database
+- `analyzer.py:82` called `pd.to_datetime()` without `utc=True`
+- Pandas 2.x+ requires explicit `utc=True` for tz-aware datetime → datetime64 conversion
+
+**Solution**:
+Added `utc=True` parameter to pd.to_datetime() call in PerformanceAnalyzer:
+```python
+# Before:
+self.equity_df['timestamp'] = pd.to_datetime(self.equity_df['timestamp'])
+
+# After:
+self.equity_df['timestamp'] = pd.to_datetime(self.equity_df['timestamp'], utc=True)
+```
+
+**Files Modified**:
+- `jutsu_engine/performance/analyzer.py` - Line 82
+
+**Verification**:
+- Grid search baseline calculation: ✅ Works (QQQ Return: 1043.85%, Sharpe: 0.76)
+- No regression in analyzer functionality
+
+---
+
+#### **Indicators: Adaptive Kalman Filter Experimental Parameters** (2025-12-12)
+
+**Added two experimental parameters to AdaptiveKalmanFilter for strategy optimization**
+
+**Features Added**:
+
+1. **`symmetric_volume_adjustment`** (bool, default=False)
+   - **Problem**: Original volume adjustment was asymmetric - noise only decreased when volume increased, never increased when volume dropped
+   - **Solution**: When enabled, noise INCREASES when volume drops (more skeptical on low-volume days) and DECREASES when volume rises
+   - **Original**: `vol_ratio = prev_volume / max(prev_volume, volume)` (always ≤1.0)
+   - **Symmetric**: `vol_ratio = prev_volume / volume` (can be >1.0 or <1.0)
+
+2. **`double_smoothing`** (bool, default=False)
+   - **Problem**: `strength_smoothness` parameter was only used as a gate condition, not for actual smoothing
+   - **Solution**: When enabled, applies two WMA passes - first with `osc_smoothness`, second with `strength_smoothness`
+   - **Added**: New `smoothed_oscillator_buffer` for intermediate values
+
+**Usage**:
+```python
+from jutsu_engine.indicators.kalman import AdaptiveKalmanFilter, KalmanFilterModel
+
+# Experimental: Test symmetric volume adjustment
+kf_symmetric = AdaptiveKalmanFilter(
+    model=KalmanFilterModel.VOLUME_ADJUSTED,
+    symmetric_volume_adjustment=True  # More skeptical on low-volume days
+)
+
+# Experimental: Test double smoothing
+kf_double = AdaptiveKalmanFilter(
+    double_smoothing=True  # Extra smoothing pass
+)
+
+# Combined experimental features
+kf_both = AdaptiveKalmanFilter(
+    model=KalmanFilterModel.VOLUME_ADJUSTED,
+    symmetric_volume_adjustment=True,
+    double_smoothing=True
+)
+```
+
+**Backward Compatibility**: ✅ Both parameters default to False, preserving existing behavior
+
+**Files Modified**:
+- `jutsu_engine/indicators/kalman.py` - Added parameters, logic, and documentation
+
+**Verification**:
+- All 28 unit tests pass
+- 93% coverage on kalman.py
+- Syntax validation passed
+
+**Purpose**: Enable backtesting comparison to determine if these variations help or hurt strategy performance
+
+---
+
+#### **CLI: Added Short Aliases for jutsu sync Command** (2025-12-11)
+
+**Added short flag aliases for better CLI usability**
+
+**Problem**:
+Running `jutsu sync -all` or `jutsu sync -a` failed with:
+```
+Error: No such option: -a
+```
+Users expected short aliases to work but only long flags (`--all`, `--list`, etc.) were defined.
+
+**Solution**:
+Added short flag aliases to the `jutsu sync` command:
+- `-s` for `--symbol`
+- `-t` for `--timeframe`
+- `-e` for `--end`
+- `-f` for `--force`
+- `-a` for `--all`
+- `-l` for `--list`
+- `-o` for `--output`
+
+**Usage Examples**:
+```bash
+# Sync all symbols (now both work)
+jutsu sync -a
+jutsu sync --all
+
+# List symbols with short flags
+jutsu sync -l
+jutsu sync -l -o symbols.csv
+
+# Single symbol sync with short flags
+jutsu sync -s AAPL -t 1D --start 2024-01-01 -e 2024-12-31 -f
+```
+
+**Files Modified**:
+- `jutsu_engine/cli/main.py` - Added short aliases to @click.option decorators
+
+**Verification**:
+- `jutsu sync -a`: ✅ Works (syncs all symbols)
+- `jutsu sync -l`: ✅ Works (lists symbols)
+- `jutsu sync --help`: ✅ Shows all short aliases
+
+---
+
 #### **Security: FastAPI/Starlette Dependency Conflict Resolution** (2025-12-11)
 
 **Fixed dependency conflict between FastAPI and Starlette security pin**

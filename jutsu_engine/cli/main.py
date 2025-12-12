@@ -163,9 +163,9 @@ def init(db_url: Optional[str]):
 
 @cli.group(invoke_without_command=True)
 @click.pass_context
-@click.option('--symbol', default=None, help='Stock ticker symbol (e.g., AAPL)')
+@click.option('-s', '--symbol', default=None, help='Stock ticker symbol (e.g., AAPL)')
 @click.option(
-    '--timeframe',
+    '-t', '--timeframe',
     default='1D',
     help='Bar timeframe (1m, 5m, 1H, 1D, etc.)',
 )
@@ -175,29 +175,29 @@ def init(db_url: Optional[str]):
     help='Start date (YYYY-MM-DD)',
 )
 @click.option(
-    '--end',
+    '-e', '--end',
     default=None,
     help='End date (YYYY-MM-DD, default: today)',
 )
 @click.option(
-    '--force',
+    '-f', '--force',
     is_flag=True,
     help='Force refresh, ignore existing data',
 )
 @click.option(
-    '--all',
+    '-a', '--all',
     'sync_all',
     is_flag=True,
     help='Sync all symbols to latest date (today)',
 )
 @click.option(
-    '--list',
+    '-l', '--list',
     'list_symbols',
     is_flag=True,
     help='List all symbols with date ranges',
 )
 @click.option(
-    '--output',
+    '-o', '--output',
     default=None,
     help='Output file for CSV export (used with --list)',
 )

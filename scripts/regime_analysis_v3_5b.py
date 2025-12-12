@@ -30,6 +30,9 @@ from typing import Optional, Tuple, Dict, Any
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Import production Kalman filter for exact backtest matching
+from jutsu_engine.indicators.kalman import AdaptiveKalmanFilter, KalmanFilterModel
+
 # Database connection
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -212,15 +215,20 @@ def get_current_quote_from_schwab(symbol: str) -> Optional[Dict[str, Any]]:
         return None
 
 # =============================================================================
-# KALMAN FILTER IMPLEMENTATION (Simplified for Analysis)
+# KALMAN FILTER IMPLEMENTATION (DEPRECATED - Use AdaptiveKalmanFilter instead)
 # =============================================================================
 
 class SimpleKalmanFilter:
     """
-    Simplified Kalman filter for trend estimation.
-
-    This is a basic implementation to match the strategy's Kalman trend calculation.
-    The full AdaptiveKalmanFilter has more sophisticated volume-weighting.
+    DEPRECATED: This class uses velocity-based trend strength which does NOT match
+    the backtest implementation. Use AdaptiveKalmanFilter from jutsu_engine.indicators.kalman
+    instead, which uses innovation-based trend strength with WMA smoothing.
+    
+    Key differences from AdaptiveKalmanFilter:
+    - This class: trend_strength = mean(velocity_buffer) * 100 (WRONG)
+    - AdaptiveKalmanFilter: trend_strength = WMA(innovation/max_innovation * 100) (CORRECT)
+    
+    Kept for reference only. DO NOT USE for analysis.
     """
 
     def __init__(self):
@@ -374,6 +382,176 @@ def check_vol_crush(prices: pd.Series) -> bool:
     vol_change = (sigma_t - sigma_t_minus_n) / sigma_t_minus_n
 
     return Decimal(str(vol_change)) < VOL_CRUSH_THRESHOLD
+
+# =============================================================================
+# HYSTERESIS STATE MACHINE (Matches Backtest Exactly)
+# =============================================================================
+
+def calculate_vol_state_with_hysteresis(
+    prices: pd.Series,
+    upper_thresh_z: Decimal = UPPER_THRESH_Z,
+    lower_thresh_z: Decimal = LOWER_THRESH_Z,
+    realized_vol_window: int = REALIZED_VOL_WINDOW,
+    vol_baseline_window: int = VOL_BASELINE_WINDOW
+) -> Tuple[str, Decimal, Dict[str, Any]]:
+    """
+    Calculate volatility state using TRUE hysteresis matching backtest exactly.
+
+    This function processes ALL historical bars sequentially to track vol_state
+    across the entire history. In the deadband (between lower and upper thresholds),
+    it maintains the previous state instead of defaulting to "Low".
+
+    Hysteresis Logic (from Hierarchical_Adaptive_v3_5b.py:988-1026):
+        if z_score > upper_thresh_z:
+            VolState = "High"
+        elif z_score < lower_thresh_z:
+            VolState = "Low"
+        else:
+            VolState = Previous_VolState (deadband - maintain state)
+
+    Day 1 Initialization (first valid z-score):
+        if z_score > 0: VolState = "High"
+        else: VolState = "Low"
+
+    Args:
+        prices: Full price series (oldest to newest)
+        upper_thresh_z: Upper z-score threshold for High state (default: 1.0)
+        lower_thresh_z: Lower z-score threshold for Low state (default: 0.2)
+        realized_vol_window: Window for realized volatility (default: 21)
+        vol_baseline_window: Window for baseline statistics (default: 160)
+
+    Returns:
+        Tuple of (vol_state, final_z_score, hysteresis_info)
+        - vol_state: Final volatility state ("High" or "Low")
+        - final_z_score: Z-score for the last bar
+        - hysteresis_info: Dict with history and diagnostics:
+            - transitions: List of state transitions with dates
+            - total_bars_processed: Number of bars with valid z-scores
+            - deadband_bars: Number of bars where state was maintained
+            - initial_state: First vol_state assigned
+            - initial_date: Date of first valid z-score
+    """
+    if len(prices) < vol_baseline_window + realized_vol_window:
+        return "Low", Decimal("0"), {"error": "Insufficient data"}
+
+    # Calculate volatility series for ALL bars
+    vol_series = calculate_annualized_volatility(prices, realized_vol_window)
+
+    # Get dates if available (for diagnostics)
+    if hasattr(prices, 'index') and hasattr(prices.index, 'date'):
+        try:
+            dates = prices.index
+        except:
+            dates = None
+    else:
+        dates = None
+
+    # Initialize tracking variables
+    vol_state = None  # Will be set on first valid z-score
+    initial_state = None
+    initial_date = None
+    transitions = []
+    deadband_count = 0
+    bars_processed = 0
+    final_z_score = Decimal("0")
+
+    # Minimum index to have valid baseline statistics
+    # Need at least vol_baseline_window volatility values
+    min_idx = vol_baseline_window + realized_vol_window - 1
+
+    # Process each bar from the first valid index to the end
+    for i in range(min_idx, len(prices)):
+        # Calculate rolling baseline statistics up to bar i
+        vol_slice = vol_series.iloc[max(0, i - vol_baseline_window + 1):i + 1].dropna()
+
+        if len(vol_slice) < vol_baseline_window - 10:  # Allow small tolerance
+            continue
+
+        vol_mean = vol_slice.mean()
+        vol_std = vol_slice.std()
+
+        if vol_std == 0:
+            continue
+
+        # Current realized vol
+        sigma_t = vol_series.iloc[i]
+        if pd.isna(sigma_t):
+            continue
+
+        # Calculate z-score for this bar
+        z_score = Decimal(str((sigma_t - vol_mean) / vol_std))
+        bars_processed += 1
+        final_z_score = z_score
+
+        # Day 1 initialization (first valid z-score)
+        if vol_state is None:
+            vol_state = "High" if z_score > Decimal("0") else "Low"
+            initial_state = vol_state
+            if dates is not None:
+                try:
+                    initial_date = dates[i]
+                except:
+                    initial_date = f"Bar {i}"
+            else:
+                initial_date = f"Bar {i}"
+            transitions.append({
+                "type": "init",
+                "bar": i,
+                "date": str(initial_date),
+                "z_score": float(z_score),
+                "new_state": vol_state
+            })
+            continue
+
+        # Apply hysteresis logic
+        prev_state = vol_state
+
+        if z_score > upper_thresh_z:
+            vol_state = "High"
+        elif z_score < lower_thresh_z:
+            vol_state = "Low"
+        # else: Deadband - maintain current state (implicit)
+
+        # Track transitions and deadband bars
+        if z_score >= lower_thresh_z and z_score <= upper_thresh_z:
+            deadband_count += 1
+
+        if vol_state != prev_state:
+            if dates is not None:
+                try:
+                    transition_date = dates[i]
+                except:
+                    transition_date = f"Bar {i}"
+            else:
+                transition_date = f"Bar {i}"
+            transitions.append({
+                "type": "transition",
+                "bar": i,
+                "date": str(transition_date),
+                "z_score": float(z_score),
+                "from_state": prev_state,
+                "to_state": vol_state
+            })
+
+    # Build diagnostics
+    hysteresis_info = {
+        "transitions": transitions,
+        "total_bars_processed": bars_processed,
+        "deadband_bars": deadband_count,
+        "initial_state": initial_state,
+        "initial_date": str(initial_date) if initial_date else None,
+        "final_z_score": float(final_z_score),
+        "upper_thresh_z": float(upper_thresh_z),
+        "lower_thresh_z": float(lower_thresh_z)
+    }
+
+    # Default to "Low" if never initialized (shouldn't happen with valid data)
+    if vol_state is None:
+        vol_state = "Low"
+        hysteresis_info["warning"] = "No valid z-scores found, defaulted to Low"
+
+    return vol_state, final_z_score, hysteresis_info
+
 
 # =============================================================================
 # REGIME CLASSIFICATION
@@ -586,22 +764,35 @@ def run_regime_analysis(analysis_date: Optional[datetime] = None):
     print(f"  TLT price series: {len(tlt_closes)} bars")
 
     # Step 4: Calculate Kalman Trend (T_norm)
+    # Using AdaptiveKalmanFilter with EXACT backtest parameters for consistency
     print("\nStep 4: Calculating Kalman Trend (T_norm)...")
-    kalman = SimpleKalmanFilter()
+    
+    # Initialize with exact backtest parameters from Hierarchical_Adaptive_v3_5b.py:340-352
+    # Note: osc_smoothness=15 becomes effective=10 due to min(osc_smoothness, trend_lookback=10)
+    kalman = AdaptiveKalmanFilter(
+        model=KalmanFilterModel.VOLUME_ADJUSTED,  # Reduces measurement noise when volume increases
+        measurement_noise=float(MEASUREMENT_NOISE),  # 3000.0
+        process_noise_1=float(PROCESS_NOISE_1),      # 0.01
+        process_noise_2=float(PROCESS_NOISE_2),      # 0.01
+        osc_smoothness=OSC_SMOOTHNESS,               # 15 -> effective=min(15,10)=10
+        strength_smoothness=STRENGTH_SMOOTHNESS,      # 15
+        return_signed=True  # Returns signed trend strength [-100, 100]
+    )
 
     # Process all bars through Kalman filter
+    # trend_strength uses innovation-based calculation with WMA smoothing
+    final_trend_strength = 0.0
     for idx, row in qqq_df.iterrows():
         filtered_price, trend_strength = kalman.update(
-            row['close'], row['high'], row['low'], row['volume']
+            close=float(row['close']),
+            high=float(row['high']),
+            low=float(row['low']),
+            volume=int(row['volume'])
         )
-
-    # Get final trend strength and normalize
-    _, final_trend_strength = kalman.update(
-        qqq_df.iloc[-1]['close'],
-        qqq_df.iloc[-1]['high'],
-        qqq_df.iloc[-1]['low'],
-        qqq_df.iloc[-1]['volume']
-    )
+        final_trend_strength = trend_strength  # Last value from loop
+    
+    # NOTE: Do NOT process last bar again - that was a bug in the original implementation
+    # The final_trend_strength from the loop IS the correct value
 
     t_norm = Decimal(str(final_trend_strength)) / T_MAX
     t_norm = max(Decimal("-1.0"), min(Decimal("1.0"), t_norm))
@@ -640,24 +831,52 @@ def run_regime_analysis(analysis_date: Optional[datetime] = None):
     print(f"  Upper Threshold: {UPPER_THRESH_Z} (→ High Vol)")
     print(f"  Lower Threshold: {LOWER_THRESH_Z} (→ Low Vol)")
 
-    # Step 7: Determine Vol State with Hysteresis
-    print("\nStep 7: Determining Volatility State (Hysteresis)...")
+    # Step 7: Determine Vol State with TRUE Hysteresis (Matches Backtest Exactly)
+    print("\nStep 7: Determining Volatility State (TRUE Hysteresis)...")
+    print("  Processing ALL historical bars to track state transitions...")
 
-    # For this analysis, we'll use the current z-score to determine state
-    # In a real backtest, hysteresis would maintain state from previous bar
-    if z_score > UPPER_THRESH_Z:
-        vol_state = "High"
-        vol_state_reason = f"z_score ({z_score:.4f}) > upper_thresh ({UPPER_THRESH_Z})"
+    # Use TRUE hysteresis function that processes all bars sequentially
+    # This matches backtest behavior exactly: maintains state in deadband
+    vol_state, hysteresis_z_score, hysteresis_info = calculate_vol_state_with_hysteresis(
+        qqq_closes,
+        upper_thresh_z=UPPER_THRESH_Z,
+        lower_thresh_z=LOWER_THRESH_Z,
+        realized_vol_window=REALIZED_VOL_WINDOW,
+        vol_baseline_window=VOL_BASELINE_WINDOW
+    )
+
+    # Build reason string based on hysteresis result
+    if "error" in hysteresis_info:
+        vol_state_reason = f"Error: {hysteresis_info['error']}"
+    elif "warning" in hysteresis_info:
+        vol_state_reason = f"Warning: {hysteresis_info['warning']}"
+    elif z_score > UPPER_THRESH_Z:
+        vol_state_reason = f"z_score ({z_score:.4f}) > upper_thresh ({UPPER_THRESH_Z}) → High"
     elif z_score < LOWER_THRESH_Z:
-        vol_state = "Low"
-        vol_state_reason = f"z_score ({z_score:.4f}) < lower_thresh ({LOWER_THRESH_Z})"
+        vol_state_reason = f"z_score ({z_score:.4f}) < lower_thresh ({LOWER_THRESH_Z}) → Low"
     else:
-        # In deadband - assume Low as default (most common state)
-        vol_state = "Low"
-        vol_state_reason = f"z_score ({z_score:.4f}) in deadband [{LOWER_THRESH_Z}, {UPPER_THRESH_Z}] → default Low"
+        vol_state_reason = f"z_score ({z_score:.4f}) in deadband [{LOWER_THRESH_Z}, {UPPER_THRESH_Z}] → MAINTAINED from hysteresis history"
 
     print(f"  Vol State: {vol_state}")
     print(f"  Reason: {vol_state_reason}")
+
+    # Show hysteresis diagnostics
+    if "error" not in hysteresis_info:
+        print(f"  Hysteresis History:")
+        print(f"    - Total bars processed: {hysteresis_info['total_bars_processed']}")
+        print(f"    - Initial state: {hysteresis_info['initial_state']} (at {hysteresis_info['initial_date']})")
+        print(f"    - Deadband bars (state maintained): {hysteresis_info['deadband_bars']}")
+        print(f"    - State transitions: {len(hysteresis_info['transitions']) - 1}")  # -1 for init
+
+        # Show recent transitions (last 5)
+        transitions = hysteresis_info['transitions']
+        if len(transitions) > 1:  # More than just init
+            print(f"    - Recent transitions:")
+            for t in transitions[-5:]:
+                if t['type'] == 'init':
+                    print(f"        INIT @ {t['date']}: → {t['new_state']} (z={t['z_score']:.3f})")
+                else:
+                    print(f"        {t['date']}: {t['from_state']} → {t['to_state']} (z={t['z_score']:.3f})")
 
     # Step 8: Check Vol-Crush Override
     print("\nStep 8: Checking Vol-Crush Override...")

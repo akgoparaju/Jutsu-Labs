@@ -174,7 +174,7 @@ parameters:
 
   # Bull threshold (Fixed at spec)
   # T_norm > 0.3 AND SMA_fast > SMA_slow → Bull
-  t_norm_bull_thresh: [0.20]    # Fixed
+  t_norm_bull_thresh: [0.05]    # Fixed
 
   # Bear threshold (Fixed at spec)
   # T_norm < -0.3 AND SMA_fast < SMA_slow → Bear
@@ -192,7 +192,7 @@ parameters:
 
   # Volatility baseline window (Fixed at spec)
   # 126-day (6-month) rolling mean/std for z-score
-  vol_baseline_window: [126]   # Fixed
+  vol_baseline_window: [160]   # Fixed
 
   # Upper hysteresis threshold (3 values)
   # Default: +1.0 (1 std dev above 6-month average)

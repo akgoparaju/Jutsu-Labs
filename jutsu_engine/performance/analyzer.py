@@ -79,7 +79,7 @@ class PerformanceAnalyzer:
                 columns=['timestamp', 'value']
             )
             self.equity_df['value'] = self.equity_df['value'].astype(float)
-            self.equity_df['timestamp'] = pd.to_datetime(self.equity_df['timestamp'])
+            self.equity_df['timestamp'] = pd.to_datetime(self.equity_df['timestamp'], utc=True)
             self.equity_df.set_index('timestamp', inplace=True)
         else:
             self.equity_df = pd.DataFrame()
