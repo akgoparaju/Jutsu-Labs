@@ -109,7 +109,7 @@ base_config:
   # Date range - Full history (2010-2024)
   # Includes: Financial crisis recovery, bull market, COVID crash, 2022 bear, recovery
   start_date: "2010-01-01"
-  end_date: "2025-12-01"
+  end_date: "2025-12-12"
 
   # Market data
   timeframe: "1D"
@@ -145,7 +145,7 @@ parameters:
   process_noise_2: [0.01]      # Fixed
 
   # Smoothness (Fixed at defaults)
-  osc_smoothness: [15]         # Fixed
+  osc_smoothness: [10]         # Fixed
   strength_smoothness: [15]    # Fixed
 
   # Trend normalization max (Fixed at v2.8 winner)
@@ -170,6 +170,8 @@ parameters:
   # ===========================================================================
   # TREND CLASSIFICATION THRESHOLDS (Fixed at spec defaults)
   # ===========================================================================
+  symmetric_volume_adjustment: [true]
+  double_smoothing: [false]
   # Controls Bull/Bear/Sideways regime classification
 
   # Bull threshold (Fixed at spec)
@@ -260,7 +262,7 @@ parameters:
   # Treasury Overlay toggle (Fixed at enabled)
   # Default: true (enable Treasury Overlay feature)
   # Set to false for backwards compatibility with original v3.5b
-  allow_treasury: [true, false]       # Fixed: Enable Treasury Overlay
+  allow_treasury: [true]       # Fixed: Enable Treasury Overlay
 
   # Bond SMA periods (Fixed at spec defaults)
   # Fast: 20-day (1-month bond trend)

@@ -91,11 +91,11 @@ class AdaptiveKalmanFilter:
         measurement_noise: float = 500.0,
         model: KalmanFilterModel = KalmanFilterModel.STANDARD,
         sigma_lookback: int = 500,
-        trend_lookback: int = 10,
+        trend_lookback: int = 20,
         osc_smoothness: int = 10,
         strength_smoothness: int = 10,
         return_signed: bool = False,
-        symmetric_volume_adjustment: bool = False,
+        symmetric_volume_adjustment: bool = True,
         double_smoothing: bool = False
     ):
         """
@@ -376,13 +376,13 @@ class AdaptiveKalmanFilter:
                     self.oscillator_buffer,
                     self.osc_smoothness
                 )
-                
+
                 if self.double_smoothing:
                     # Double smoothing: apply second WMA pass using strength_smoothness
                     self.smoothed_oscillator_buffer.append(first_smoothed)
                     if len(self.smoothed_oscillator_buffer) > self.trend_lookback:
                         self.smoothed_oscillator_buffer.pop(0)
-                    
+
                     if len(self.smoothed_oscillator_buffer) >= self.strength_smoothness:
                         # Second WMA pass
                         trend_strength = self._wma(
@@ -395,7 +395,7 @@ class AdaptiveKalmanFilter:
                 else:
                     # Original single smoothing behavior
                     trend_strength = first_smoothed
-                
+
                 # Return signed or unsigned based on configuration
                 if self.return_signed:
                     return trend_strength  # Preserve sign for directional strategies
