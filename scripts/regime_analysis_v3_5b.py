@@ -68,7 +68,7 @@ T_NORM_BEAR_THRESH = Decimal("-0.30")
 
 # Volatility Z-Score Parameters
 REALIZED_VOL_WINDOW = 21
-VOL_BASELINE_WINDOW = 160
+VOL_BASELINE_WINDOW = 200
 UPPER_THRESH_Z = Decimal("1.0")
 LOWER_THRESH_Z = Decimal("0.2")
 
@@ -223,11 +223,11 @@ class SimpleKalmanFilter:
     DEPRECATED: This class uses velocity-based trend strength which does NOT match
     the backtest implementation. Use AdaptiveKalmanFilter from jutsu_engine.indicators.kalman
     instead, which uses innovation-based trend strength with WMA smoothing.
-    
+
     Key differences from AdaptiveKalmanFilter:
     - This class: trend_strength = mean(velocity_buffer) * 100 (WRONG)
     - AdaptiveKalmanFilter: trend_strength = WMA(innovation/max_innovation * 100) (CORRECT)
-    
+
     Kept for reference only. DO NOT USE for analysis.
     """
 
@@ -766,7 +766,7 @@ def run_regime_analysis(analysis_date: Optional[datetime] = None):
     # Step 4: Calculate Kalman Trend (T_norm)
     # Using AdaptiveKalmanFilter with EXACT backtest parameters for consistency
     print("\nStep 4: Calculating Kalman Trend (T_norm)...")
-    
+
     # Initialize with exact backtest parameters from Hierarchical_Adaptive_v3_5b.py:340-352
     # Note: osc_smoothness=15 becomes effective=10 due to min(osc_smoothness, trend_lookback=10)
     kalman = AdaptiveKalmanFilter(
@@ -790,7 +790,7 @@ def run_regime_analysis(analysis_date: Optional[datetime] = None):
             volume=int(row['volume'])
         )
         final_trend_strength = trend_strength  # Last value from loop
-    
+
     # NOTE: Do NOT process last bar again - that was a bug in the original implementation
     # The final_trend_strength from the loop IS the correct value
 

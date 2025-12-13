@@ -48,7 +48,7 @@ strategy:
     # VOLATILITY Z-SCORE PARAMETERS (4 parameters)
     # ------------------------------------------------------------------
     realized_vol_window: 21
-    vol_baseline_window: 160
+    vol_baseline_window: 200
     upper_thresh_z: 1.0
     lower_thresh_z: 0.2
 
@@ -86,7 +86,7 @@ strategy:
     # ------------------------------------------------------------------
     # EXECUTION TIMING (1 parameter)
     # ------------------------------------------------------------------
-    execution_time: "close"  # Options: open, 15min_after_open, 15min_before_close, 5min_before_close, close
+    execution_time: "15min_after_open"  # Options: open, 15min_after_open, 15min_before_close, 5min_before_close, close
 
     # ------------------------------------------------------------------
     # SYMBOL CONFIGURATION (6 parameters)
