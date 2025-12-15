@@ -215,16 +215,26 @@ class DataSync:
             # For daily bars, only fetch complete bars (market must be closed)
             # This prevents fetching partial data during market hours
             if timeframe == '1D' and not force_refresh:
-                from jutsu_engine.live.market_calendar import is_daily_bar_complete
+                from jutsu_engine.live.market_calendar import is_daily_bar_complete, is_trading_day
                 today = datetime.now(timezone.utc).date()
                 if not is_daily_bar_complete(today):
-                    # Market is still open, cap at yesterday
+                    # Market is open for today - check if we should cap
                     yesterday = today - timedelta(days=1)
-                    end_date = datetime.combine(yesterday, datetime.min.time()).replace(tzinfo=timezone.utc)
-                    logger.info(
-                        f"⏳ Market hours: Capping end_date to {yesterday} for daily bars "
-                        f"(today's bar is incomplete)"
-                    )
+                    
+                    # Only cap to yesterday if yesterday was a trading day
+                    # If yesterday was weekend/holiday, include today to get recent data
+                    if is_trading_day(yesterday):
+                        end_date = datetime.combine(yesterday, datetime.min.time()).replace(tzinfo=timezone.utc)
+                        logger.info(
+                            f"⏳ Market hours: Capping end_date to {yesterday} for daily bars "
+                            f"(today's bar is incomplete)"
+                        )
+                    else:
+                        # Yesterday was not a trading day, keep today's date
+                        logger.info(
+                            f"📊 Yesterday ({yesterday}) was not a trading day, "
+                            f"including today's partial data for daily bars"
+                        )
         elif end_date.tzinfo is None:
             end_date = end_date.replace(tzinfo=timezone.utc)
 
@@ -901,17 +911,28 @@ class DataSync:
             # unless force=True is specified
             actual_end_date = end_date
             if timeframe == '1D' and not force:
-                from jutsu_engine.live.market_calendar import is_daily_bar_complete
+                from jutsu_engine.live.market_calendar import is_daily_bar_complete, is_trading_day
                 today = datetime.now(timezone.utc).date()
                 if not is_daily_bar_complete(today):
-                    # Market is open, cap at yesterday to avoid partial bars
+                    # Market is open for today - check if we should cap
                     yesterday = today - timedelta(days=1)
-                    max_end_date = datetime.combine(yesterday, datetime.min.time()).replace(tzinfo=timezone.utc)
-                    if end_date > max_end_date:
-                        actual_end_date = max_end_date
+                    
+                    # Only cap to yesterday if yesterday was a trading day
+                    # If yesterday was weekend/holiday, include today to get the most recent data
+                    if is_trading_day(yesterday):
+                        max_end_date = datetime.combine(yesterday, datetime.min.time()).replace(tzinfo=timezone.utc)
+                        if end_date > max_end_date:
+                            actual_end_date = max_end_date
+                            logger.info(
+                                f"⏳ {symbol_key}: Market hours - capping end_date to {yesterday} "
+                                f"(today's bar incomplete)"
+                            )
+                    else:
+                        # Yesterday was not a trading day (weekend/holiday)
+                        # Include today to get the most recent available data
                         logger.info(
-                            f"⏳ {symbol_key}: Market hours - capping end_date to {yesterday} "
-                            f"(today's bar incomplete)"
+                            f"📊 {symbol_key}: Yesterday ({yesterday}) was not a trading day, "
+                            f"including today's partial data"
                         )
             
             # Check if already up-to-date (only in non-force mode)

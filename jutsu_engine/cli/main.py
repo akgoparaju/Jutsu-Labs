@@ -335,22 +335,30 @@ def sync(
             click.echo("-" * 80)
 
             for symbol_key, info in result['results'].items():
-                start_str = info['start_date'].strftime('%Y-%m-%d')
-                end_str = info['end_date'].strftime('%Y-%m-%d')
+                if info is None:
+                    click.secho(f"{symbol_key:<15} {'UNKNOWN':<20} {0:>12,} {'N/A':<25}", fg='yellow')
+                    continue
+
+                start_str = info.get('start_date').strftime('%Y-%m-%d') if info.get('start_date') else 'N/A'
+                end_str = info.get('end_date').strftime('%Y-%m-%d') if info.get('end_date') else 'N/A'
                 date_range = f"{start_str} to {end_str}"
 
-                status_str = info['status']
-                if info['status'] == 'success':
+                status_str = info.get('status', 'unknown')
+                if status_str == 'success':
                     status_color = 'green'
-                elif info['status'] == 'success_after_retry':
+                elif status_str == 'success_after_retry':
                     status_color = 'yellow'
                     status_str += " (retry)"
+                elif status_str == 'up_to_date':
+                    status_color = 'cyan'
                 else:
                     status_color = 'red'
-                    status_str = f"FAILED: {info['error'][:30]}"
+                    error_msg = info.get('error', 'Unknown error')
+                    if error_msg:
+                        status_str = f"FAILED: {str(error_msg)[:30]}"
 
                 click.secho(
-                    f"{symbol_key:<15} {status_str:<20} {info['bars_added']:>12,} {date_range:<25}",
+                    f"{symbol_key:<15} {status_str:<20} {info.get('bars_added', 0):>12,} {date_range:<25}",
                     fg=status_color
                 )
 

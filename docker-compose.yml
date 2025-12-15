@@ -73,7 +73,8 @@ services:
       - ./logs:/app/logs
 
       # Schwab OAuth token (if you have one)
-      - ./token.json:/app/token.json:ro
+      # NOTE: Code expects /app/data/token.json when in Docker (see schwab.py:161-162)
+      - ./token.json:/app/data/token.json:ro
 
     # Health check
     healthcheck:
