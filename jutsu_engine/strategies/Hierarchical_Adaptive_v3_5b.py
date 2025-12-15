@@ -796,6 +796,25 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         self._last_sma_slow = sma_slow_val
         self._last_vol_crush_triggered = vol_crush_triggered
 
+        # 8.4. Always compute bond SMAs for display (even when not in defensive cells)
+        # This enables the dashboard to show treasury overlay values regardless of regime
+        if self.allow_treasury:
+            try:
+                tlt_closes_for_display = self._get_closes_for_indicator_calculation(
+                    lookback=self.bond_sma_slow + 10,
+                    symbol=self.treasury_trend_symbol,
+                    current_bar=bar
+                )
+                if tlt_closes_for_display is not None and len(tlt_closes_for_display) >= self.bond_sma_slow:
+                    bond_sma_fast = tlt_closes_for_display.rolling(window=self.bond_sma_fast).mean().iloc[-1]
+                    bond_sma_slow = tlt_closes_for_display.rolling(window=self.bond_sma_slow).mean().iloc[-1]
+                    if not pd.isna(bond_sma_fast) and not pd.isna(bond_sma_slow):
+                        self._last_bond_sma_fast = Decimal(str(bond_sma_fast))
+                        self._last_bond_sma_slow = Decimal(str(bond_sma_slow))
+                        self._last_bond_trend = "Bull" if bond_sma_fast > bond_sma_slow else "Bear"
+            except Exception as e:
+                logger.debug(f"Could not compute bond SMAs for display: {e}")
+
         # 8.5. Apply Treasury Overlay to defensive cells (if enabled)
         w_TMF = Decimal("0")
         w_TMV = Decimal("0")

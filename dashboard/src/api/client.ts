@@ -130,6 +130,7 @@ export interface PerformanceMetrics {
   daily_return?: number
   cumulative_return?: number
   drawdown?: number
+  max_drawdown?: number
   high_water_mark?: number
   sharpe_ratio?: number
   win_rate?: number

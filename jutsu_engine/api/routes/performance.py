@@ -89,11 +89,61 @@ async def get_performance(
 
         total_trades = trade_stats.total if trade_stats else 0
 
-        # Calculate win rate (trades where we had a profit)
-        # For a simple approach, count trades where fill_value > 0 for BUY
-        # This is simplified - real P&L calculation would be more complex
+        # Calculate win rate, winning_trades, losing_trades from round-trip trades
+        # Using FIFO matching: BUYs are matched with subsequent SELLs
+        from collections import defaultdict
+
+        win_rate_value = None
         winning_trades = 0
         losing_trades = 0
+        total_round_trips = 0
+
+        # Get all trades ordered by timestamp for P&L matching
+        all_trades = db.query(LiveTrade).filter(
+            LiveTrade.mode == effective_mode
+        ).order_by(LiveTrade.timestamp).all()
+
+        # Track open positions by symbol (FIFO queue of BUY trades)
+        open_positions = defaultdict(list)
+
+        for trade in all_trades:
+            if not trade.fill_price or not trade.quantity:
+                continue
+
+            fill_price = float(trade.fill_price)
+            quantity = trade.quantity
+
+            if trade.action == 'BUY':
+                open_positions[trade.symbol].append({
+                    'quantity': quantity,
+                    'fill_price': fill_price,
+                })
+            elif trade.action == 'SELL':
+                remaining_to_sell = quantity
+
+                while remaining_to_sell > 0 and open_positions[trade.symbol]:
+                    buy_trade = open_positions[trade.symbol][0]
+                    buy_qty = buy_trade['quantity']
+                    buy_price = buy_trade['fill_price']
+
+                    close_qty = min(remaining_to_sell, buy_qty)
+                    pnl = (fill_price - buy_price) * close_qty
+                    total_round_trips += 1
+
+                    if pnl > 0:
+                        winning_trades += 1
+                    else:
+                        losing_trades += 1
+
+                    remaining_to_sell -= close_qty
+                    buy_trade['quantity'] -= close_qty
+
+                    if buy_trade['quantity'] <= 0:
+                        open_positions[trade.symbol].pop(0)
+
+        # Calculate win rate as decimal (0-1 range for frontend compatibility)
+        if total_round_trips > 0:
+            win_rate_value = winning_trades / total_round_trips
 
         # Get high water mark for accurate drawdown
         hwm_result = db.query(
@@ -103,6 +153,34 @@ async def get_performance(
         ).first()
 
         high_water_mark = float(hwm_result[0]) if hwm_result and hwm_result[0] else None
+
+        # Get max drawdown from all snapshots (historical maximum)
+        max_dd_result = db.query(
+            func.max(PerformanceSnapshot.drawdown)
+        ).filter(
+            PerformanceSnapshot.mode == effective_mode
+        ).first()
+
+        max_drawdown = float(max_dd_result[0]) if max_dd_result and max_dd_result[0] else None
+
+        # Calculate Sharpe Ratio from daily returns
+        # Sharpe = (Mean Return - Risk Free Rate) / Std Dev of Returns
+        # Using annualized Sharpe with risk-free rate ≈ 0
+        sharpe_ratio = None
+        if history:
+            import math
+            daily_returns = [
+                float(snap.daily_return)
+                for snap in history
+                if snap.daily_return is not None
+            ]
+            if len(daily_returns) >= 2:
+                mean_return = sum(daily_returns) / len(daily_returns)
+                variance = sum((r - mean_return) ** 2 for r in daily_returns) / (len(daily_returns) - 1)
+                std_dev = math.sqrt(variance) if variance > 0 else 0
+                if std_dev > 0:
+                    # Annualize: multiply by sqrt(252 trading days)
+                    sharpe_ratio = (mean_return / std_dev) * math.sqrt(252)
 
         # Query current positions for holdings breakdown
         positions = db.query(Position).filter(
@@ -143,9 +221,10 @@ async def get_performance(
             daily_return=float(latest.daily_return) if latest and latest.daily_return else None,
             cumulative_return=float(latest.cumulative_return) if latest and latest.cumulative_return else None,
             drawdown=float(latest.drawdown) if latest and latest.drawdown else None,
+            max_drawdown=max_drawdown,
             high_water_mark=high_water_mark,
-            sharpe_ratio=None,  # Would need to calculate from returns
-            win_rate=None,  # Would need proper P&L tracking
+            sharpe_ratio=sharpe_ratio,
+            win_rate=win_rate_value,
             total_trades=total_trades,
             winning_trades=winning_trades,
             losing_trades=losing_trades,
@@ -370,16 +449,18 @@ async def get_regime_breakdown(
     """
     Get performance broken down by strategy regime (cell).
 
-    Returns average return and trade count for each cell.
+    Returns average return, total return, trade count, and win rate for each cell.
     """
     try:
         effective_mode = mode or engine_state.mode
 
-        # Get return stats by cell
+        # Get return stats by cell with trend_state and vol_state
+        # Use a subquery to get the most common trend/vol state per cell
         cell_stats = db.query(
             PerformanceSnapshot.strategy_cell,
             func.count(PerformanceSnapshot.id).label('days'),
             func.avg(PerformanceSnapshot.daily_return).label('avg_return'),
+            func.sum(PerformanceSnapshot.daily_return).label('total_return'),
         ).filter(
             and_(
                 PerformanceSnapshot.mode == effective_mode,
@@ -389,7 +470,30 @@ async def get_regime_breakdown(
             PerformanceSnapshot.strategy_cell
         ).all()
 
-        # Get trade stats by cell
+        # Get trend_state and vol_state for each cell (most common value)
+        cell_regime_info = {}
+        for cell in set(s.strategy_cell for s in cell_stats):
+            # Get the most common trend/vol state for this cell
+            regime_sample = db.query(
+                PerformanceSnapshot.trend_state,
+                PerformanceSnapshot.vol_state
+            ).filter(
+                and_(
+                    PerformanceSnapshot.mode == effective_mode,
+                    PerformanceSnapshot.strategy_cell == cell,
+                    PerformanceSnapshot.trend_state.isnot(None),
+                    PerformanceSnapshot.vol_state.isnot(None)
+                )
+            ).first()
+            if regime_sample:
+                cell_regime_info[cell] = {
+                    'trend_state': regime_sample.trend_state,
+                    'vol_state': regime_sample.vol_state
+                }
+
+        # Get trade stats by cell including win/loss calculation
+        # A "winning" trade needs to be calculated from matched BUY/SELL pairs
+        # For now, we'll calculate based on profitable SELL trades
         trade_stats = db.query(
             LiveTrade.strategy_cell,
             func.count(LiveTrade.id).label('trades'),
@@ -404,14 +508,45 @@ async def get_regime_breakdown(
 
         trade_map = {t.strategy_cell: t.trades for t in trade_stats}
 
+        # Calculate win rate per cell based on daily returns
+        # A day is "winning" if daily_return > 0
+        win_stats = db.query(
+            PerformanceSnapshot.strategy_cell,
+            func.count(PerformanceSnapshot.id).label('winning_days'),
+        ).filter(
+            and_(
+                PerformanceSnapshot.mode == effective_mode,
+                PerformanceSnapshot.strategy_cell.isnot(None),
+                PerformanceSnapshot.daily_return > 0
+            )
+        ).group_by(
+            PerformanceSnapshot.strategy_cell
+        ).all()
+
+        win_map = {w.strategy_cell: w.winning_days for w in win_stats}
+
         # Build regime breakdown
         regimes = []
         for stat in cell_stats:
+            cell = stat.strategy_cell
+            days = stat.days or 1  # Avoid division by zero
+            winning_days = win_map.get(cell, 0)
+            win_rate = winning_days / days if days > 0 else 0.0
+
+            regime_info = cell_regime_info.get(cell, {})
+
             regimes.append({
-                "cell": stat.strategy_cell,
-                "days": stat.days,
+                "cell": cell,
+                "trend_state": regime_info.get('trend_state', ''),
+                "vol_state": regime_info.get('vol_state', ''),
+                "trade_count": trade_map.get(cell, 0),
+                "win_rate": win_rate,
+                "avg_return": float(stat.avg_return) if stat.avg_return else 0.0,
+                "total_return": float(stat.total_return) if stat.total_return else 0.0,
+                # Keep legacy fields for backwards compatibility
+                "days": days,
+                "trades": trade_map.get(cell, 0),
                 "avg_daily_return": float(stat.avg_return) if stat.avg_return else 0.0,
-                "trades": trade_map.get(stat.strategy_cell, 0),
             })
 
         return {

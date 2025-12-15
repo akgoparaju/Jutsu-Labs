@@ -1,3 +1,123 @@
+#### **Bugfix: Dashboard UI Data Display Issues** (2025-12-15)
+
+**Fixed three dashboard data display issues: Z-score N/A, Treasury Overlay N/A, Max Drawdown wrong value**
+
+**Issue 1: Dashboard Tab Z-score Shows N/A**
+- **Problem**: Z-score displayed "N/A" even when strategy context had valid values
+- **Root Cause**: `status.py` preferred DB snapshot which lacks t_norm/z_score fields
+- **Fix**: Supplement DB snapshot with live strategy context for t_norm/z_score
+- **Files**: `jutsu_engine/api/routes/status.py` (get_status and get_regime endpoints)
+
+**Issue 2: Decision Tree Tab Treasury Overlay Shows N/A**
+- **Problem**: Treasury Overlay (bond SMAs) showed "N/A" when not in defensive regime
+- **Root Cause**: Strategy only computed bond SMAs inside `get_safe_haven_allocation()` which is only called in cells 4,5,6
+- **Fix**: Added bond SMA computation after SMA storage, regardless of current cell
+- **Files**: `jutsu_engine/strategies/Hierarchical_Adaptive_v3_5b.py` (on_bar method)
+
+**Issue 3: Performance Tab Max Drawdown Shows Current Instead of Historical Max**
+- **Problem**: "Max Drawdown" label displayed 1.69% (current) instead of 4.52% (historical max)
+- **Root Cause**: `PerformanceMetrics` schema lacked `max_drawdown` field; UI used `drawdown` field
+- **Fix**:
+  - Added `max_drawdown` field to `PerformanceMetrics` schema
+  - Added query for `func.max(PerformanceSnapshot.drawdown)` in performance API
+  - Updated Performance.tsx to use `max_drawdown` field
+- **Files**:
+  - `jutsu_engine/api/schemas.py` - Added max_drawdown field
+  - `jutsu_engine/api/routes/performance.py` - Calculate max_drawdown from history
+  - `dashboard/src/api/client.ts` - Added max_drawdown to TypeScript interface
+  - `dashboard/src/pages/Performance.tsx` - Use max_drawdown for display
+
+---
+
+#### **Bugfix: Dashboard Startup Race Condition** (2025-12-15)
+
+**Fixed intermittent `start_dashboard.sh` failures requiring multiple attempts**
+
+**Problem**:
+- Dashboard startup script would fail on first attempt
+- Required multiple retries before API would start successfully
+- "Address already in use" errors from zombie processes
+
+**Root Cause**:
+- API takes ~11 seconds to fully initialize (DB connection, scheduler, etc.)
+- Script only waited 2 seconds before health check
+- Single health check with no retries → immediate failure on slow startup
+
+**Evidence from Logs**:
+```
+14:59:20,506 | API starting up...
+14:59:25,688 | Database tables created (5.2s later)
+14:59:31,175 | Application startup complete (11s total!)
+```
+
+**Fix**:
+- Added automatic cleanup of zombie processes before startup
+- Increased initial wait from 2s to 5s
+- Added retry loop with 15 attempts (max 20s total wait)
+- Applied same pattern to dashboard (port 3000)
+
+**Files Modified**:
+- `scripts/start_dashboard.sh` - Added cleanup, retry loop, better timing
+
+**Test Result**: API now starts reliably in ~13 seconds on first attempt ✅
+
+---
+
+#### **Bugfix: Dashboard Performance Tab Percentage Display** (2025-12-15)
+
+**Fixed double multiplication causing wrong percentage values on Performance tab**
+
+**Problem**:
+- Cumulative Return, Max Drawdown showing 100x wrong values (e.g., 550% instead of 5.5%)
+- Performance by Regime table showing NaN% for Win Rate, Avg Return, Total Return
+- Win Rate, Winning Trades, Losing Trades showing 0 in Trade Statistics section
+
+**Root Cause**:
+- Backend stores percentages already multiplied by 100 (e.g., `5.5` for 5.5%)
+- Frontend multiplied by 100 again: `{(value * 100).toFixed(2)}%` → 550%
+- Backend `win_rate`, `winning_trades`, `losing_trades` were hardcoded to None/0
+
+**Fix**:
+- Removed `* 100` from frontend for: cumulative_return, drawdown, avg_return, total_return
+- Added FIFO round-trip trade matching in performance API to calculate actual win/loss stats
+
+**Files Modified**:
+- `dashboard/src/pages/Performance.tsx` - Removed double multiplication (lines 167, 184, 340, 345)
+- `jutsu_engine/api/routes/performance.py` - Added trade stats calculation (lines 92-146, 217)
+
+**Evidence**:
+```python
+# performance_tracker.py:208 - Backend already multiplies by 100
+return ((current_equity - prev_equity) / prev_equity) * Decimal('100')
+```
+
+---
+
+#### **Bugfix: Dashboard API Response Field Mismatches** (2025-12-15)
+
+**Fixed missing/wrong fields in dashboard API responses**
+
+**Problem**:
+- `/api/performance/regime-breakdown`: Missing `trend_state`, `vol_state`, `win_rate`, `total_return`, `trade_count`
+- `/api/trades/summary/stats`: Missing `win_rate`, `net_pnl`
+- `/api/performance`: Missing `sharpe_ratio` calculation
+
+**Root Cause**:
+- Frontend expected fields that backend didn't return
+- API response schema didn't match frontend component expectations
+
+**Fix**:
+- regime-breakdown: Added `trend_state`, `vol_state` from PerformanceSnapshot
+- regime-breakdown: Added `win_rate` (winning_days / total_days), `total_return` (sum of daily returns)
+- trade stats: Added FIFO round-trip matching for `win_rate` and `net_pnl`
+- performance: Added Sharpe ratio calculation: `(mean_return / std_dev) * sqrt(252)`
+
+**Files Modified**:
+- `jutsu_engine/api/routes/performance.py` - Added regime fields (lines 398-490), sharpe calculation (lines 107-124)
+- `jutsu_engine/api/routes/trades.py` - Added win_rate, net_pnl calculation (lines 383-457)
+
+---
+
 #### **Bugfix: Portfolio Exporter Test API Signature Mismatch** (2025-12-15)
 
 **Fixed test failures caused by API signature changes**

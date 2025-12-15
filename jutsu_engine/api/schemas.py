@@ -190,6 +190,7 @@ class PerformanceMetrics(BaseModel):
     daily_return: Optional[float] = None
     cumulative_return: Optional[float] = None
     drawdown: Optional[float] = None
+    max_drawdown: Optional[float] = Field(None, description="Maximum drawdown from high water mark")
     high_water_mark: Optional[float] = None
     sharpe_ratio: Optional[float] = None
     win_rate: Optional[float] = None

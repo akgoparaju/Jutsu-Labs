@@ -327,9 +327,12 @@ async def get_trade_stats(
     - Buy/sell counts
     - Trade volume
     - Average slippage
+    - Win rate (from matched round-trip trades)
+    - Net P&L (realized profit/loss)
     """
     try:
         from sqlalchemy import func
+        from collections import defaultdict
 
         query = db.query(LiveTrade)
 
@@ -377,6 +380,67 @@ async def get_trade_stats(
             and_(*filters) if filters else True
         ).distinct().all()
 
+        # Calculate win rate and net P&L from matched round-trip trades
+        # Using FIFO matching: BUYs are matched with subsequent SELLs
+        win_rate = None
+        net_pnl = 0.0
+        winning_trades = 0
+        losing_trades = 0
+        total_round_trips = 0
+
+        # Get all trades ordered by timestamp for P&L matching
+        all_trades = query.order_by(LiveTrade.timestamp).all()
+
+        # Track open positions by symbol (FIFO queue of BUY trades)
+        open_positions = defaultdict(list)  # symbol -> list of (quantity, fill_price, fill_value)
+
+        for trade in all_trades:
+            if not trade.fill_price or not trade.quantity:
+                continue
+
+            fill_price = float(trade.fill_price)
+            quantity = trade.quantity
+
+            if trade.action == 'BUY':
+                # Add to open position
+                open_positions[trade.symbol].append({
+                    'quantity': quantity,
+                    'fill_price': fill_price,
+                })
+            elif trade.action == 'SELL':
+                # Match against open BUY positions (FIFO)
+                remaining_to_sell = quantity
+
+                while remaining_to_sell > 0 and open_positions[trade.symbol]:
+                    buy_trade = open_positions[trade.symbol][0]
+                    buy_qty = buy_trade['quantity']
+                    buy_price = buy_trade['fill_price']
+
+                    # Determine how much we can close
+                    close_qty = min(remaining_to_sell, buy_qty)
+
+                    # Calculate P&L for this portion
+                    pnl = (fill_price - buy_price) * close_qty
+                    net_pnl += pnl
+                    total_round_trips += 1
+
+                    if pnl > 0:
+                        winning_trades += 1
+                    else:
+                        losing_trades += 1
+
+                    # Update remaining quantities
+                    remaining_to_sell -= close_qty
+                    buy_trade['quantity'] -= close_qty
+
+                    # Remove fully closed position
+                    if buy_trade['quantity'] <= 0:
+                        open_positions[trade.symbol].pop(0)
+
+        # Calculate win rate as percentage
+        if total_round_trips > 0:
+            win_rate = winning_trades / total_round_trips
+
         return {
             "total_trades": total_trades,
             "buy_trades": buy_trades,
@@ -386,6 +450,11 @@ async def get_trade_stats(
             "max_slippage_pct": max_slippage,
             "min_slippage_pct": min_slippage,
             "unique_symbols": [s[0] for s in symbols],
+            "win_rate": win_rate,
+            "net_pnl": round(net_pnl, 2),
+            "winning_trades": winning_trades,
+            "losing_trades": losing_trades,
+            "total_round_trips": total_round_trips,
         }
 
     except Exception as e:

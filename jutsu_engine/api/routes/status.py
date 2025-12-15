@@ -69,13 +69,25 @@ async def get_status(
             ).order_by(desc(PerformanceSnapshot.timestamp)).first()
 
             if latest_snapshot and latest_snapshot.strategy_cell is not None:
-                # Use database snapshot values (most accurate)
+                # Use database snapshot values (most accurate for cell/trend/vol)
+                # But supplement with live strategy context for t_norm/z_score
+                t_norm_val = None
+                z_score_val = None
+                try:
+                    runner = get_strategy_runner()
+                    context = runner.get_strategy_context()
+                    if context:
+                        t_norm_val = context.get('t_norm')
+                        z_score_val = context.get('z_score')
+                except Exception as e:
+                    logger.debug(f"Could not get live indicators: {e}")
+
                 regime_info = RegimeInfo(
                     cell=latest_snapshot.strategy_cell,
                     trend_state=latest_snapshot.trend_state,
                     vol_state=latest_snapshot.vol_state,
-                    t_norm=None,  # Not stored in snapshot
-                    z_score=None,  # Not stored in snapshot
+                    t_norm=t_norm_val,
+                    z_score=z_score_val,
                 )
                 logger.debug(f"Regime from snapshot: Cell {latest_snapshot.strategy_cell}")
             else:
@@ -239,13 +251,25 @@ async def get_regime(
         ).order_by(desc(PerformanceSnapshot.timestamp)).first()
 
         if latest_snapshot and latest_snapshot.strategy_cell is not None:
-            # Use database snapshot values (most accurate)
+            # Use database snapshot values (most accurate for cell/trend/vol)
+            # But supplement with live strategy context for t_norm/z_score
+            t_norm_val = None
+            z_score_val = None
+            try:
+                runner = get_strategy_runner()
+                context = runner.get_strategy_context()
+                if context:
+                    t_norm_val = context.get('t_norm')
+                    z_score_val = context.get('z_score')
+            except Exception as e:
+                logger.debug(f"Could not get live indicators: {e}")
+
             return RegimeInfo(
                 cell=latest_snapshot.strategy_cell,
                 trend_state=latest_snapshot.trend_state,
                 vol_state=latest_snapshot.vol_state,
-                t_norm=None,  # Not stored in snapshot
-                z_score=None,  # Not stored in snapshot
+                t_norm=t_norm_val,
+                z_score=z_score_val,
             )
 
         # Fall back to live strategy context if no snapshot

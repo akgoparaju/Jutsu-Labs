@@ -164,7 +164,7 @@ function Performance() {
             <div className={`text-2xl font-bold ${
               (performance.current.cumulative_return ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
             }`}>
-              {((performance.current.cumulative_return ?? 0) * 100).toFixed(2)}%
+              {(performance.current.cumulative_return ?? 0).toFixed(2)}%
             </div>
           </div>
 
@@ -181,7 +181,7 @@ function Performance() {
           <div className="bg-slate-800 rounded-lg p-4 border border-slate-700">
             <div className="text-sm text-gray-400 mb-1">Max Drawdown</div>
             <div className="text-2xl font-bold text-red-400">
-              {((performance.current.drawdown ?? 0) * 100).toFixed(2)}%
+              {(performance.current.max_drawdown ?? 0).toFixed(2)}%
             </div>
           </div>
         </div>
@@ -337,12 +337,12 @@ function Performance() {
                     <td className={`py-3 ${
                       regime.avg_return >= 0 ? 'text-green-400' : 'text-red-400'
                     }`}>
-                      {(regime.avg_return * 100).toFixed(2)}%
+                      {regime.avg_return.toFixed(2)}%
                     </td>
                     <td className={`py-3 ${
                       regime.total_return >= 0 ? 'text-green-400' : 'text-red-400'
                     }`}>
-                      {(regime.total_return * 100).toFixed(2)}%
+                      {regime.total_return.toFixed(2)}%
                     </td>
                   </tr>
                 ))}
