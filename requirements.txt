@@ -56,7 +56,7 @@ python-multipart==0.0.20
 apscheduler==3.11.1
 
 # Timezone handling
-pytz==2024.1
+pytz==2025.2
 
 # Market Calendar
 pandas-market-calendars==5.1.1
