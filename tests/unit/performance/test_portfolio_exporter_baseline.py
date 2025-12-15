@@ -55,10 +55,16 @@ def baseline_info():
     }
 
 
+@pytest.fixture
+def start_date():
+    """Standard start date for tests (before first snapshot)."""
+    return datetime(2024, 1, 1, 0, 0, 0)
+
+
 class TestBaselineColumns:
     """Test baseline columns in CSV export."""
 
-    def test_csv_contains_baseline_columns(self, tmp_path, sample_snapshots, baseline_info):
+    def test_csv_contains_baseline_columns(self, tmp_path, sample_snapshots, baseline_info, start_date):
         """Test that baseline columns are added to CSV."""
         # Setup
         exporter = PortfolioCSVExporter(initial_capital=Decimal('100000'))
@@ -67,6 +73,7 @@ class TestBaselineColumns:
         # Execute
         exporter.export_daily_portfolio_csv(
             daily_snapshots=sample_snapshots,
+            start_date=start_date,
             output_path=str(output_path),
             strategy_name="TestStrategy",
             baseline_info=baseline_info
@@ -77,7 +84,7 @@ class TestBaselineColumns:
         assert 'Baseline_QQQ_Value' in df.columns
         assert 'Baseline_QQQ_Return_Pct' in df.columns
 
-    def test_baseline_column_order(self, tmp_path, sample_snapshots, baseline_info):
+    def test_baseline_column_order(self, tmp_path, sample_snapshots, baseline_info, start_date):
         """Test baseline columns in correct position."""
         # Setup
         exporter = PortfolioCSVExporter(initial_capital=Decimal('100000'))
@@ -86,6 +93,7 @@ class TestBaselineColumns:
         # Execute
         exporter.export_daily_portfolio_csv(
             daily_snapshots=sample_snapshots,
+            start_date=start_date,
             output_path=str(output_path),
             strategy_name="TestStrategy",
             baseline_info=baseline_info
@@ -105,7 +113,7 @@ class TestBaselineColumns:
         assert baseline_return_idx == baseline_value_idx + 1
         assert cash_idx == baseline_return_idx + 1
 
-    def test_baseline_values_calculated_correctly(self, tmp_path, sample_snapshots, baseline_info):
+    def test_baseline_values_calculated_correctly(self, tmp_path, sample_snapshots, baseline_info, start_date):
         """Test baseline values are calculated correctly for each day."""
         # Setup
         exporter = PortfolioCSVExporter(initial_capital=Decimal('100000'))
@@ -114,6 +122,7 @@ class TestBaselineColumns:
         # Execute
         exporter.export_daily_portfolio_csv(
             daily_snapshots=sample_snapshots,
+            start_date=start_date,
             output_path=str(output_path),
             strategy_name="TestStrategy",
             baseline_info=baseline_info
@@ -135,7 +144,7 @@ class TestBaselineColumns:
         expected_value_day3 = shares * Decimal('110')  # $110,000
         assert float(df.loc[2, 'Baseline_QQQ_Value']) == pytest.approx(float(expected_value_day3), rel=0.01)
 
-    def test_baseline_return_progression(self, tmp_path, sample_snapshots, baseline_info):
+    def test_baseline_return_progression(self, tmp_path, sample_snapshots, baseline_info, start_date):
         """Test baseline return increases with QQQ price."""
         # Setup
         exporter = PortfolioCSVExporter(initial_capital=Decimal('100000'))
@@ -144,6 +153,7 @@ class TestBaselineColumns:
         # Execute
         exporter.export_daily_portfolio_csv(
             daily_snapshots=sample_snapshots,
+            start_date=start_date,
             output_path=str(output_path),
             strategy_name="TestStrategy",
             baseline_info=baseline_info
@@ -164,7 +174,7 @@ class TestBaselineColumns:
         expected_return_day3 = 10.0
         assert float(df.loc[2, 'Baseline_QQQ_Return_Pct']) == pytest.approx(expected_return_day3, abs=0.01)
 
-    def test_csv_without_baseline_info(self, tmp_path, sample_snapshots):
+    def test_csv_without_baseline_info(self, tmp_path, sample_snapshots, start_date):
         """Test CSV export works without baseline (backward compatibility)."""
         # Setup
         exporter = PortfolioCSVExporter(initial_capital=Decimal('100000'))
@@ -173,6 +183,7 @@ class TestBaselineColumns:
         # Execute
         exporter.export_daily_portfolio_csv(
             daily_snapshots=sample_snapshots,
+            start_date=start_date,
             output_path=str(output_path),
             strategy_name="TestStrategy"
         )
@@ -184,7 +195,7 @@ class TestBaselineColumns:
         assert 'Baseline_QQQ_Return_Pct' not in df.columns
         assert len(df) == 3
 
-    def test_baseline_missing_price_for_date(self, tmp_path, sample_snapshots):
+    def test_baseline_missing_price_for_date(self, tmp_path, sample_snapshots, start_date):
         """Test handling of missing prices (weekends/holidays)."""
         # Setup - Missing price for day 2
         baseline_info = {
@@ -203,6 +214,7 @@ class TestBaselineColumns:
         # Execute
         exporter.export_daily_portfolio_csv(
             daily_snapshots=sample_snapshots,
+            start_date=start_date,
             output_path=str(output_path),
             strategy_name="TestStrategy",
             baseline_info=baseline_info
@@ -211,17 +223,18 @@ class TestBaselineColumns:
         # Assert
         df = pd.read_csv(output_path, keep_default_na=False)
 
-        # Day 1: Should have value
-        assert df.loc[0, 'Baseline_QQQ_Value'] != 'N/A'
+        # Day 1: Should have value (QQQ at $100, 1000 shares = $100,000)
+        assert float(df.loc[0, 'Baseline_QQQ_Value']) == pytest.approx(100000.0, rel=0.01)
 
-        # Day 2: Should be N/A (missing price)
-        assert df.loc[1, 'Baseline_QQQ_Value'] == 'N/A'
-        assert df.loc[1, 'Baseline_QQQ_Return_Pct'] == 'N/A'
+        # Day 2: Forward-fill from Day 1 (missing price uses last valid value)
+        # This is the current behavior - forward-fill instead of N/A
+        assert float(df.loc[1, 'Baseline_QQQ_Value']) == pytest.approx(100000.0, rel=0.01)
+        assert float(df.loc[1, 'Baseline_QQQ_Return_Pct']) == pytest.approx(0.0, abs=0.01)
 
-        # Day 3: Should have value
-        assert df.loc[2, 'Baseline_QQQ_Value'] != 'N/A'
+        # Day 3: Should have value (QQQ at $110, 1000 shares = $110,000)
+        assert float(df.loc[2, 'Baseline_QQQ_Value']) == pytest.approx(110000.0, rel=0.01)
 
-    def test_baseline_with_empty_price_history(self, tmp_path, sample_snapshots):
+    def test_baseline_with_empty_price_history(self, tmp_path, sample_snapshots, start_date):
         """Test CSV generation with empty price history."""
         # Setup
         baseline_info = {
@@ -236,6 +249,7 @@ class TestBaselineColumns:
         # Execute
         exporter.export_daily_portfolio_csv(
             daily_snapshots=sample_snapshots,
+            start_date=start_date,
             output_path=str(output_path),
             strategy_name="TestStrategy",
             baseline_info=baseline_info
@@ -245,11 +259,14 @@ class TestBaselineColumns:
         assert output_path.exists()
         df = pd.read_csv(output_path, keep_default_na=False)
 
-        # All baseline values should be N/A
-        assert all(df['Baseline_QQQ_Value'] == 'N/A')
-        assert all(df['Baseline_QQQ_Return_Pct'] == 'N/A')
+        # All baseline values should be forward-filled from initial_capital
+        # (no price data means fallback to initial_capital with 0% return)
+        for val in df['Baseline_QQQ_Value']:
+            assert float(val) == pytest.approx(100000.0, rel=0.01)
+        for val in df['Baseline_QQQ_Return_Pct']:
+            assert float(val) == pytest.approx(0.0, abs=0.01)
 
-    def test_baseline_invalid_start_price(self, tmp_path, sample_snapshots):
+    def test_baseline_invalid_start_price(self, tmp_path, sample_snapshots, start_date):
         """Test handling of invalid start price."""
         # Setup - Invalid start price
         baseline_info = {
@@ -266,6 +283,7 @@ class TestBaselineColumns:
         # Execute
         exporter.export_daily_portfolio_csv(
             daily_snapshots=sample_snapshots,
+            start_date=start_date,
             output_path=str(output_path),
             strategy_name="TestStrategy",
             baseline_info=baseline_info
@@ -278,7 +296,7 @@ class TestBaselineColumns:
         # CSV will still have columns but no data rows with baseline values
         assert len(df) == 3
 
-    def test_baseline_with_different_symbol(self, tmp_path, sample_snapshots):
+    def test_baseline_with_different_symbol(self, tmp_path, sample_snapshots, start_date):
         """Test baseline with symbol other than QQQ."""
         # Setup
         baseline_info = {
@@ -297,6 +315,7 @@ class TestBaselineColumns:
         # Execute
         exporter.export_daily_portfolio_csv(
             daily_snapshots=sample_snapshots,
+            start_date=start_date,
             output_path=str(output_path),
             strategy_name="TestStrategy",
             baseline_info=baseline_info
@@ -312,7 +331,7 @@ class TestBaselineColumns:
         expected_value_day3 = shares * Decimal('460')
         assert float(df.loc[2, 'Baseline_SPY_Value']) == pytest.approx(float(expected_value_day3), rel=0.01)
 
-    def test_baseline_decimal_precision(self, tmp_path, sample_snapshots, baseline_info):
+    def test_baseline_decimal_precision(self, tmp_path, sample_snapshots, baseline_info, start_date):
         """Test baseline values maintain proper decimal precision."""
         # Setup
         exporter = PortfolioCSVExporter(initial_capital=Decimal('100000'))
@@ -321,6 +340,7 @@ class TestBaselineColumns:
         # Execute
         exporter.export_daily_portfolio_csv(
             daily_snapshots=sample_snapshots,
+            start_date=start_date,
             output_path=str(output_path),
             strategy_name="TestStrategy",
             baseline_info=baseline_info

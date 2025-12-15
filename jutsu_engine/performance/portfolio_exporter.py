@@ -219,6 +219,29 @@ class PortfolioCSVExporter:
             tickers_set.update(snapshot['positions'].keys())
         return sorted(tickers_set)
 
+
+    def _get_all_indicators(self, daily_snapshots: List[Dict]) -> List[str]:
+        """
+        Extract all unique indicator names from snapshots, sorted alphabetically.
+
+        Indicators are strategy-specific and may vary between snapshots.
+        This method ensures all indicator columns are present even if
+        some days don't have certain indicators computed.
+
+        Args:
+            daily_snapshots: List of daily snapshot dictionaries
+
+        Returns:
+            Sorted list of all unique indicator names
+        """
+        indicators_set = set()
+        for snapshot in daily_snapshots:
+            # Get indicators dict (may be empty or missing)
+            indicators = snapshot.get('indicators', {})
+            if indicators:
+                indicators_set.update(indicators.keys())
+        return sorted(indicators_set)
+
     def _write_csv(
         self,
         daily_snapshots: List[Dict],
@@ -284,7 +307,16 @@ class PortfolioCSVExporter:
         for ticker in all_tickers:
             ticker_columns.extend([f"{ticker}_Qty", f"{ticker}_Value"])
 
-        headers = fixed_columns + ticker_columns
+        # Get all unique indicator names across all snapshots
+        all_indicators = self._get_all_indicators(daily_snapshots)
+
+        # Add indicator columns (one per indicator, prefixed with "Ind_")
+        indicator_columns = [f"Ind_{name}" for name in all_indicators]
+
+        headers = fixed_columns + ticker_columns + indicator_columns
+
+        if all_indicators:
+            logger.debug(f"Adding {len(all_indicators)} indicator columns: {all_indicators}")
 
         # Calculate buy-and-hold initial shares (if signal prices provided)
         if signal_prices and daily_snapshots:
@@ -339,6 +371,7 @@ class PortfolioCSVExporter:
                     snapshot,
                     prev_value,
                     all_tickers,
+                    all_indicators,
                     signal_symbol,
                     signal_prices,
                     buyhold_initial_shares,
@@ -356,6 +389,7 @@ class PortfolioCSVExporter:
         snapshot: Dict,
         prev_value: Decimal,
         all_tickers: List[str],
+        all_indicators: List[str],
         signal_symbol: Optional[str] = None,
         signal_prices: Optional[Dict[str, Decimal]] = None,
         buyhold_initial_shares: Optional[Decimal] = None,
@@ -370,6 +404,7 @@ class PortfolioCSVExporter:
             snapshot: Daily snapshot dictionary
             prev_value: Previous day's portfolio value for day change calculation
             all_tickers: Sorted list of all ticker symbols
+            all_indicators: Sorted list of all indicator names
             signal_symbol: Optional symbol for buy-and-hold comparison
             signal_prices: Optional dict mapping date strings to prices
             buyhold_initial_shares: Optional initial shares for buy-and-hold calculation
@@ -451,30 +486,48 @@ class PortfolioCSVExporter:
         row.append(f"{cash:.2f}")      # $X.XX format
 
         # Add buy-and-hold value if applicable
-        if buyhold_initial_shares is not None and signal_prices:
-            date_str = snapshot['timestamp'].strftime("%Y-%m-%d")
-            current_signal_price = signal_prices.get(date_str)
+        # CRITICAL: Condition must match header condition (signal_prices only)
+        # to prevent column shift when buyhold_initial_shares is None
+        if signal_prices:
+            if buyhold_initial_shares is not None:
+                date_str = snapshot['timestamp'].strftime("%Y-%m-%d")
+                current_signal_price = signal_prices.get(date_str)
 
-            if current_signal_price:
-                buyhold_value = buyhold_initial_shares * current_signal_price
-               
-                # Store for forward-fill on non-trading days
-                self._last_buyhold_value = buyhold_value
-                
-                row.append(f"{buyhold_value:.2f}")
-            else:
-                # Date not in price history (e.g., weekend/holiday)
-                # Forward-fill from last valid trading day instead of writing "N/A"
-                if self._last_buyhold_value is not None:
-                    row.append(f"{self._last_buyhold_value:.2f}")
+                if current_signal_price:
+                    buyhold_value = buyhold_initial_shares * current_signal_price
+                   
+                    # Store for forward-fill on non-trading days
+                    self._last_buyhold_value = buyhold_value
+                    
+                    row.append(f"{buyhold_value:.2f}")
                 else:
-                    # First day is a non-trading day (unlikely but handle gracefully)
-                    row.append(f"{self.initial_capital:.2f}")
+                    # Date not in price history (e.g., weekend/holiday)
+                    # Forward-fill from last valid trading day instead of writing "N/A"
+                    if self._last_buyhold_value is not None:
+                        row.append(f"{self._last_buyhold_value:.2f}")
+                    else:
+                        # First day is a non-trading day (unlikely but handle gracefully)
+                        row.append(f"{self.initial_capital:.2f}")
+            else:
+                # buyhold_initial_shares is None (first day price missing)
+                # Use initial_capital to maintain column alignment
+                row.append(f"{self.initial_capital:.2f}")
 
         # Dynamic ticker columns (show 0 if ticker not held)
         for ticker in all_tickers:
             qty = snapshot['positions'].get(ticker, 0)
             value = snapshot['holdings'].get(ticker, Decimal('0.00'))
             row.extend([str(qty), f"{value:.2f}"])
+
+        # Indicator columns (show empty if indicator not present for this day)
+        snapshot_indicators = snapshot.get('indicators', {})
+        for indicator_name in all_indicators:
+            value = snapshot_indicators.get(indicator_name)
+            if value is not None:
+                # Format with 6 decimal places for precision
+                row.append(f"{value:.6f}")
+            else:
+                # Indicator not computed for this day (e.g., during warmup)
+                row.append("")
 
         return row

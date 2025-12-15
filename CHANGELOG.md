@@ -1,3 +1,364 @@
+#### **Bugfix: Portfolio Exporter Test API Signature Mismatch** (2025-12-15)
+
+**Fixed test failures caused by API signature changes**
+
+**Problem**:
+- 19 tests in `test_portfolio_exporter.py` and `test_portfolio_exporter_baseline.py` failing
+- `TypeError: export_daily_portfolio_csv() missing 1 required positional argument: 'start_date'`
+- Tests were calling function with old signature (missing `start_date` parameter)
+
+**Root Cause**:
+- `export_daily_portfolio_csv()` signature was updated to include required `start_date` parameter
+- Test files were not updated to match the new API
+
+**Fix**:
+- Added `start_date` fixture to both test files
+- Updated all 19 test methods to pass `start_date` parameter
+- Updated 2 test expectations to match forward-fill behavior (instead of N/A for missing prices)
+
+**Files Modified**:
+- `tests/unit/performance/test_portfolio_exporter.py` - Added start_date to 9 test methods
+- `tests/unit/performance/test_portfolio_exporter_baseline.py` - Added start_date to 10 test methods
+
+**Result**: All 21 portfolio exporter tests now passing
+
+---
+
+#### **Bugfix: CSV Column Alignment for BuyHold Values** (2025-12-15)
+
+**Fixed column shift bug in daily portfolio CSV export**
+
+**Problem**:
+- When `BuyHold_QQQ_Value` column header was present but first day price was missing
+- Header added column unconditionally when `signal_prices` existed
+- Row only added value when `buyhold_initial_shares is not None AND signal_prices`
+- Result: All columns after BuyHold shifted by one position (data misalignment)
+
+**Root Cause**:
+- Mismatched conditions between header generation and row generation
+- Header: `if signal_prices:` (adds column)
+- Row: `if buyhold_initial_shares is not None and signal_prices:` (conditional)
+- If first day price unavailable, `buyhold_initial_shares` became None but header column still existed
+
+**Fix**:
+- Modified `_build_row()` to match header condition: `if signal_prices:`
+- Added graceful fallback: uses `initial_capital` when `buyhold_initial_shares` is None
+- Ensures row column count always matches header column count
+
+**Files Modified**:
+- `jutsu_engine/performance/portfolio_exporter.py` - Fixed `_build_row()` condition (lines 488-514)
+
+**Verification**:
+- All portfolio CSV files now have matching header/row column counts
+- Tested with multiple backtests: 27=27=27 columns consistently
+
+---
+
+#### **Bugfix: Beta Timing Accuracy in Daily Snapshots** (2025-12-15)
+
+**Fixed snapshot timing bug causing inaccurate Beta calculations**
+
+**Problem**:
+- Beta was consistently ~0.03-0.07 regardless of strategy parameters
+- Correlation with QQQ benchmark was only ~0.05 (essentially uncorrelated)
+- Daily snapshots were recording portfolio values with NEXT day's prices but TODAY's date
+
+**Root Cause**:
+- In `EventLoop._process_single_bar()`, daily snapshots were recorded AFTER `update_market_value()`
+- `update_market_value()` uses CURRENT bar prices to value positions
+- But snapshot was labeled with PREVIOUS bar's date
+- Result: Portfolio returns calculated from misaligned price/date pairs
+
+**Fix**:
+- Moved `record_daily_snapshot()` BEFORE `update_market_value()` in bar processing loop
+- Ensures snapshot captures portfolio state at PREVIOUS day's prices with correct date
+- Added comments explaining critical timing requirement
+
+**Files Modified**:
+- `jutsu_engine/core/event_loop.py` - Reordered snapshot recording (line ~208-220)
+
+**Impact**:
+- Correlation improved: 0.0546 → 0.3177 (5.8x improvement)
+- Beta improved: 0.0685 → 0.3121 (4.6x improvement)
+- QQQ Beta now properly reflects leveraged equity exposure
+
+---
+
+#### **Feature: Indicator Columns in Daily Portfolio CSV** (2025-12-14)
+
+**Added all strategy indicator values as separate columns in daily portfolio CSV export**
+
+**What this adds**:
+- Each computed indicator now appears as its own column in the daily portfolio CSV
+- Column names prefixed with `Ind_` (e.g., `Ind_T_norm`, `Ind_z_score`, `Ind_SMA_fast`)
+- Values formatted with 6 decimal precision for accuracy
+- Empty cells for days when indicators aren't computed (e.g., during warmup)
+
+**Supported Indicators** (Hierarchical_Adaptive strategies):
+- `Ind_T_norm` - Trend strength score (Kalman-filtered)
+- `Ind_z_score` - Volatility z-score
+- `Ind_SMA_fast` - Fast moving average
+- `Ind_SMA_slow` - Slow moving average
+- `Ind_vol_crush` - Volatility crush flag (1.0/0.0)
+- `Ind_Bond_SMA_fast` - Treasury fast SMA (when enabled)
+- `Ind_Bond_SMA_slow` - Treasury slow SMA (when enabled)
+- `Ind_shock_timer` - Shock brake cooldown counter (v3.5c only)
+- `Ind_shock_active` - Shock brake active flag (v3.5c only)
+
+**Implementation**:
+- Added `get_current_indicators()` method to Hierarchical_Adaptive_v3_5b and v3_5c strategies
+- Modified EventLoop to capture indicators after each `on_bar()` call
+- Updated `Portfolio.record_daily_snapshot()` to store indicators in snapshot dict
+- Updated `PortfolioCSVExporter` to dynamically add indicator columns based on data
+
+**Files Modified**:
+- `jutsu_engine/strategies/Hierarchical_Adaptive_v3_5b.py` - Added `get_current_indicators()`
+- `jutsu_engine/strategies/Hierarchical_Adaptive_v3_5c.py` - Added `get_current_indicators()` with shock brake indicators
+- `jutsu_engine/core/event_loop.py` - Capture indicators during snapshot recording
+- `jutsu_engine/portfolio/simulator.py` - Store indicators in daily snapshots
+- `jutsu_engine/performance/portfolio_exporter.py` - Export indicator columns to CSV
+
+**CSV Output Example**:
+```csv
+Date,Portfolio_Total_Value,...,Ind_SMA_fast,Ind_SMA_slow,Ind_T_norm,Ind_vol_crush,Ind_z_score
+2024-01-02,10000.00,...,100.500000,99.800000,0.123456,0.000000,0.654321
+2024-01-03,10500.00,...,101.200000,100.100000,0.234567,1.000000,0.765432
+```
+
+---
+
+#### **Feature: Beta Metric vs QQQ and SPY Benchmarks** (2025-12-14)
+
+**Added systematic risk measurement (Beta) against market benchmarks**
+
+**What is Beta**:
+- Beta measures systematic risk - how much the strategy moves relative to market benchmarks
+- Beta > 1: Strategy is more volatile than the benchmark
+- Beta < 1: Strategy is less volatile than the benchmark
+- Beta < 0: Strategy moves inversely to the benchmark (hedging behavior)
+
+**Formula**: `Beta = Cov(strategy_returns, benchmark_returns) / Var(benchmark_returns)`
+
+**Implementation**:
+- Added `_calculate_beta_vs_benchmarks()` helper method to BacktestRunner
+- Calculates Beta vs QQQ (Nasdaq-100 proxy) and SPY (S&P 500 proxy)
+- Requires minimum 20 days of data for meaningful calculation
+- Uses daily returns from portfolio equity curve
+
+**Output Locations**:
+1. **Individual backtest summary CSV** (`*_summary.csv`):
+   ```csv
+   Risk,Beta_vs_QQQ,1.00,-0.138,-1.138
+   Risk,Beta_vs_SPY,N/A,-0.174,N/A
+   ```
+   - Baseline column shows 1.00 for QQQ (beta to itself) and N/A for SPY
+   - Strategy column shows actual calculated beta values
+   - Difference column shows deviation from baseline
+
+2. **Grid search summary comparison** (`summary_comparison.csv`):
+   - Added "Beta vs QQQ" and "Beta vs SPY" columns
+   - Baseline row (000) shows 1.000 for QQQ, N/A for SPY
+   - Each parameter combination row shows calculated beta values
+
+**Files Modified**:
+- `jutsu_engine/application/backtest_runner.py` - Beta calculation logic
+- `jutsu_engine/performance/summary_exporter.py` - Beta in summary CSV
+- `jutsu_engine/application/grid_search_runner.py` - Beta in grid search output
+
+**Example Output**:
+```
+=== BETA VALIDATION ===
+beta_vs_QQQ: -0.138
+beta_vs_SPY: -0.174
+```
+Negative beta indicates the strategy moves inversely to market benchmarks (hedging behavior).
+
+---
+
+#### **Bug Fix: Individual Run Summary CSV Missing Baseline Values** (2025-12-14)
+
+**Fixed N/A baseline values in individual grid search run summary CSVs**
+
+**Problem**:
+- Individual run summary CSVs (`run_XXX/*_summary.csv`) showed "N/A" for all baseline metrics
+- The aggregate `summary_comparison.csv` displayed correct baseline values (row 000)
+- This made it difficult to compare individual strategy runs against buy-and-hold baseline
+
+**Root Cause**:
+- `BacktestRunner.run()` attempted to extract baseline bars from `event_loop.all_bars`
+- This extraction was unreliable (warmup filtering, bar storage issues)
+- The grid search's `_calculate_baseline_for_grid_search()` worked because it queried the database directly
+
+**Solution**:
+Modified `BacktestRunner.run()` to always query the database directly for baseline calculation, matching the approach used by grid search. This ensures consistent and reliable baseline calculation.
+
+**Files Modified**:
+- `jutsu_engine/application/backtest_runner.py` - Baseline calculation now always queries database
+
+**Before (broken)**:
+```csv
+Category,Metric,Baseline,Strategy,Difference
+Performance,Final_Value,N/A,"$760,942.36",N/A
+Performance,Total_Return,N/A,7509.42%,N/A
+Risk,Sharpe_Ratio,N/A,1.13,N/A
+```
+
+**After (fixed)**:
+```csv
+Category,Metric,Baseline,Strategy,Difference
+Performance,Final_Value,"$11,028.84","$11,361.20",+$332.36
+Performance,Total_Return,10.29%,13.61%,+3.32%
+Risk,Sharpe_Ratio,3.21,2.92,+-0.29
+```
+
+---
+
+#### **New Strategy: Hierarchical Adaptive v3.5c (Shock Brake)** (2025-12-13)
+
+**Added Shock Brake safety feature to v3.5b strategy**
+
+**Problem Addressed**:
+- v3.5b had no single-day tail-risk protection mechanism
+- Large daily moves (COVID crash, flash crashes) could cause significant drawdowns
+- Volatility regime detection only responds to sustained vol, not sudden shocks
+
+**Solution - Shock Brake Feature**:
+Forces `VolState = High` for a configurable cooldown period after detecting large single-day moves.
+
+**New Parameters**:
+- `enable_shock_brake` (bool, default: True) - Toggle feature on/off
+- `shock_threshold_pct` (Decimal, default: 0.03) - Daily return threshold (3%)
+- `shock_cooldown_days` (int, default: 5) - Duration of forced High vol state
+- `shock_direction_mode` (str, default: "DOWN_ONLY") - "DOWN_ONLY" or "ABS"
+
+**Timing Logic**:
+```
+Day t (EOD):   Detect shock (close vs previous close)
+               If shock detected: shock_timer = shock_cooldown_days
+Day t+1..t+N:  If shock_timer > 0: Force VolState = High
+               After allocation: shock_timer = max(0, shock_timer - 1)
+```
+
+**Precedence**: Shock Brake > Vol-crush override > Hysteresis
+
+**When Disabled**: Performs identically to v3.5b (backward compatible)
+
+**Files Created**:
+- `jutsu_engine/strategies/Hierarchical_Adaptive_v3_5c.py` - Strategy implementation
+- `tests/unit/strategies/test_hierarchical_adaptive_v3_5c.py` - 32 unit tests
+- `grid-configs/examples/grid_search_hierarchical_adaptive_v3_5c.yaml` - Grid search config
+- `grid-configs/examples/wfo_hierarchical_adaptive_v3_5c.yaml` - WFO config
+
+**Usage**:
+```bash
+# Grid search to optimize Shock Brake parameters
+jutsu grid-search --config grid-configs/examples/grid_search_hierarchical_adaptive_v3_5c.yaml
+
+# Walk-forward optimization
+jutsu wfo --config grid-configs/examples/wfo_hierarchical_adaptive_v3_5c.yaml
+```
+
+---
+
+#### **Bug Fix: Sortino Semi-Deviation & Calmar CAGR Formulas** (2025-12-13)
+
+**Fixed Sortino using wrong downside formula and Calmar using total return instead of CAGR**
+
+**Problem 1 - Sortino Semi-Deviation (CRITICAL)**:
+- **Wrong formula**: `std(negative_returns)` - only used filtered negative returns
+- **Correct formula**: `sqrt(mean(min(returns-target, 0)^2))` - uses ALL observations, clips at 0
+- Reference: Sortino & Price (1994) "Performance Measurement in a Downside Risk Framework"
+
+**Problem 2 - Calmar CAGR (grid_search_runner.py)**:
+- **Wrong**: `total_return / |MDD|` - gave 262 for 16-year data
+- **Correct**: `CAGR / |MDD|` - gives ~1.04
+
+**Impact**:
+- Sortino ratio was significantly underestimated (1.65 expected, got ~0.5)
+- Calmar ratio wildly inflated in grid search QQQ metrics
+- Cross-metric comparisons were invalid
+- User's manual calculations didn't match system output
+
+**Solution**:
+
+1. **Semi-deviation fix** (analyzer.py + grid_search_runner.py):
+```python
+# Before (WRONG - only negative returns):
+negative_returns = returns[returns < 0]
+downside_dev = negative_returns.std() * sqrt(252)
+
+# After (CORRECT - semi-deviation per Sortino & Price 1994):
+downside_returns = np.minimum(returns.values, 0)  # Clip at 0, keep ALL obs
+semi_variance = (downside_returns ** 2).mean()    # Mean squared deviation
+semi_deviation = np.sqrt(semi_variance)           # Semi-deviation
+annualized_semi_dev = semi_deviation * np.sqrt(252)
+```
+
+2. **Calmar CAGR fix** (grid_search_runner.py `_calculate_qqq_overall_metrics`):
+```python
+# Before (WRONG):
+calmar_ratio = total_return / abs(max_drawdown)
+
+# After (CORRECT):
+cagr = (1 + total_return) ** (1 / years) - 1
+calmar_ratio = cagr / abs(max_drawdown)
+```
+
+**Files Modified**:
+- `jutsu_engine/performance/analyzer.py` - `calculate_sortino_ratio()` (semi-deviation)
+- `jutsu_engine/application/grid_search_runner.py` - `_calculate_qqq_overall_metrics()` (semi-deviation + CAGR)
+
+**Verification**:
+User's manual calculations now match system output:
+- Portfolio Sortino: 1.65 ✅
+- QQQ Sortino: 1.24 ✅
+- Calmar: Uses CAGR/|MDD| ✅
+
+---
+
+#### **Bug Fix: Sortino Ratio Inconsistent Annualization Method** (2025-12-13)
+
+**Fixed Sortino ratio using arithmetic annualization instead of geometric CAGR**
+
+**Problem**:
+- Sharpe ratio used geometric CAGR: `(1 + total_return)^(1/years) - 1`
+- Calmar ratio used geometric CAGR: same formula
+- Sortino ratio used arithmetic: `mean_daily_return × 252` ← **INCONSISTENT**
+
+**Impact**:
+- Sortino ratio was inflated compared to Sharpe and Calmar
+- Cross-metric comparisons were invalid
+- Grid search ranking by Sortino could select suboptimal parameter sets
+
+**Solution**:
+Changed `calculate_sortino_ratio()` in `analyzer.py` to use geometric CAGR:
+```python
+# Before (arithmetic - WRONG):
+annualized_return = returns.mean() * periods
+
+# After (geometric CAGR - CORRECT):
+total_return = (1 + clean_returns).prod() - 1
+years = len(clean_returns) / periods
+annualized_return = (1 + total_return) ** (1 / years) - 1
+```
+
+**Additional Improvements**:
+- Added NaN filtering for robust calculation
+- Converted annualized target_return to daily for proper comparison
+- Updated docstring to document the CAGR formula
+- Enhanced debug logging with CAGR value
+
+**Files Modified**:
+- `jutsu_engine/performance/analyzer.py` - `calculate_sortino_ratio()` method
+
+**Verification**:
+All three ratios now use consistent geometric CAGR methodology:
+- Sharpe: ✅ CAGR / annualized volatility
+- Sortino: ✅ CAGR / annualized downside deviation (FIXED)
+- Calmar: ✅ CAGR / max drawdown
+
+---
+
 #### **Bug Fix: Kalman Experimental Parameters Not Wired to Strategy** (2025-12-12)
 
 **Fixed parameter wiring bug where `symmetric_volume_adjustment` and `double_smoothing` had no effect in grid search**

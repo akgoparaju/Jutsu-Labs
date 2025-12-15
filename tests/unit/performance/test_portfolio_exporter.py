@@ -42,6 +42,12 @@ def exporter(initial_capital):
 
 
 @pytest.fixture
+def start_date():
+    """Standard start date for tests (before first snapshot)."""
+    return datetime(2024, 1, 1, 0, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture
 def sample_snapshots_cash_only():
     """Sample snapshots with cash only (no positions)."""
     return [
@@ -98,11 +104,12 @@ class TestPortfolioCSVExporter:
         exporter = PortfolioCSVExporter(initial_capital=initial_capital)
         assert exporter.initial_capital == initial_capital
 
-    def test_export_empty_snapshots_raises_error(self, exporter, temp_output_dir):
+    def test_export_empty_snapshots_raises_error(self, exporter, temp_output_dir, start_date):
         """Test that exporting empty snapshots raises ValueError."""
         with pytest.raises(ValueError, match="Cannot export empty daily snapshots"):
             exporter.export_daily_portfolio_csv(
                 daily_snapshots=[],
+                start_date=start_date,
                 output_path=temp_output_dir,
                 strategy_name="TestStrategy"
             )
@@ -111,11 +118,13 @@ class TestPortfolioCSVExporter:
         self,
         exporter,
         sample_snapshots_cash_only,
-        temp_output_dir
+        temp_output_dir,
+        start_date
     ):
         """Test export with cash-only snapshots (no positions)."""
         csv_path = exporter.export_daily_portfolio_csv(
             daily_snapshots=sample_snapshots_cash_only,
+            start_date=start_date,
             output_path=temp_output_dir,
             strategy_name="CashOnly"
         )
@@ -152,11 +161,13 @@ class TestPortfolioCSVExporter:
         self,
         exporter,
         sample_snapshots_with_positions,
-        temp_output_dir
+        temp_output_dir,
+        start_date
     ):
         """Test export with positions and all-ticker columns."""
         csv_path = exporter.export_daily_portfolio_csv(
             daily_snapshots=sample_snapshots_with_positions,
+            start_date=start_date,
             output_path=temp_output_dir,
             strategy_name="WithPositions"
         )
@@ -217,11 +228,13 @@ class TestPortfolioCSVExporter:
         self,
         exporter,
         sample_snapshots_with_positions,
-        temp_output_dir
+        temp_output_dir,
+        start_date
     ):
         """Test portfolio day change calculation."""
         csv_path = exporter.export_daily_portfolio_csv(
             daily_snapshots=sample_snapshots_with_positions,
+            start_date=start_date,
             output_path=temp_output_dir,
             strategy_name="DayChange"
         )
@@ -243,11 +256,13 @@ class TestPortfolioCSVExporter:
         self,
         exporter,
         sample_snapshots_with_positions,
-        temp_output_dir
+        temp_output_dir,
+        start_date
     ):
         """Test overall return percentage calculation."""
         csv_path = exporter.export_daily_portfolio_csv(
             daily_snapshots=sample_snapshots_with_positions,
+            start_date=start_date,
             output_path=temp_output_dir,
             strategy_name="OverallReturn"
         )
@@ -268,11 +283,13 @@ class TestPortfolioCSVExporter:
         self,
         exporter,
         sample_snapshots_with_positions,
-        temp_output_dir
+        temp_output_dir,
+        start_date
     ):
         """Test decimal precision: 2 for dollars, 4 for percentages."""
         csv_path = exporter.export_daily_portfolio_csv(
             daily_snapshots=sample_snapshots_with_positions,
+            start_date=start_date,
             output_path=temp_output_dir,
             strategy_name="Precision"
         )
@@ -289,10 +306,11 @@ class TestPortfolioCSVExporter:
             assert '0.0000' in content
             assert '5.0000' in content
 
-    def test_output_path_directory(self, exporter, sample_snapshots_cash_only, temp_output_dir):
+    def test_output_path_directory(self, exporter, sample_snapshots_cash_only, temp_output_dir, start_date):
         """Test output path when directory is provided."""
         csv_path = exporter.export_daily_portfolio_csv(
             daily_snapshots=sample_snapshots_cash_only,
+            start_date=start_date,
             output_path=temp_output_dir,
             strategy_name="DirTest"
         )
@@ -303,12 +321,13 @@ class TestPortfolioCSVExporter:
         assert csv_path.endswith(".csv")
         assert Path(csv_path).exists()
 
-    def test_output_path_file(self, exporter, sample_snapshots_cash_only, temp_output_dir):
+    def test_output_path_file(self, exporter, sample_snapshots_cash_only, temp_output_dir, start_date):
         """Test output path when full file path is provided."""
         file_path = str(Path(temp_output_dir) / "custom_name.csv")
 
         csv_path = exporter.export_daily_portfolio_csv(
             daily_snapshots=sample_snapshots_cash_only,
+            start_date=start_date,
             output_path=file_path,
             strategy_name="FileTest"
         )
@@ -328,11 +347,13 @@ class TestPortfolioCSVExporter:
         self,
         exporter,
         sample_snapshots_with_positions,
-        temp_output_dir
+        temp_output_dir,
+        start_date
     ):
         """Test that ticker columns are in alphabetical order."""
         csv_path = exporter.export_daily_portfolio_csv(
             daily_snapshots=sample_snapshots_with_positions,
+            start_date=start_date,
             output_path=temp_output_dir,
             strategy_name="AlphaOrder"
         )

@@ -114,6 +114,10 @@ class EventLoop:
         self._last_regime_record_date: Optional['date'] = None
         self._pending_regime_data: Optional[dict] = None
 
+        # Indicator tracking for CSV export
+        # Stores latest indicator values from strategy.get_current_indicators()
+        self._pending_indicators: Optional[dict] = None
+
         logger.info(
             f"EventLoop initialized with strategy: {strategy.name}"
         )
@@ -195,6 +199,20 @@ class EventLoop:
             self.current_bars[bar.symbol] = bar
             self.all_bars.append(bar)
 
+            # CRITICAL FIX: Record daily snapshot BEFORE updating market values
+            # When date changes, we must capture portfolio value using PREVIOUS day's prices
+            # before update_market_value() overwrites _latest_prices with new day's data.
+            # Without this fix, snapshots for day N incorrectly use day N+1's prices,
+            # causing a 1-day forward shift that breaks beta/correlation calculations.
+            current_date = bar.timestamp.date()
+            if self._last_snapshot_date is not None and current_date != self._last_snapshot_date:
+                # All bars for previous date are now processed
+                # Record snapshot NOW while portfolio still has previous day's prices
+                self.portfolio.record_daily_snapshot(
+                    self._previous_bar_timestamp,
+                    indicators=self._pending_indicators
+                )
+
             # Step 1: Update portfolio market values
             self.portfolio.update_market_value(self.current_bars)
 
@@ -207,6 +225,11 @@ class EventLoop:
 
             # Step 3: Feed bar to strategy
             self.strategy.on_bar(bar)
+
+            # Step 3.5: Capture indicator values for CSV export
+            # Must happen AFTER on_bar() when indicators are computed
+            if hasattr(self.strategy, 'get_current_indicators'):
+                self._pending_indicators = self.strategy.get_current_indicators()
 
             # Step 4: Collect signals from strategy
             signals = self.strategy.get_signals()
@@ -270,16 +293,10 @@ class EventLoop:
                     }
                     self._last_regime_record_date = regime_date
 
-            # Step 7: Record daily portfolio snapshot for CSV export (once per unique date)
-            # FIX: Record snapshot AFTER all bars for previous date are processed
-            current_date = bar.timestamp.date()
-
-            # When date changes, record snapshot for PREVIOUS date (using its last bar timestamp)
-            if self._last_snapshot_date is not None and current_date != self._last_snapshot_date:
-                # All bars for previous date are now processed
-                # Use the last bar's timestamp from the previous date
-                self.portfolio.record_daily_snapshot(self._previous_bar_timestamp)
-
+            # Step 7: Update daily snapshot tracking variables
+            # NOTE: Actual snapshot recording was moved earlier in the loop (before update_market_value)
+            # to ensure snapshots use the correct day's closing prices, not the next day's prices.
+            # We only update tracking variables here.
             self._last_snapshot_date = current_date
             self._previous_bar_timestamp = bar.timestamp  # Track for next date change
 
@@ -293,7 +310,10 @@ class EventLoop:
 
         # Record final daily snapshot (for the last date in the dataset)
         if self._previous_bar_timestamp is not None:
-            self.portfolio.record_daily_snapshot(self._previous_bar_timestamp)
+            self.portfolio.record_daily_snapshot(
+                self._previous_bar_timestamp,
+                indicators=self._pending_indicators
+            )
 
         # Record final regime data (for the last date in the dataset)
         if self.regime_analyzer and self._pending_regime_data is not None:
