@@ -1,0 +1,358 @@
+# Walk-Forward Optimization for Hierarchical Adaptive v3.5c
+# =========================================================
+# Validates robustness of v3.5c Shock Brake feature across time periods
+#
+# v3.5c Changes from v3.5b:
+# -------------------------
+# 1. SHOCK BRAKE FEATURE:
+#    - v3.5b: No single-day tail-risk protection
+#    - v3.5c: Shock Brake forces VolState = High after large daily moves
+#    - Reduces leverage exposure during tail-risk events
+#
+# 2. SHOCK BRAKE TIMING:
+#    - Day t: Detect shock at EOD (close vs previous close)
+#    - Day t+1 onwards: Force VolState = High for cooldown_days
+#    - Timer decrements AFTER allocation processing
+#    - Precedence: Shock Brake > Vol-crush override > Hysteresis
+#
+# Walk-Forward Methodology:
+# -------------------------
+# - Total Period: 2010-03-01 to 2025-11-21 (~15 years)
+# - Window Size: 3.0 years (2.5y IS + 0.5y OOS)
+# - Slide: 0.5 years (6 months forward each iteration)
+# - Windows: 29 total walk-forward windows
+# - Selection Metric: Sortino Ratio (downside risk focus)
+#
+# v3.5c WFO Parameter Set: Focused on Shock Brake (8 runs per window)
+# -------------------------------------------------------------------
+# Fix ALL v3.5b parameters at optimized values:
+#   - Kalman: measurement_noise=3000, T_max=50.0
+#   - SMA: sma_fast=40, sma_slow=140
+#   - Z-Score: upper_thresh_z=1.0, lower_thresh_z=0.2
+#   - Vol-crush: vol_crush_threshold=-0.15
+#   - Treasury: allow_treasury=true
+#
+# Optimize ONLY Shock Brake parameters (2^3 = 8 runs):
+#   - shock_threshold_pct ∈ {0.025, 0.035} (2 values: sensitive/conservative)
+#   - shock_cooldown_days ∈ {3, 7} (2 values: quick/long)
+#   - shock_direction_mode ∈ {"DOWN_ONLY", "ABS"} (2 values)
+#
+# Total Backtests: 29 windows × 8 combinations = 232 total backtests
+# Estimated Runtime: 30-45 minutes
+
+# Strategy to optimize
+strategy: "Hierarchical_Adaptive_v3_5c"
+
+# Symbol Sets
+# -----------
+# Same as v3.5b - requires 6 symbols for Treasury Overlay
+symbol_sets:
+  - name: "QQQ_TQQQ_PSQ_Bonds"
+    signal_symbol: "QQQ"                # Kalman + SMA + vol calculations
+    core_long_symbol: "QQQ"             # 1x base allocation
+    leveraged_long_symbol: "TQQQ"       # 3x leveraged overlay
+    inverse_hedge_symbol: "PSQ"         # -1x inverse (optional)
+    treasury_trend_symbol: "TLT"        # 20+ Year Treasury (bond trend signal)
+    bull_bond_symbol: "TMF"             # 3x Bull Bonds (deflation/safety)
+    bear_bond_symbol: "TMV"             # 3x Bear Bonds (inflation/rate shock)
+
+# Base Configuration
+# ------------------
+base_config:
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 100000  # $100,000 starting capital
+  commission: 0.0          # $0.00 per trade
+  slippage: 0.0005         # 0.05% per trade
+
+# Walk-Forward Configuration
+# --------------------------
+walk_forward:
+  # Total period to analyze
+  total_start_date: "2010-02-01"
+  total_end_date: "2025-11-21"
+
+  # Window sizing (same as v3.5b WFO)
+  window_size_years: 3.0      # Total window size (IS + OOS)
+  in_sample_years: 2.5        # Training period
+  out_of_sample_years: 0.5    # Validation period
+
+  # Iteration control
+  slide_years: 0.5            # Slide forward 6 months each iteration
+
+  # Selection criteria
+  selection_metric: "sharpe_ratio"  # Optimize for downside risk
+
+  # Performance requirements (filters before OOS testing)
+  min_sharpe_ratio: 1.0      # Minimum Sharpe in IS period
+  max_drawdown: 0.35         # Maximum 35% drawdown in IS period
+
+# Parameters to Optimize
+# ----------------------
+# v3.5c Focused WFO: Test ONLY Shock Brake parameters
+# All v3.5b parameters fixed at optimized values
+#
+# Total combinations: 2^3 = 8 runs per window
+
+parameters:
+  # ===========================================================================
+  # SHOCK BRAKE PARAMETERS (v3.5c NEW - WFO TEST)
+  # ===========================================================================
+
+  # Enable Shock Brake (Fixed at enabled)
+  enable_shock_brake: [true]     # Fixed: Feature enabled
+
+  # SHOCK THRESHOLD PERCENTAGE (WFO - 2 values)
+  # Test boundary values:
+  #   0.025: Sensitive (2.5% triggers more often)
+  #   0.035: Conservative (3.5% triggers less often)
+  shock_threshold_pct: [0.025, 0.035]  # 2 values - WFO TEST
+
+  # SHOCK COOLDOWN DAYS (WFO - 2 values)
+  # Test boundary values:
+  #   3: Quick recovery (3 trading days)
+  #   7: Long protection (7 trading days)
+  shock_cooldown_days: [3, 7]    # 2 values - WFO TEST
+
+  # SHOCK DIRECTION MODE (WFO - 2 values)
+  # Test both modes:
+  #   DOWN_ONLY: Only negative returns trigger (tail-risk focus)
+  #   ABS: Both directions trigger (volatility focus)
+  shock_direction_mode: ["DOWN_ONLY", "ABS"]  # 2 values - WFO TEST
+
+  # ===========================================================================
+  # VERSION IDENTIFIER
+  # ===========================================================================
+  version: ["3.5c"]
+
+  # ===========================================================================
+  # KALMAN TREND PARAMETERS (Fixed at v3.5b optimized values)
+  # ===========================================================================
+
+  measurement_noise: [3000.0]    # Fixed: v3.5b optimized
+  process_noise_1: [0.01]        # Fixed
+  process_noise_2: [0.01]        # Fixed
+  osc_smoothness: [10]           # Fixed
+  strength_smoothness: [15]      # Fixed
+  T_max: [50.0]                  # Fixed
+
+  # ===========================================================================
+  # SMA STRUCTURE PARAMETERS (Fixed at v3.5b optimized values)
+  # ===========================================================================
+
+  sma_fast: [40]                 # Fixed: v3.5b optimized
+  sma_slow: [140]                # Fixed: v3.5b optimized
+
+  # ===========================================================================
+  # TREND CLASSIFICATION THRESHOLDS (Fixed at v3.5b values)
+  # ===========================================================================
+
+  t_norm_bull_thresh: [0.2]      # Fixed
+  t_norm_bear_thresh: [-0.3]     # Fixed
+
+  # ===========================================================================
+  # VOLATILITY Z-SCORE PARAMETERS (Fixed at v3.5b optimized values)
+  # ===========================================================================
+
+  realized_vol_window: [21]      # Fixed
+  vol_baseline_window: [126]     # Fixed
+  upper_thresh_z: [1]            # Fixed: v3.5b optimized
+  lower_thresh_z: [0.2]          # Fixed: v3.5b optimized
+
+  # ===========================================================================
+  # VOL-CRUSH OVERRIDE PARAMETERS (Fixed at v3.5b optimized values)
+  # ===========================================================================
+
+  vol_crush_threshold: [-0.15]   # Fixed: v3.5b optimized
+  vol_crush_lookback: [5]        # Fixed
+
+  # ===========================================================================
+  # ALLOCATION PARAMETERS (Fixed at v3.5b values)
+  # ===========================================================================
+
+  leverage_scalar: [1]           # Fixed
+  use_inverse_hedge: [false]     # Fixed
+  w_PSQ_max: [0.5]               # Fixed
+
+  # ===========================================================================
+  # TREASURY OVERLAY PARAMETERS (Fixed at v3.5b values)
+  # ===========================================================================
+
+  allow_treasury: [true]         # Fixed
+  bond_sma_fast: [20]            # Fixed
+  bond_sma_slow: [60]            # Fixed
+  max_bond_weight: [0.4]         # Fixed
+  treasury_trend_symbol: ["TLT"] # Fixed
+  bull_bond_symbol: ["TMF"]      # Fixed
+  bear_bond_symbol: ["TMV"]      # Fixed
+
+  # ===========================================================================
+  # REBALANCING (Fixed at v3.5b value)
+  # ===========================================================================
+
+  rebalance_threshold: [0.025]   # Fixed
+
+# Expected Output
+# ---------------
+# output/wfo_Hierarchical_Adaptive_v3_5c_YYYYMMDD_HHMMSS/
+# ├── wfo_summary.csv           # Overall WFO results across all windows
+# ├── parameter_stability.csv   # How often each Shock Brake param wins
+# ├── oos_performance.csv       # Out-of-sample performance metrics
+# ├── is_vs_oos_comparison.csv  # IS vs OOS performance degradation
+# ├── parameters.yaml           # Copy of this config file
+# ├── README.txt               # Summary and analysis
+# │
+# ├── window_001/              # First window
+# │   ├── is_period/          # In-sample optimization results
+# │   │   ├── summary_comparison.csv  # All 8 combinations tested
+# │   │   └── best_params.yaml        # Winning Shock Brake params
+# │   ├── oos_period/         # Out-of-sample validation
+# │   │   ├── portfolio_daily.csv
+# │   │   ├── trades.csv
+# │   │   └── summary.csv
+# │   └── window_summary.csv  # IS + OOS metrics
+# │
+# └── ... (28 more windows)
+
+# Usage
+# -----
+# jutsu wfo --config grid-configs/examples/wfo_hierarchical_adaptive_v3_5c.yaml
+#
+# After completion:
+# 1. Review wfo_summary.csv for overall OOS performance
+# 2. Compare to v3.5b WFO results (same windows, no Shock Brake)
+# 3. Check parameter_stability.csv:
+#    - Does shock_threshold_pct = 0.025 or 0.035 win more often?
+#    - Does shock_cooldown_days = 3 or 7 win more often?
+#    - Does DOWN_ONLY or ABS win more often?
+# 4. Analyze is_vs_oos_comparison.csv for overfitting:
+#    - Large IS/OOS gap = Shock Brake may be overfit
+#    - Consistent gap = robust feature
+# 5. Review critical windows containing tail-risk events:
+#    - COVID crash (March 2020): Did Shock Brake activate?
+#    - Flash crashes: Quick protection?
+#    - Recovery periods: Cooldown appropriate?
+
+# Walk-Forward Windows
+# --------------------
+# 29 total windows with 0.5y slide
+#
+# Key Windows to Review (Shock Brake Validation):
+# - Window ~20 (OOS includes March 2020 COVID crash): Shock Brake protection?
+# - Window ~27 (OOS includes 2022 bear market): Multiple shock events?
+# - Early windows (2010-2013): Flash crash recovery
+# - Late windows (2023-2025): Current market validation
+
+# Performance Expectations (v3.5c vs v3.5b)
+# ----------------------------------------
+# SHOCK BRAKE EXPECTED IMPROVEMENTS:
+#
+# Tail-Risk Protection:
+# - v3.5b: No single-day shock protection
+# - v3.5c: Immediate defensive positioning after shocks
+# - Expected: REDUCED MAX DRAWDOWN during tail events
+#
+# Recovery Timing:
+# - v3.5b: Regular vol regime transitions
+# - v3.5c: Forced cooldown period after shocks
+# - Expected: DELAYED RECOVERY but safer re-entry
+#
+# Risk-Adjusted Returns:
+# - v3.5b: Higher upside capture, higher crash exposure
+# - v3.5c: Slightly reduced upside, better crisis protection
+# - Expected: IMPROVED SORTINO RATIO
+#
+# Max Drawdown (OOS):
+# - v3.5b: -15% to -18%
+# - v3.5c: -12% to -15% (Shock Brake protection)
+# - Expected improvement: 2-3% reduction in max DD
+#
+# Annual Return (OOS):
+# - v3.5b: 15-20%
+# - v3.5c: 14-19% (slight reduction from cooldown periods)
+# - Expected: Comparable, slight trade-off for safety
+
+# Analysis Checklist
+# -------------------
+# After WFO completes:
+#
+# SHOCK BRAKE STABILITY ANALYSIS:
+# - [ ] shock_threshold_pct: 0.025 (sensitive) vs 0.035 (conservative) winner?
+# - [ ] shock_cooldown_days: 3 (quick) vs 7 (long) winner?
+# - [ ] shock_direction_mode: DOWN_ONLY vs ABS winner?
+# - [ ] Winning params consistent across windows?
+# - [ ] Params vary by market regime (bull vs bear)?
+#
+# SHOCK BRAKE EFFECTIVENESS:
+# - [ ] Trigger frequency: How often does Shock Brake activate per window?
+# - [ ] Trigger timing: Does it catch major tail events?
+# - [ ] False positive rate: Triggers on recoverable dips?
+# - [ ] Cooldown appropriateness: Recovery timing reasonable?
+#
+# TAIL-RISK EVENT ANALYSIS:
+# - [ ] COVID crash (March 2020): Protection activated?
+# - [ ] Flash crashes: Quick brake activation?
+# - [ ] 2022 bear market: Multiple shock triggers?
+# - [ ] Recovery periods: Cooldown impact on upside?
+#
+# IS vs OOS DEGRADATION:
+# - [ ] Average IS/OOS gap (should be 20-30%)
+# - [ ] Gap larger than v3.5b? (potential overfit)
+# - [ ] Gap smaller? (robust feature)
+#
+# v3.5c vs v3.5b COMPARISON:
+# - [ ] OOS max drawdown: v3.5c ≤ v3.5b?
+# - [ ] OOS Sortino ratio: v3.5c ≥ v3.5b?
+# - [ ] OOS annual return: v3.5c comparable?
+# - [ ] Shock Brake adds value during crises?
+#
+# DECISION CRITERIA:
+# ✅ PROCEED: Stable Shock Brake params, better crisis protection, reasonable return trade-off
+# ⚠️  OPTIMIZE: Unstable params, refine threshold/cooldown ranges
+# ❌ DISABLE: Shock Brake doesn't help or hurts performance
+
+# Research Suggestions
+# --------------------
+# POST-WFO ANALYSIS:
+#
+# 1. Shock Brake Trigger Study:
+#    - Count triggers per window
+#    - Map triggers to actual market events
+#    - Validate trigger timing accuracy
+#
+# 2. Cooldown Impact Analysis:
+#    - Measure upside missed during cooldown periods
+#    - Compare to drawdown avoided during shocks
+#    - Calculate net benefit of Shock Brake
+#
+# 3. Direction Mode Deep Dive:
+#    - Compare DOWN_ONLY vs ABS performance
+#    - Analyze when each mode excels
+#    - Consider adaptive direction mode
+#
+# 4. Threshold Sensitivity:
+#    - Test narrower range (0.028, 0.030, 0.032)
+#    - Identify optimal sensitivity level
+#    - Consider adaptive threshold based on vol regime
+#
+# Next Steps
+# ----------
+# After WFO validation:
+#
+# IF SHOCK BRAKE VALIDATES WELL:
+# 1. Select final Shock Brake params (most stable from WFO)
+# 2. Run full-period backtest comparing v3.5c vs v3.5b
+# 3. Document Shock Brake trigger events
+# 4. Update production deployment config
+#
+# IF SHOCK BRAKE RESULTS ARE MIXED:
+# 1. Investigate which market regimes benefit from Shock Brake
+# 2. Consider conditional enabling (only during high vol periods)
+# 3. Test alternative threshold/cooldown combinations
+#
+# IF SHOCK BRAKE RESULTS ARE WORSE:
+# 1. Keep feature disabled by default
+# 2. Document as optional safety feature
+# 3. User can enable for conservative risk profile

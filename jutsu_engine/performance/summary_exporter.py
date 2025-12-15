@@ -179,6 +179,26 @@ class SummaryCSVExporter:
             f'+{(float(max_dd) - float(baseline_max_dd)) * 100:.2f}%' if baseline_max_dd is not None else 'N/A'
         ])
 
+        # Beta metrics (systematic risk vs market benchmarks)
+        beta_vs_qqq = baseline.get('beta_vs_QQQ') if baseline else None
+        beta_vs_spy = baseline.get('beta_vs_SPY') if baseline else None
+
+        rows.append([
+            'Risk',
+            'Beta_vs_QQQ',
+            '1.00',  # Baseline QQQ beta to itself is 1.0
+            f'{float(beta_vs_qqq):.3f}' if beta_vs_qqq is not None else 'N/A',
+            f'{float(beta_vs_qqq) - 1.0:+.3f}' if beta_vs_qqq is not None else 'N/A'
+        ])
+
+        rows.append([
+            'Risk',
+            'Beta_vs_SPY',
+            'N/A',  # SPY beta not applicable to QQQ baseline
+            f'{float(beta_vs_spy):.3f}' if beta_vs_spy is not None else 'N/A',
+            'N/A'
+        ])
+
         # Trading Metrics
         rows.append([
             'Trading',

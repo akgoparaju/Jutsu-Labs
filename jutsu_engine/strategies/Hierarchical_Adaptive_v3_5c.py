@@ -1,33 +1,37 @@
 """
-Hierarchical Adaptive v3.5b: Binarized Regime Allocator with Hysteresis
+Hierarchical Adaptive v3.5c: Binarized Regime Allocator with Optional Shock Brake
 
-v3.5b introduces four major structural improvements:
+v3.5c extends v3.5b with a single new feature: the **Shock Brake**.
 
-1. **Binarized Volatility (3x3 → 3x2 Grid)**:
-   - Eliminated "Medium Vol" - leverage decay is binary (safe or not)
-   - 6-cell regime grid (Bull/Side/Bear × Low/High Vol)
+The Shock Brake is an optional safety overlay designed to address the primary
+failure mode observed in backtests: large down days occurring while volatility
+is still classified "Low" (and the strategy is more levered).
 
-2. **Rolling Z-Score Volatility**:
-   - Replaced static percentile thresholds (look-ahead bias)
-   - Adapts to market baseline: Z = (σ_t - μ) / σ
-   - Robust across decades without magic numbers
+When a single-day shock exceeds a threshold (e.g., 3% absolute move), the
+strategy forces VolState = High for a short cooldown period, reducing downside
+tail events and improving Sortino/Calmar ratios.
 
-3. **Hysteresis State Machine**:
-   - Prevents flicker when volatility near threshold
-   - Latch mechanism: High requires crossing upper bound, Low requires crossing lower bound
-   - Deadband behavior between thresholds
+Key Differences from v3.5b:
+---------------------------
+1. **Shock Brake (4 new parameters)**:
+   - enable_shock_brake: Master switch (default: True)
+   - shock_threshold_pct: Trigger threshold (default: 0.03 = 3%)
+   - shock_cooldown_days: Days to force High vol (default: 5)
+   - shock_direction_mode: "DOWN_ONLY" (recommended) or "ABS"
 
-4. **Removed SQQQ (Toxic Asset)**:
-   - SQQQ decay extreme in high vol (only time v3.0 allowed it)
-   - Replaced with Cash or PSQ (-1x) in bearish regimes
-   - Negative expectancy in high-vol chopping eliminated
+2. **Timing Logic**:
+   - Day t: Detect shock using close-to-close return
+   - Day t+1 onwards: If shock_timer > 0, force VolState = High
+   - Decrement timer AFTER processing each day's allocation
+   - Result: 5 cooldown days means days 1,2,3,4,5 after shock are forced High
 
-Key Architecture:
-- Hierarchical Trend: Fast (Kalman) gated by Slow (SMA 50/200)
-- Volatility Z-Score: Rolling 21-day realized vol vs 126-day baseline
-- 6-Cell Allocation Matrix: (Trend × Vol) → {TQQQ, QQQ, PSQ, Cash}
-- Vol-Crush Override: 20% vol drop in 5 days forces Low state
-- Hybrid Leverage: Base weights × leverage_scalar (0.8-1.2)
+3. **Precedence**:
+   - Shock Brake applied AFTER z-score + hysteresis determination
+   - Shock Brake takes PRIORITY over Vol-crush override when active
+   - Shock Brake only affects VolState, not TrendState
+
+4. **Backwards Compatibility**:
+   - Set enable_shock_brake=False to get identical v3.5b behavior
 
 Performance Targets:
     - Processing Speed: <1ms per bar
@@ -48,7 +52,7 @@ from jutsu_engine.indicators.technical import sma, annualized_volatility
 from jutsu_engine.performance.trade_logger import TradeLogger
 from jutsu_engine.utils.logging_config import setup_logger
 
-logger = setup_logger('STRATEGY.HIERARCHICAL_ADAPTIVE_V3_5B')
+logger = setup_logger('STRATEGY.HIERARCHICAL_ADAPTIVE_V3_5C')
 
 # Execution time mapping (ET market times)
 EXECUTION_TIMES = {
@@ -60,12 +64,26 @@ EXECUTION_TIMES = {
 }
 
 
-class Hierarchical_Adaptive_v3_5b(Strategy):
+class Hierarchical_Adaptive_v3_5c(Strategy):
     """
-    Hierarchical Adaptive v3.5b: Binarized Regime Allocator with Intraday Execution Timing
+    Hierarchical Adaptive v3.5c: Binarized Regime Allocator with Optional Shock Brake
 
-    Six-cell allocation system combining hierarchical trend (Kalman + SMA)
-    with binarized volatility (rolling Z-score with hysteresis).
+    Extends v3.5b with Shock Brake for tail-risk protection. When a large
+    single-day move is detected, forces High volatility state for a cooldown
+    period to reduce leverage exposure.
+
+    Shock Brake Logic:
+        At EOD on day t:
+            r_t = (Close_t / Close_{t-1}) - 1
+            if shock_direction_mode == "DOWN_ONLY":
+                shock = r_t <= -shock_threshold_pct
+            elif shock_direction_mode == "ABS":
+                shock = abs(r_t) >= shock_threshold_pct
+            if shock: shock_timer = shock_cooldown_days
+
+        For day t+1 regime selection:
+            if shock_timer > 0: force VolState = High
+            (after allocation) shock_timer = max(0, shock_timer - 1)
 
     Regime Grid (3x2):
         | Trend      | Low Vol               | High Vol                  |
@@ -74,36 +92,12 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         | Sideways   | Drift (20/80 T/Q)     | Chop (100% Cash)         |
         | BearStrong | Grind (50/50 Q/Cash)  | Crash (100% Cash or PSQ) |
 
-    Key Features:
-    - Hierarchical Trend: T_norm (Kalman) gated by SMA_fast/SMA_slow
-    - Volatility Z-Score: Adaptive regime detection
-    - Hysteresis: Prevents regime flicker
-    - Vol-Crush Override: Rapid volatility collapse detection
-    - Hybrid Allocation: Base weights scaled by leverage_scalar
-    - Automatic Warmup: Calculates required warmup bars based on indicator requirements
-      (max of sma_slow+10 and vol_baseline+vol_realized, typically 147-210 bars)
-    - Execution Timing: Configurable execution timing for Portfolio fill pricing.
-      Signals always use EOD bars for consistency. execution_time only affects fill prices.
-
-    Execution Timing (NEW):
-        - execution_time parameter controls Portfolio fill pricing on last day
-        - Options: "open" (9:30 AM), "15min_after_open" (9:45 AM),
-                   "15min_before_close" (3:45 PM), "close" (4:00 PM)
-        - Default: "close" (4:00 PM fill pricing)
-        - Signal Generation: ALWAYS uses EOD bars for reproducibility
-        - Fill Pricing: Portfolio uses execution_time for intraday fill prices
-        - Purpose: Separates signal logic (EOD) from execution pricing (intraday)
-
     Example:
-        strategy = Hierarchical_Adaptive_v3_5b(
-            sma_fast=50,
-            sma_slow=200,
-            upper_thresh_z=Decimal("1.0"),
-            lower_thresh_z=Decimal("0.0"),
-            vol_crush_threshold=Decimal("-0.20"),
-            leverage_scalar=Decimal("1.0"),
-            use_inverse_hedge=False,  # PSQ toggle
-            execution_time="15min_after_open",  # Fill pricing at 9:45 AM on last day
+        strategy = Hierarchical_Adaptive_v3_5c(
+            enable_shock_brake=True,
+            shock_threshold_pct=Decimal("0.03"),
+            shock_cooldown_days=5,
+            shock_direction_mode="DOWN_ONLY",
             ...
         )
     """
@@ -123,7 +117,7 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         double_smoothing: bool = False,
 
         # ==================================================================
-        # STRUCTURAL TREND PARAMETERS (4 parameters - NEW)
+        # STRUCTURAL TREND PARAMETERS (4 parameters)
         # ==================================================================
         sma_fast: int = 40,
         sma_slow: int = 140,
@@ -131,7 +125,7 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         t_norm_bear_thresh: Decimal = Decimal("-0.3"),
 
         # ==================================================================
-        # VOLATILITY Z-SCORE PARAMETERS (4 parameters - NEW)
+        # VOLATILITY Z-SCORE PARAMETERS (4 parameters)
         # ==================================================================
         realized_vol_window: int = 21,
         vol_baseline_window: int = 126,
@@ -139,24 +133,32 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         lower_thresh_z: Decimal = Decimal("0.2"),
 
         # ==================================================================
-        # VOL-CRUSH OVERRIDE (2 parameters - NEW)
+        # VOL-CRUSH OVERRIDE (2 parameters)
         # ==================================================================
         vol_crush_threshold: Decimal = Decimal("-0.15"),
         vol_crush_lookback: int = 5,
 
         # ==================================================================
-        # ALLOCATION PARAMETERS (2 parameters - NEW)
+        # SHOCK BRAKE PARAMETERS (4 parameters - NEW IN v3.5c)
+        # ==================================================================
+        enable_shock_brake: bool = True,
+        shock_threshold_pct: Decimal = Decimal("0.03"),
+        shock_cooldown_days: int = 5,
+        shock_direction_mode: str = "DOWN_ONLY",
+
+        # ==================================================================
+        # ALLOCATION PARAMETERS (2 parameters)
         # ==================================================================
         leverage_scalar: Decimal = Decimal("1.0"),
 
         # ==================================================================
-        # INSTRUMENT TOGGLES (2 parameters - NEW)
+        # INSTRUMENT TOGGLES (2 parameters)
         # ==================================================================
         use_inverse_hedge: bool = False,
         w_PSQ_max: Decimal = Decimal("0.5"),
 
         # ==================================================================
-        # TREASURY OVERLAY PARAMETERS (5 parameters - v3.5b Treasury Extension)
+        # TREASURY OVERLAY PARAMETERS (5 parameters)
         # ==================================================================
         allow_treasury: bool = True,
         bond_sma_fast: int = 20,
@@ -170,12 +172,12 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         rebalance_threshold: Decimal = Decimal("0.025"),
 
         # ==================================================================
-        # EXECUTION TIMING (1 parameter - NEW)
+        # EXECUTION TIMING (1 parameter)
         # ==================================================================
         execution_time: str = "close",
 
         # ==================================================================
-        # SYMBOL CONFIGURATION (7 parameters - Treasury Overlay adds 3 new symbols)
+        # SYMBOL CONFIGURATION (7 parameters)
         # ==================================================================
         signal_symbol: str = "QQQ",
         core_long_symbol: str = "QQQ",
@@ -188,13 +190,12 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         # METADATA
         # ==================================================================
         trade_logger: Optional[TradeLogger] = None,
-        name: str = "Hierarchical_Adaptive_v3_5b"
+        name: str = "Hierarchical_Adaptive_v3_5c"
     ):
         """
-        Initialize Hierarchical Adaptive v3.5b strategy.
+        Initialize Hierarchical Adaptive v3.5c strategy.
 
-        v3.5b introduces binarized volatility regime detection with hysteresis,
-        hierarchical trend classification, and hybrid allocation system.
+        v3.5c extends v3.5b with an optional Shock Brake for tail-risk protection.
 
         Args:
             measurement_noise: Kalman filter measurement noise (default: 2000.0)
@@ -204,35 +205,37 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
             strength_smoothness: Trend strength smoothing period (default: 15)
             T_max: Trend normalization threshold (default: 50.0)
             symmetric_volume_adjustment: Enable symmetric volume-based noise adjustment (default: False)
-                If True, noise INCREASES when volume drops (more skeptical on low-volume days)
-                If False, noise only decreases when volume increases (original behavior)
             double_smoothing: Enable double WMA smoothing for trend strength (default: False)
-                If True, applies two WMA passes: first with osc_smoothness, second with strength_smoothness
-                If False, applies single WMA pass with osc_smoothness (original behavior)
-            sma_fast: Fast structural trend SMA period (default: 50, range: [40, 60])
-            sma_slow: Slow structural trend SMA period (default: 200, range: [180, 220])
-            t_norm_bull_thresh: T_norm threshold for BullStrong (default: 0.3)
+            sma_fast: Fast structural trend SMA period (default: 40)
+            sma_slow: Slow structural trend SMA period (default: 140)
+            t_norm_bull_thresh: T_norm threshold for BullStrong (default: 0.2)
             t_norm_bear_thresh: T_norm threshold for BearStrong (default: -0.3)
             realized_vol_window: Rolling realized vol window (default: 21)
             vol_baseline_window: Volatility baseline statistics window (default: 126)
-            upper_thresh_z: Z-score threshold for High vol (default: 1.0, range: [0.8, 1.2])
-            lower_thresh_z: Z-score threshold for Low vol (default: 0.0, range: [-0.2, 0.2])
-            vol_crush_threshold: Vol-crush percentage threshold (default: -0.20, range: [-0.15, -0.25])
+            upper_thresh_z: Z-score threshold for High vol (default: 1.0)
+            lower_thresh_z: Z-score threshold for Low vol (default: 0.2)
+            vol_crush_threshold: Vol-crush percentage threshold (default: -0.15)
             vol_crush_lookback: Vol-crush detection lookback period (default: 5)
-            leverage_scalar: Allocation scaling factor (default: 1.0, range: [0.8, 1.2])
+            enable_shock_brake: Enable Shock Brake feature (default: True)
+                When enabled, large single-day moves force High vol state for cooldown period.
+                Set to False for identical v3.5b behavior.
+            shock_threshold_pct: Daily return threshold to trigger shock brake (default: 0.03 = 3%)
+                Interpretation depends on shock_direction_mode.
+            shock_cooldown_days: Days to force High vol after shock detection (default: 5)
+                The shock day itself does NOT count; forced High begins next trading day.
+            shock_direction_mode: Direction sensitivity for shock detection (default: "DOWN_ONLY")
+                - "DOWN_ONLY": Only negative returns <= -threshold trigger (recommended)
+                - "ABS": Both positive and negative returns >= threshold trigger
+            leverage_scalar: Allocation scaling factor (default: 1.0)
             use_inverse_hedge: Enable PSQ in bearish regimes (default: False)
-            w_PSQ_max: Maximum PSQ weight (default: 0.5 = 50%)
-            allow_treasury: Enable Treasury Overlay (dynamic bond selection) (default: True)
+            w_PSQ_max: Maximum PSQ weight (default: 0.5)
+            allow_treasury: Enable Treasury Overlay (default: True)
             bond_sma_fast: Fast SMA for bond trend detection (default: 20)
             bond_sma_slow: Slow SMA for bond trend detection (default: 60)
-            max_bond_weight: Maximum allocation to bond ETFs (default: 0.4 = 40%)
+            max_bond_weight: Maximum allocation to bond ETFs (default: 0.4)
             treasury_trend_symbol: Symbol for bond trend analysis (default: 'TLT')
-            rebalance_threshold: Weight drift threshold for rebalancing (default: 0.025 = 2.5%)
+            rebalance_threshold: Weight drift threshold for rebalancing (default: 0.025)
             execution_time: When to price fills on last day (default: 'close')
-                          Options: 'open' (9:30 AM), '15min_after_open' (9:45 AM),
-                                   '15min_before_close' (3:45 PM), 'close' (4:00 PM)
-                          Signals always use EOD bars (reproducibility)
-                          Portfolio uses this for intraday fill pricing on last day only
             signal_symbol: Signal generation symbol (default: 'QQQ')
             core_long_symbol: 1x long symbol (default: 'QQQ')
             leveraged_long_symbol: 3x long symbol (default: 'TQQQ')
@@ -240,7 +243,7 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
             bull_bond_symbol: 3x bull bond symbol (default: 'TMF')
             bear_bond_symbol: 3x bear bond symbol (default: 'TMV')
             trade_logger: Optional TradeLogger (default: None)
-            name: Strategy name (default: 'Hierarchical_Adaptive_v3_5b')
+            name: Strategy name (default: 'Hierarchical_Adaptive_v3_5c')
         """
         super().__init__()
         self.name = name
@@ -300,6 +303,23 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
                 f"max_bond_weight must be in [0.0, 1.0], got {max_bond_weight}"
             )
 
+        # Validate Shock Brake parameters (NEW in v3.5c)
+        if shock_threshold_pct <= Decimal("0"):
+            raise ValueError(
+                f"shock_threshold_pct must be positive, got {shock_threshold_pct}"
+            )
+
+        if shock_cooldown_days < 1:
+            raise ValueError(
+                f"shock_cooldown_days must be >= 1, got {shock_cooldown_days}"
+            )
+
+        valid_shock_modes = ["DOWN_ONLY", "ABS"]
+        if shock_direction_mode not in valid_shock_modes:
+            raise ValueError(
+                f"shock_direction_mode must be one of {valid_shock_modes}, got: {shock_direction_mode}"
+            )
+
         # Store all parameters
         self.measurement_noise = measurement_noise
         self.process_noise_1 = process_noise_1
@@ -322,6 +342,12 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
 
         self.vol_crush_threshold = vol_crush_threshold
         self.vol_crush_lookback = vol_crush_lookback
+
+        # Shock Brake parameters (NEW in v3.5c)
+        self.enable_shock_brake = enable_shock_brake
+        self.shock_threshold_pct = shock_threshold_pct
+        self.shock_cooldown_days = shock_cooldown_days
+        self.shock_direction_mode = shock_direction_mode
 
         self.leverage_scalar = leverage_scalar
 
@@ -348,22 +374,29 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         # State variables
         self.kalman_filter: Optional[AdaptiveKalmanFilter] = None
         self.vol_state: str = "Low"  # Hysteresis state (persists across bars)
-        self.trend_state: Optional[str] = None  # Current trend state (BullStrong/Sideways/BearStrong)
+        self.trend_state: Optional[str] = None  # Current trend state
         self.cell_id: Optional[int] = None  # Current regime cell (1-6)
         self.current_tqqq_weight: Decimal = Decimal("0")
         self.current_qqq_weight: Decimal = Decimal("0")
         self.current_psq_weight: Decimal = Decimal("0")
         self.current_tmf_weight: Decimal = Decimal("0")
         self.current_tmv_weight: Decimal = Decimal("0")
-        self._end_date: Optional = None  # Set during init() for last day detection
-        self._data_handler: Optional = None  # Set via set_data_handler() for intraday fetching
-        self._intraday_price_cache: Dict[Tuple[str, datetime], Decimal] = {}  # Cache intraday prices
+        self._end_date: Optional = None
+        self._data_handler: Optional = None
+        self._intraday_price_cache: Dict[Tuple[str, datetime], Decimal] = {}
+
+        # Shock Brake state (NEW in v3.5c)
+        self._shock_timer: int = 0  # Countdown timer for forced High vol
+        self._previous_close: Optional[Decimal] = None  # For return calculation
+        self._shock_brake_active: bool = False  # Track if shock brake forced current state
 
         logger.info(
-            f"Initialized {name} (v3.5b - BINARIZED REGIME): "
+            f"Initialized {name} (v3.5c - SHOCK BRAKE): "
             f"SMA_fast={sma_fast}, SMA_slow={sma_slow}, "
             f"upper_thresh_z={upper_thresh_z}, lower_thresh_z={lower_thresh_z}, "
             f"leverage_scalar={leverage_scalar}, use_inverse_hedge={use_inverse_hedge}, "
+            f"enable_shock_brake={enable_shock_brake}, shock_threshold_pct={shock_threshold_pct}, "
+            f"shock_cooldown_days={shock_cooldown_days}, shock_direction_mode={shock_direction_mode}, "
             f"execution_time={execution_time}"
         )
 
@@ -383,12 +416,12 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         )
 
         # Initialize hysteresis state
-        self.vol_state = "Low"  # Default to Low on startup
+        self.vol_state = "Low"
         self.current_tqqq_weight = Decimal("0")
         self.current_qqq_weight = Decimal("0")
         self.current_psq_weight = Decimal("0")
 
-        # Initialize regime state for external access (LiveStrategyRunner, RegimePerformanceAnalyzer)
+        # Initialize regime state for external access
         self.trend_state = None
         self.cell_id = None
         self._last_t_norm = None
@@ -402,33 +435,22 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         self._last_bond_sma_slow = None
         self._last_bond_trend = None
 
+        # Initialize Shock Brake state (NEW in v3.5c)
+        self._shock_timer = 0
+        self._previous_close = None
+        self._shock_brake_active = False
+
         logger.info(
-            f"Initialized {self.name} (v3.5b) with hysteresis state: {self.vol_state}"
+            f"Initialized {self.name} (v3.5c) with hysteresis state: {self.vol_state}, "
+            f"shock_brake: {'ENABLED' if self.enable_shock_brake else 'DISABLED'}"
         )
 
     def get_required_warmup_bars(self) -> int:
         """
-        Calculate warmup bars needed for Hierarchical Adaptive v3.5b indicators.
-
-        This strategy uses three indicator systems that require warmup:
-        1. SMA indicators: sma_slow + buffer (10 bars)
-        2. Volatility z-score: vol_baseline_window (126) + realized_vol_window (21)
-        3. Bond SMA (if Treasury Overlay enabled): bond_sma_slow
+        Calculate warmup bars needed for Hierarchical Adaptive v3.5c indicators.
 
         Returns:
             int: Maximum lookback required by all indicator systems
-
-        Notes:
-            - Ensures sufficient warmup for SMA, volatility, and bond trend systems
-            - Prevents "Volatility z-score calculation failed" errors
-            - Warmup bars are fetched BEFORE start_date (don't consume trading days)
-
-        Example:
-            With sma_slow=140, vol_baseline=126, vol_realized=21, bond_sma_slow=60:
-            Returns max(140+10, 126+21, 60) = max(150, 147, 60) = 150
-
-            With sma_slow=75, vol_baseline=126, vol_realized=21, bond_sma_slow=60:
-            Returns max(75+10, 126+21, 60) = max(85, 147, 60) = 147
         """
         # Calculate lookback for SMA indicators
         sma_lookback = self.sma_slow + 10
@@ -445,202 +467,68 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         return required_warmup
 
     def set_end_date(self, end_date) -> None:
-        """
-        Set the end date for the backtest to enable Portfolio fill pricing.
-
-        This method is called by BacktestRunner to inform the strategy of the
-        backtest end date. Portfolio uses this to detect the last trading day
-        and fetch intraday prices for fill pricing.
-
-        Args:
-            end_date: End date of backtest (datetime.date or datetime.datetime)
-
-        Notes:
-            - Called by BacktestRunner after strategy initialization
-            - Used by Portfolio for intraday fill pricing on last day
-            - Strategy signals always use EOD data (this is only for Portfolio)
-        """
+        """Set the end date for the backtest."""
         from datetime import datetime
-        # Convert to date if datetime was passed
         if isinstance(end_date, datetime):
             self._end_date = end_date.date()
         else:
             self._end_date = end_date
-
-        logger.info(f"Strategy end_date set to {self._end_date} for execution timing")
+        logger.info(f"Strategy end_date set to {self._end_date}")
 
     def set_data_handler(self, data_handler) -> None:
-        """
-        Set the data handler for Portfolio intraday fill pricing.
-
-        This method is called by BacktestRunner/EventLoop to provide the strategy
-        with access to the data handler. Portfolio uses this for intraday fill pricing.
-
-        Args:
-            data_handler: MultiSymbolDataHandler instance with get_intraday_bars_for_time_window()
-
-        Notes:
-            - Called by BacktestRunner after strategy initialization
-            - Used by Portfolio for intraday fill pricing on last day
-            - Strategy signals always use EOD data (this is only for Portfolio)
-        """
+        """Set the data handler for intraday fill pricing."""
         self._data_handler = data_handler
         logger.info("Strategy data_handler set for intraday execution timing")
 
     def _is_last_day(self, current_timestamp) -> bool:
-        """
-        Check if current bar is on the last day of backtest.
-
-        Args:
-            current_timestamp: Timestamp of current bar (datetime)
-
-        Returns:
-            bool: True if on last trading day, False otherwise
-
-        Notes:
-            - Compares bar date with backtest end_date
-            - Kept for Portfolio compatibility (unused by strategy)
-            - Returns False if end_date not set
-        """
+        """Check if current bar is on the last day of backtest."""
         if self._end_date is None:
             return False
-
         return current_timestamp.date() == self._end_date
 
     def _get_current_intraday_price(self, symbol: str, current_bar: MarketDataEvent) -> Decimal:
-        """
-        Fetch intraday price at execution_time for current bar.
-
-        Uses 15-minute candles to simulate real-world trading where indicators
-        are calculated using current session's intraday price (not EOD).
-        Falls back to EOD close if intraday data unavailable.
-
-        Args:
-            symbol: Symbol to fetch intraday price for
-            current_bar: Current bar (EOD bar for date reference)
-
-        Returns:
-            Intraday close price at execution_time (or EOD close if unavailable)
-
-        Notes:
-            - Caches intraday prices to avoid repeated database queries
-            - Execution time mapping:
-              * "open" → 9:30 AM ET (first 15-min candle)
-              * "15min_after_open" → 9:45 AM ET (second 15-min candle)
-              * "15min_before_close" → 3:45 PM ET (last 15-min candle before close)
-              * "close" → 4:00 PM ET (EOD close, standard behavior)
-            - Pre-fetched data from database (no API calls during execution)
-        """
-        # DEBUG: Log entry
-        logger.info(
-            f"[INTRADAY_DEBUG] _get_current_intraday_price called: "
-            f"symbol={symbol}, date={current_bar.timestamp.date()}, "
-            f"execution_time={self.execution_time}"
-        )
-
+        """Fetch intraday price at execution_time for current bar."""
         # Check cache first
         cache_key = (symbol, current_bar.timestamp)
         if cache_key in self._intraday_price_cache:
-            cached_price = self._intraday_price_cache[cache_key]
-            logger.info(
-                f"[INTRADAY_DEBUG] CACHE HIT: "
-                f"symbol={symbol}, date={current_bar.timestamp.date()}, "
-                f"cached_price={cached_price}"
-            )
-            return cached_price
-
-        logger.info(
-            f"[INTRADAY_DEBUG] CACHE MISS: "
-            f"symbol={symbol}, date={current_bar.timestamp.date()}, "
-            f"fetching fresh data"
-        )
+            return self._intraday_price_cache[cache_key]
 
         if self._data_handler is None:
             logger.warning(f"No data_handler injected, using EOD close for {symbol}")
             return current_bar.close
 
         try:
-            # Map execution_time to market time (Eastern Time)
             execution_times = {
-                "open": time(9, 30),                    # 9:30 AM
-                "15min_after_open": time(9, 45),        # 9:45 AM
-                "15min_before_close": time(15, 45),     # 3:45 PM
+                "open": time(9, 30),
+                "15min_after_open": time(9, 45),
+                "15min_before_close": time(15, 45),
             }
 
             target_time = execution_times.get(self.execution_time)
-            logger.info(
-                f"[INTRADAY_DEBUG] Time mapping: "
-                f"execution_time={self.execution_time} → target_time={target_time}"
-            )
-
             if target_time is None:
-                logger.error(f"Invalid execution_time: {self.execution_time}")
                 return current_bar.close
 
-            # DEBUG: Log fetch parameters
-            logger.info(
-                f"[INTRADAY_DEBUG] Fetching bars: "
-                f"symbol={symbol}, date={current_bar.timestamp.date()}, "
-                f"start_time={target_time}, end_time={target_time}, interval=15m"
-            )
-
-            # Fetch 15-minute intraday bar at target time
             intraday_bars = self._data_handler.get_intraday_bars_for_time_window(
                 symbol=symbol,
                 date=current_bar.timestamp.date(),
                 start_time=target_time,
                 end_time=target_time,
-                interval='15m'  # 15-minute candles
-            )
-
-            # DEBUG: Log fetch results
-            logger.info(
-                f"[INTRADAY_DEBUG] Fetch returned {len(intraday_bars) if intraday_bars else 0} bars"
+                interval='15m'
             )
 
             if not intraday_bars:
-                logger.warning(
-                    f"No intraday data for {symbol} on {current_bar.timestamp.date()} "
-                    f"at {target_time}, using EOD close"
-                )
                 return current_bar.close
 
-            # DEBUG: Log full bar details
-            bar = intraday_bars[0]
-            logger.info(
-                f"[INTRADAY_DEBUG] Bar details: "
-                f"timestamp={bar.timestamp}, "
-                f"open={bar.open}, high={bar.high}, low={bar.low}, close={bar.close}, "
-                f"volume={bar.volume}"
-            )
-
-            # Select price type based on execution_time
-            # "open" execution uses OPEN price, others use CLOSE price
             if self.execution_time == "open":
                 intraday_price = intraday_bars[0].open
-                price_type = "OPEN"
             else:
                 intraday_price = intraday_bars[0].close
-                price_type = "CLOSE"
 
-            # Cache and return
             self._intraday_price_cache[cache_key] = intraday_price
-
-            logger.info(
-                f"[INTRADAY_DEBUG] RETURNING: "
-                f"symbol={symbol}, date={current_bar.timestamp.date()}, "
-                f"execution_time={self.execution_time}, target_time={target_time}, "
-                f"intraday_price={intraday_price} (using {price_type} price)"
-            )
-
             return intraday_price
 
         except Exception as e:
-            logger.error(
-                f"[INTRADAY_DEBUG] EXCEPTION: "
-                f"Intraday fetch failed for {symbol} on {current_bar.timestamp.date()}: {e}, "
-                f"using EOD close"
-            )
+            logger.error(f"Intraday fetch failed for {symbol}: {e}, using EOD close")
             return current_bar.close
 
     def _get_closes_for_indicator_calculation(
@@ -649,65 +537,88 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         symbol: str,
         current_bar: MarketDataEvent
     ) -> pd.Series:
-        """
-        Get close prices for indicator calculation with intraday current bar.
-
-        Simulates real-world trading: indicators use historical EOD closes
-        plus current bar's intraday price at execution_time.
-
-        Pattern:
-        - Historical bars (lookback - 1): EOD closes from database
-        - Current bar: Intraday price at execution_time (15-minute candle)
-        - Example: 40-bar SMA uses 39 EOD closes + 1 intraday price
-
-        Args:
-            lookback: Number of bars to retrieve
-            symbol: Symbol to filter by
-            current_bar: Current bar (for intraday price fetch)
-
-        Returns:
-            pandas Series of close prices (historical EOD + current intraday)
-
-        Notes:
-            - execution_time="close": Uses EOD close (standard behavior)
-            - execution_time="open/15min_after_open/15min_before_close": Uses intraday
-            - Applied to EVERY bar throughout backtest (not just last day)
-            - Enables different execution times to produce different signals
-        """
-        # For EOD execution: return pure EOD closes without mixing signal symbol's price
+        """Get close prices for indicator calculation."""
         if self.execution_time == "close":
             return self.get_closes(lookback=lookback, symbol=symbol)
-        
-        # For intraday execution: use historical EOD + current intraday price
-        # Get historical EOD closes (lookback - 1 bars)
+
         historical_closes = self.get_closes(lookback=lookback - 1, symbol=symbol)
-
-        # Get current bar's intraday price for the requested symbol
         current_price = self._get_current_intraday_price(symbol, current_bar)
-
-        # Combine: historical + current
         combined = pd.concat([
             historical_closes,
             pd.Series([current_price], index=[current_bar.timestamp])
         ])
-
-        # Return last lookback values
         return combined.iloc[-lookback:]
+
+    def _detect_shock(self, current_close: Decimal) -> bool:
+        """
+        Detect if a shock event occurred based on daily return.
+
+        Shock Detection Logic (v3.5c):
+            r_t = (Close_t / Close_{t-1}) - 1
+
+            if shock_direction_mode == "DOWN_ONLY":
+                shock = r_t <= -shock_threshold_pct
+            elif shock_direction_mode == "ABS":
+                shock = abs(r_t) >= shock_threshold_pct
+
+        Args:
+            current_close: Current bar's close price
+
+        Returns:
+            True if shock detected, False otherwise
+
+        Notes:
+            - Requires at least 2 bars (current + previous) to calculate return
+            - Updates _previous_close for next iteration
+            - Does NOT set shock_timer (caller handles that)
+        """
+        if not self.enable_shock_brake:
+            return False
+
+        if self._previous_close is None:
+            # First bar after init, cannot compute return yet
+            return False
+
+        # Calculate daily return
+        daily_return = (current_close / self._previous_close) - Decimal("1")
+
+        # Check shock condition based on direction mode
+        if self.shock_direction_mode == "DOWN_ONLY":
+            shock_detected = daily_return <= -self.shock_threshold_pct
+            if shock_detected:
+                logger.info(
+                    f"SHOCK BRAKE TRIGGERED (DOWN_ONLY): "
+                    f"daily_return={daily_return:.4f} <= -{self.shock_threshold_pct:.4f}, "
+                    f"setting cooldown={self.shock_cooldown_days} days"
+                )
+        else:  # "ABS"
+            shock_detected = abs(daily_return) >= self.shock_threshold_pct
+            if shock_detected:
+                logger.info(
+                    f"SHOCK BRAKE TRIGGERED (ABS): "
+                    f"|daily_return|={abs(daily_return):.4f} >= {self.shock_threshold_pct:.4f}, "
+                    f"setting cooldown={self.shock_cooldown_days} days"
+                )
+
+        return shock_detected
 
     def on_bar(self, bar: MarketDataEvent) -> None:
         """
-        Process each bar through v3.5b binarized regime allocator.
+        Process each bar through v3.5c binarized regime allocator with Shock Brake.
 
         Pipeline:
-        1. Calculate Kalman trend (T_norm) - Fast signal
-        2. Calculate SMA_fast, SMA_slow - Slow structural filter
+        1. Calculate Kalman trend (T_norm)
+        2. Calculate SMA_fast, SMA_slow
         3. Calculate realized volatility and z-score
         4. Apply hysteresis to determine VolState (Low/High)
         5. Check vol-crush override
-        6. Classify TrendState (BullStrong/Sideways/BearStrong)
-        7. Map to 6-cell allocation matrix
-        8. Apply leverage_scalar
-        9. Rebalance if needed
+        6. Apply Shock Brake override (NEW in v3.5c)
+        7. Classify TrendState (BullStrong/Sideways/BearStrong)
+        8. Map to 6-cell allocation matrix
+        9. Apply leverage_scalar
+        10. Rebalance if needed
+        11. Detect shock for NEXT day's cooldown (NEW in v3.5c)
+        12. Decrement shock timer (NEW in v3.5c)
         """
         # Only process signal symbol
         if bar.symbol != self.signal_symbol:
@@ -716,11 +627,22 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         # Warmup period check
         min_warmup = self.sma_slow + 20
         if len(self._bars) < min_warmup:
+            # Still track previous close for shock detection
+            self._previous_close = bar.close
             logger.debug(f"Warmup: {len(self._bars)}/{min_warmup} bars")
             return
 
-        # 1. Calculate Kalman trend
-        # For intraday execution, use current intraday price for Kalman filter
+        # ========== STEP 1: Apply Shock Brake from PREVIOUS day's detection ==========
+        # If shock_timer > 0, force VolState = High for today's allocation
+        self._shock_brake_active = False
+        if self.enable_shock_brake and self._shock_timer > 0:
+            self._shock_brake_active = True
+            logger.info(
+                f"[{bar.timestamp}] SHOCK BRAKE ACTIVE: "
+                f"forcing VolState=High (timer={self._shock_timer} days remaining)"
+            )
+
+        # ========== STEP 2: Calculate Kalman trend ==========
         if self.execution_time == "close":
             kalman_price = bar.close
         else:
@@ -734,16 +656,11 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         )
         T_norm = self._calculate_kalman_trend(Decimal(str(trend_strength_signed)))
 
-        # 2. Calculate structural trend
-        # Calculate required lookback accounting for ALL indicator needs:
-        # - SMA indicators need: sma_slow + buffer (10 bars)
-        # - Volatility z-score needs: vol_baseline_window (126) + realized_vol_window (21) = 147 bars
-        # Use max() to ensure sufficient warmup for both indicator systems
+        # ========== STEP 3: Calculate structural trend ==========
         sma_lookback = self.sma_slow + 10
         vol_lookback = self.vol_baseline_window + self.realized_vol_window
         required_lookback = max(sma_lookback, vol_lookback)
 
-        # Get closes for indicator calculation (historical EOD + current intraday)
         closes = self._get_closes_for_indicator_calculation(
             lookback=required_lookback,
             symbol=self.signal_symbol,
@@ -753,57 +670,69 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         sma_slow_series = sma(closes, self.sma_slow)
 
         if pd.isna(sma_fast_series.iloc[-1]) or pd.isna(sma_slow_series.iloc[-1]):
+            self._previous_close = bar.close
             logger.warning("SMA calculation returned NaN")
             return
 
         sma_fast_val = Decimal(str(sma_fast_series.iloc[-1]))
         sma_slow_val = Decimal(str(sma_slow_series.iloc[-1]))
 
-        # 3. Calculate volatility z-score
+        # ========== STEP 4: Calculate volatility z-score ==========
         z_score = self._calculate_volatility_zscore(closes)
 
         if z_score is None:
-            logger.error("Volatility z-score calculation failed - insufficient warmup data")
+            self._previous_close = bar.close
+            logger.error("Volatility z-score calculation failed")
             return
 
-        # 4. Apply hysteresis to determine VolState
+        # ========== STEP 5: Apply hysteresis to determine baseline VolState ==========
         self._apply_hysteresis(z_score)
 
-        # 5. Check vol-crush override
+        # ========== STEP 6: Check vol-crush override ==========
         vol_crush_triggered = self._check_vol_crush_override(closes)
 
-        # 6. Classify trend regime
+        # ========== STEP 7: Apply Shock Brake override (NEW in v3.5c) ==========
+        # Shock Brake takes PRIORITY over vol-crush when active
+        if self._shock_brake_active:
+            # Force High vol state regardless of z-score or vol-crush
+            if self.vol_state != "High":
+                logger.info(
+                    f"[{bar.timestamp}] Shock Brake overriding VolState: {self.vol_state} → High"
+                )
+            self.vol_state = "High"
+            # Vol-crush cannot override Shock Brake
+            vol_crush_triggered = False
+
+        # ========== STEP 8: Classify trend regime ==========
         trend_state = self._classify_trend_regime(T_norm, sma_fast_val, sma_slow_val)
 
-        # Apply vol-crush override to trend
-        if vol_crush_triggered:
+        # Apply vol-crush override to trend (only if shock brake not active)
+        if vol_crush_triggered and not self._shock_brake_active:
             if trend_state == "BearStrong":
                 logger.info("Vol-crush override: BearStrong → Sideways")
                 trend_state = "Sideways"
 
-        # 7-8. Get cell allocation and apply leverage_scalar
+        # ========== STEP 9-10: Get cell allocation and apply leverage_scalar ==========
         cell_id = self._get_cell_id(trend_state, self.vol_state)
         w_TQQQ, w_QQQ, w_PSQ, w_cash = self._get_cell_allocation(cell_id)
 
-        # Store regime state for external access (RegimePerformanceAnalyzer, LiveStrategyRunner)
+        # Store regime state for external access
         self.trend_state = trend_state
         self.cell_id = cell_id
         self._last_t_norm = T_norm
         self._last_z_score = z_score
 
-        # Store SMA values and vol-crush for decision tree (dashboard API)
+        # Store SMA values and vol-crush for decision tree
         self._last_sma_fast = sma_fast_val
         self._last_sma_slow = sma_slow_val
         self._last_vol_crush_triggered = vol_crush_triggered
 
-        # 8.5. Apply Treasury Overlay to defensive cells (if enabled)
+        # ========== STEP 10.5: Apply Treasury Overlay ==========
         w_TMF = Decimal("0")
         w_TMV = Decimal("0")
 
         if self.allow_treasury and cell_id in [4, 5, 6]:
-            # Get TLT price history for bond trend detection
             try:
-                # Get TLT closes for indicator calculation (historical EOD + current intraday)
                 tlt_closes = self._get_closes_for_indicator_calculation(
                     lookback=self.bond_sma_slow + 10,
                     symbol=self.treasury_trend_symbol,
@@ -813,43 +742,31 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
                 logger.warning(f"Could not retrieve TLT data: {e}, falling back to Cash")
                 tlt_closes = None
 
-            # Determine defensive portion based on cell
             if cell_id == 4:
-                # Cell 4 (Chop): Was 100% Cash, now use Safe Haven
                 defensive_weight = Decimal("1.0")
                 safe_haven = self.get_safe_haven_allocation(tlt_closes, defensive_weight)
-
-                # Override cash with safe haven allocation
                 w_cash = safe_haven.get("CASH", Decimal("0"))
                 w_TMF = safe_haven.get(self.bull_bond_symbol, Decimal("0"))
                 w_TMV = safe_haven.get(self.bear_bond_symbol, Decimal("0"))
 
             elif cell_id == 5:
-                # Cell 5 (Grind): Was 50% QQQ + 50% Cash, now 50% QQQ + Safe Haven
                 defensive_weight = Decimal("0.5")
                 safe_haven = self.get_safe_haven_allocation(tlt_closes, defensive_weight)
-
-                # QQQ stays at 50%, override cash portion with safe haven
                 w_cash = safe_haven.get("CASH", Decimal("0"))
                 w_TMF = safe_haven.get(self.bull_bond_symbol, Decimal("0"))
                 w_TMV = safe_haven.get(self.bear_bond_symbol, Decimal("0"))
 
             elif cell_id == 6:
-                # Cell 6 (Crash): PSQ logic takes precedence if enabled
                 if self.use_inverse_hedge:
-                    # PSQ mode: Keep PSQ allocation, no bonds
-                    pass
+                    pass  # PSQ mode: Keep PSQ allocation
                 else:
-                    # No PSQ: Use Safe Haven instead of 100% Cash
                     defensive_weight = Decimal("1.0")
                     safe_haven = self.get_safe_haven_allocation(tlt_closes, defensive_weight)
-
-                    # Override cash with safe haven allocation
                     w_cash = safe_haven.get("CASH", Decimal("0"))
                     w_TMF = safe_haven.get(self.bull_bond_symbol, Decimal("0"))
                     w_TMV = safe_haven.get(self.bear_bond_symbol, Decimal("0"))
 
-        # Apply leverage_scalar to base weights (but not to bonds - they're already leveraged 3x)
+        # Apply leverage_scalar
         w_TQQQ = w_TQQQ * self.leverage_scalar
         w_QQQ = w_QQQ * self.leverage_scalar
         w_PSQ = w_PSQ * self.leverage_scalar
@@ -864,7 +781,7 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
             w_TMV = w_TMV / total_weight
             w_cash = w_cash / total_weight
 
-        # 9. Check rebalancing threshold
+        # ========== STEP 11: Check rebalancing threshold ==========
         needs_rebalance = self._check_rebalancing_threshold(w_TQQQ, w_QQQ, w_PSQ, w_TMF, w_TMV)
 
         # Log context
@@ -872,12 +789,16 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         if self.allow_treasury and (w_TMF > Decimal("0") or w_TMV > Decimal("0")):
             treasury_log = f", w_TMF={w_TMF:.3f}, w_TMV={w_TMV:.3f}"
 
+        shock_log = ""
+        if self.enable_shock_brake:
+            shock_log = f", shock_timer={self._shock_timer}, shock_active={self._shock_brake_active}"
+
         logger.info(
-            f"[{bar.timestamp}] v3.5b Regime (Treasury Overlay={'ON' if self.allow_treasury else 'OFF'}) | "
+            f"[{bar.timestamp}] v3.5c Regime (Shock Brake={'ON' if self.enable_shock_brake else 'OFF'}) | "
             f"T_norm={T_norm:.3f}, SMA_fast={sma_fast_val:.2f}, SMA_slow={sma_slow_val:.2f} → "
             f"TrendState={trend_state} | "
             f"z_score={z_score:.3f} → VolState={self.vol_state} (hysteresis) | "
-            f"vol_crush={vol_crush_triggered} | "
+            f"vol_crush={vol_crush_triggered}{shock_log} | "
             f"Cell={cell_id} → w_TQQQ={w_TQQQ:.3f}, w_QQQ={w_QQQ:.3f}, w_PSQ={w_PSQ:.3f}{treasury_log}, "
             f"w_cash={w_cash:.3f} (leverage_scalar={self.leverage_scalar})"
         )
@@ -887,8 +808,6 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
             logger.info(f"Rebalancing: weights drifted beyond {self.rebalance_threshold:.3f}")
 
             if self._trade_logger:
-                # Log context for all 5 possible positions (QQQ, TQQQ, PSQ, TMF, TMV)
-                # to prevent "No strategy context found" warnings
                 for symbol in [
                     self.core_long_symbol,
                     self.leveraged_long_symbol,
@@ -899,38 +818,47 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
                     self._trade_logger.log_strategy_context(
                         timestamp=bar.timestamp,
                         symbol=symbol,
-                        strategy_state=f"v3.5b Cell {cell_id}: {trend_state}/{self.vol_state}",
+                        strategy_state=f"v3.5c Cell {cell_id}: {trend_state}/{self.vol_state}",
                         decision_reason=(
                             f"Kalman T_norm={T_norm:.3f}, SMA_fast={sma_fast_val:.2f} vs SMA_slow={sma_slow_val:.2f}, "
-                            f"z_score={z_score:.3f}, vol_crush={vol_crush_triggered}"
+                            f"z_score={z_score:.3f}, vol_crush={vol_crush_triggered}, shock_active={self._shock_brake_active}"
                         ),
                         indicator_values={
                             'T_norm': float(T_norm),
                             'SMA_fast': float(sma_fast_val),
                             'SMA_slow': float(sma_slow_val),
-                            'z_score': float(z_score)
+                            'z_score': float(z_score),
+                            'shock_timer': self._shock_timer
                         },
                         threshold_values={
                             'upper_thresh_z': float(self.upper_thresh_z),
                             'lower_thresh_z': float(self.lower_thresh_z),
-                            'leverage_scalar': float(self.leverage_scalar)
+                            'leverage_scalar': float(self.leverage_scalar),
+                            'shock_threshold_pct': float(self.shock_threshold_pct)
                         }
                     )
 
             self._execute_rebalance(w_TQQQ, w_QQQ, w_PSQ, w_TMF, w_TMV)
 
-    # ===== Calculation methods =====
+        # ========== STEP 12: Detect shock for NEXT day (NEW in v3.5c) ==========
+        # This sets shock_timer which will affect TOMORROW's allocation
+        if self._detect_shock(bar.close):
+            self._shock_timer = self.shock_cooldown_days
+
+        # ========== STEP 13: Decrement shock timer AFTER processing (NEW in v3.5c) ==========
+        # This ensures shock_timer counts down AFTER today's allocation is done
+        if self._shock_timer > 0:
+            self._shock_timer = max(0, self._shock_timer - 1)
+            if self._shock_timer == 0:
+                logger.info(f"[{bar.timestamp}] Shock Brake cooldown ended")
+
+        # Store previous close for next bar's shock detection
+        self._previous_close = bar.close
+
+    # ===== Calculation methods (identical to v3.5b) =====
 
     def _calculate_kalman_trend(self, trend_strength_signed: Decimal) -> Decimal:
-        """
-        Calculate normalized SIGNED Kalman trend.
-
-        Args:
-            trend_strength_signed: Raw signed trend strength from Kalman filter
-
-        Returns:
-            T_norm ∈ [-1.0, +1.0]
-        """
+        """Calculate normalized SIGNED Kalman trend."""
         T_norm = trend_strength_signed / self.T_max
         return max(Decimal("-1.0"), min(Decimal("1.0"), T_norm))
 
@@ -939,90 +867,42 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         sma_fast_val: Decimal,
         sma_slow_val: Decimal
     ) -> str:
-        """
-        Calculate structural trend from SMA crossover.
-
-        Args:
-            sma_fast_val: Fast SMA value
-            sma_slow_val: Slow SMA value
-
-        Returns:
-            "Bull" if SMA_fast > SMA_slow, else "Bear"
-        """
+        """Calculate structural trend from SMA crossover."""
         return "Bull" if sma_fast_val > sma_slow_val else "Bear"
 
     def _calculate_volatility_zscore(self, closes: pd.Series) -> Optional[Decimal]:
-        """
-        Calculate rolling z-score of realized volatility.
-
-        Formula:
-            σ_t = Realized Volatility (21-day annualized)
-            μ_vol = Mean(σ, 126-day rolling window)
-            σ_vol = Std(σ, 126-day rolling window)
-            z_score = (σ_t - μ_vol) / σ_vol
-
-        Args:
-            closes: Price series for volatility calculation
-
-        Returns:
-            z_score or None if insufficient data
-        """
+        """Calculate rolling z-score of realized volatility."""
         if len(closes) < self.vol_baseline_window + self.realized_vol_window:
             return None
 
-        # Calculate realized volatility (annualized)
         vol_series = annualized_volatility(closes, lookback=self.realized_vol_window)
 
         if len(vol_series) < self.vol_baseline_window:
             return None
 
-        # Calculate rolling baseline statistics
         vol_values = vol_series.tail(self.vol_baseline_window)
 
         if len(vol_values) < self.vol_baseline_window:
             return None
 
-        # Convert to Decimal for precision
         vol_mean = Decimal(str(vol_values.mean()))
         vol_std = Decimal(str(vol_values.std()))
 
         if vol_std == Decimal("0"):
             return Decimal("0")
 
-        # Current realized vol
         sigma_t = Decimal(str(vol_series.iloc[-1]))
-
-        # Z-score
         z_score = (sigma_t - vol_mean) / vol_std
 
         return z_score
 
     def _apply_hysteresis(self, z_score: Decimal) -> None:
-        """
-        Apply hysteresis state machine to volatility state.
-
-        Hysteresis Logic:
-            if z_score > upper_thresh_z:
-                VolState = "High"
-            elif z_score < lower_thresh_z:
-                VolState = "Low"
-            else:
-                VolState = Previous_VolState (deadband)
-
-        Initialization (Day 1):
-            if z_score > 0: VolState = "High"
-            else: VolState = "Low"
-
-        Args:
-            z_score: Current volatility z-score
-        """
-        # Day 1 initialization
+        """Apply hysteresis state machine to volatility state."""
         if len(self._bars) == max(self.sma_slow, self.vol_baseline_window) + 20:
             self.vol_state = "High" if z_score > Decimal("0") else "Low"
             logger.info(f"Initialized VolState: {self.vol_state} (z_score={z_score:.3f})")
             return
 
-        # Hysteresis logic
         if z_score > self.upper_thresh_z:
             if self.vol_state != "High":
                 logger.info(
@@ -1035,47 +915,30 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
                     f"VolState transition: {self.vol_state} → Low (z_score={z_score:.3f} < {self.lower_thresh_z})"
                 )
                 self.vol_state = "Low"
-        # else: Deadband - maintain current state
 
     def _check_vol_crush_override(self, closes: pd.Series) -> bool:
-        """
-        Check for vol-crush override (V-shaped recovery detection).
-
-        Trigger: If realized volatility drops by >20% in 5 days.
-        Action: Force VolState = "Low", override BearStrong → Sideways.
-
-        Args:
-            closes: Price series for volatility calculation
-
-        Returns:
-            True if vol-crush triggered, False otherwise
-        """
+        """Check for vol-crush override (V-shaped recovery detection)."""
         if len(closes) < self.realized_vol_window + self.vol_crush_lookback:
             return False
 
-        # Calculate realized volatility series
         vol_series = annualized_volatility(closes, lookback=self.realized_vol_window)
 
         if len(vol_series) < self.vol_crush_lookback + 1:
             return False
 
-        # Current and historical volatility
         sigma_t = Decimal(str(vol_series.iloc[-1]))
         sigma_t_minus_N = Decimal(str(vol_series.iloc[-(self.vol_crush_lookback + 1)]))
 
         if sigma_t_minus_N == Decimal("0"):
             return False
 
-        # Calculate percentage change
         vol_change = (sigma_t - sigma_t_minus_N) / sigma_t_minus_N
 
-        # Check if vol-crush threshold breached
         if vol_change < self.vol_crush_threshold:
             logger.info(
                 f"Vol-crush override triggered: "
                 f"vol drop {vol_change:.1%} in {self.vol_crush_lookback} days"
             )
-            # Force VolState to Low
             self.vol_state = "Low"
             return True
 
@@ -1087,22 +950,7 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         sma_fast_val: Decimal,
         sma_slow_val: Decimal
     ) -> str:
-        """
-        Classify trend regime using hierarchical logic.
-
-        Classification Rules:
-        1. BullStrong: (T_norm > 0.3) AND (SMA_fast > SMA_slow)
-        2. BearStrong: (T_norm < -0.3) AND (SMA_fast < SMA_slow)
-        3. Sideways: All other conditions
-
-        Args:
-            T_norm: Normalized Kalman trend
-            sma_fast_val: Fast SMA value
-            sma_slow_val: Slow SMA value
-
-        Returns:
-            "BullStrong", "BearStrong", or "Sideways"
-        """
+        """Classify trend regime using hierarchical logic."""
         is_struct_bull = sma_fast_val > sma_slow_val
 
         if T_norm > self.t_norm_bull_thresh and is_struct_bull:
@@ -1113,24 +961,7 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
             return "Sideways"
 
     def _get_cell_id(self, trend_state: str, vol_state: str) -> int:
-        """
-        Map (TrendState, VolState) to cell ID (1-6).
-
-        Cell Mapping:
-            1: BullStrong + Low
-            2: BullStrong + High
-            3: Sideways + Low
-            4: Sideways + High
-            5: BearStrong + Low
-            6: BearStrong + High
-
-        Args:
-            trend_state: "BullStrong", "Sideways", or "BearStrong"
-            vol_state: "Low" or "High"
-
-        Returns:
-            cell_id ∈ [1, 6]
-        """
+        """Map (TrendState, VolState) to cell ID (1-6)."""
         if trend_state == "BullStrong":
             return 1 if vol_state == "Low" else 2
         elif trend_state == "Sideways":
@@ -1139,48 +970,23 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
             return 5 if vol_state == "Low" else 6
 
     def _get_cell_allocation(self, cell_id: int) -> tuple[Decimal, Decimal, Decimal, Decimal]:
-        """
-        Get base allocation weights for cell ID.
-
-        6-Cell Allocation Matrix (Base Weights):
-            Cell 1 (Bull/Low):   60% TQQQ, 40% QQQ (Net Beta ~2.2)
-            Cell 2 (Bull/High):  0% TQQQ, 100% QQQ (Net Beta 1.0)
-            Cell 3 (Side/Low):   20% TQQQ, 80% QQQ (Net Beta ~1.4)
-            Cell 4 (Side/High):  0% TQQQ, 0% QQQ, 100% Cash (Net Beta 0.0)
-            Cell 5 (Bear/Low):   0% TQQQ, 50% QQQ, 50% Cash (Net Beta 0.5)
-            Cell 6a (Bear/High, no PSQ): 0% TQQQ, 0% QQQ, 100% Cash (Net Beta 0.0)
-            Cell 6b (Bear/High, PSQ): 0% TQQQ, 0% QQQ, 50% PSQ, 50% Cash (Net Beta -0.5)
-
-        Args:
-            cell_id: Cell identifier [1-6]
-
-        Returns:
-            (w_TQQQ, w_QQQ, w_PSQ, w_cash) base weights (sum = 1.0)
-        """
+        """Get base allocation weights for cell ID."""
         if cell_id == 1:
-            # Kill Zone: Aggressive upside
             return (Decimal("0.6"), Decimal("0.4"), Decimal("0.0"), Decimal("0.0"))
         elif cell_id == 2:
-            # Fragile Trend: De-risk
             return (Decimal("0.0"), Decimal("1.0"), Decimal("0.0"), Decimal("0.0"))
         elif cell_id == 3:
-            # Drift Capture: Slow grind
             return (Decimal("0.2"), Decimal("0.8"), Decimal("0.0"), Decimal("0.0"))
         elif cell_id == 4:
-            # Chopping Block: Avoid whipsaw
             return (Decimal("0.0"), Decimal("0.0"), Decimal("0.0"), Decimal("1.0"))
         elif cell_id == 5:
-            # Grind: Defensive hold
             return (Decimal("0.0"), Decimal("0.5"), Decimal("0.0"), Decimal("0.5"))
         elif cell_id == 6:
-            # Crash: Capital preservation
             if self.use_inverse_hedge:
-                # Cell 6b: Use PSQ (capped)
                 w_PSQ = min(Decimal("0.5"), self.w_PSQ_max)
                 w_cash = Decimal("1.0") - w_PSQ
                 return (Decimal("0.0"), Decimal("0.0"), w_PSQ, w_cash)
             else:
-                # Cell 6a: 100% Cash
                 return (Decimal("0.0"), Decimal("0.0"), Decimal("0.0"), Decimal("1.0"))
         else:
             raise ValueError(f"Invalid cell_id: {cell_id}")
@@ -1190,95 +996,46 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         tlt_history_series: Optional[pd.Series],
         current_defensive_weight_decimal: Decimal
     ) -> dict[str, Decimal]:
-        """
-        Determines the optimal defensive mix (Cash + Bonds) based on TLT trend.
-
-        Treasury Overlay Logic:
-        - Bond Bull (SMA_fast > SMA_slow): Flight to safety → TMF (3x bull bonds)
-        - Bond Bear (SMA_fast < SMA_slow): Inflation shock → TMV (3x bear bonds)
-        - Missing data: Fallback to 100% Cash (safe default)
-
-        Args:
-            tlt_history_series: Daily close prices of TLT (needs ~60 bars)
-            current_defensive_weight_decimal: The % of portfolio allocated to defense
-                                            (e.g. Decimal("1.0") for Cell 4 = 100% defensive)
-
-        Returns:
-            dict: Target weights {Ticker: Decimal}
-                Examples:
-                - Bond Bull: {"TMF": Decimal("0.4"), "CASH": Decimal("0.6")}
-                - Bond Bear: {"TMV": Decimal("0.4"), "CASH": Decimal("0.6")}
-                - Missing data: {"CASH": Decimal("1.0")}
-
-        Notes:
-            - Global cap: max_bond_weight (default 40%) to control volatility
-            - TMF/TMV are 3x leveraged with durations > 50
-            - Sizing: bond_weight = min(defensive_weight * 0.4, max_bond_weight)
-        """
-        # Safety check: Data sufficiency
+        """Determines the optimal defensive mix (Cash + Bonds) based on TLT trend."""
         if tlt_history_series is None or len(tlt_history_series) < self.bond_sma_slow:
-            # Fallback to 100% Cash for the defensive portion
             logger.warning(
                 f"Insufficient TLT data ({len(tlt_history_series) if tlt_history_series is not None else 0} bars, "
                 f"need {self.bond_sma_slow}), falling back to Cash"
             )
-            # Reset bond tracking since we're not using bonds
             self._last_bond_sma_fast = None
             self._last_bond_sma_slow = None
             self._last_bond_trend = None
             return {"CASH": current_defensive_weight_decimal}
 
-        # Calculate indicators
         sma_fast = tlt_history_series.rolling(window=self.bond_sma_fast).mean().iloc[-1]
         sma_slow = tlt_history_series.rolling(window=self.bond_sma_slow).mean().iloc[-1]
 
-        # Check for NaN
         if pd.isna(sma_fast) or pd.isna(sma_slow):
             logger.warning("Bond SMA calculation returned NaN, falling back to Cash")
-            # Reset bond tracking since we're not using bonds
             self._last_bond_sma_fast = None
             self._last_bond_sma_slow = None
             self._last_bond_trend = None
             return {"CASH": current_defensive_weight_decimal}
 
-        # Convert to Decimal
         sma_fast_val = Decimal(str(sma_fast))
         sma_slow_val = Decimal(str(sma_slow))
 
-        # Store bond SMA values for decision tree (dashboard API)
         self._last_bond_sma_fast = sma_fast_val
         self._last_bond_sma_slow = sma_slow_val
 
-        # Determine instrument
-        # TMF (+3x Bonds) for Deflation/Safety (Rates Falling)
-        # TMV (-3x Bonds) for Inflation/Rate Shock (Rates Rising)
         if sma_fast_val > sma_slow_val:
-            selected_ticker = self.bull_bond_symbol  # Default: "TMF"
+            selected_ticker = self.bull_bond_symbol
             self._last_bond_trend = "Bull"
-            logger.debug(
-                f"Bond trend: BULL (SMA_fast={sma_fast_val:.2f} > SMA_slow={sma_slow_val:.2f}) → {selected_ticker}"
-            )
         else:
-            selected_ticker = self.bear_bond_symbol  # Default: "TMV"
+            selected_ticker = self.bear_bond_symbol
             self._last_bond_trend = "Bear"
-            logger.debug(
-                f"Bond trend: BEAR (SMA_fast={sma_fast_val:.2f} < SMA_slow={sma_slow_val:.2f}) → {selected_ticker}"
-            )
 
-        # Sizing Logic
-        # We utilize up to 40% of the Total Portfolio for Bonds.
-        # If the defensive weight is small (e.g. 50% in Cell 5), we scale proportionally
-        # but ensure we never exceed the global MAX_BOND_TOTAL_PCT.
-
-        # Calculate potential bond weight
-        # e.g., if defensive portion is 1.0, bond part is 0.4. Cash is 0.6.
         bond_weight = min(current_defensive_weight_decimal * Decimal("0.4"), self.max_bond_weight)
-
-        # The rest of the defensive bucket stays in Cash
         cash_weight = current_defensive_weight_decimal - bond_weight
 
         logger.info(
-            f"Safe Haven allocation: {selected_ticker}={bond_weight:.3f} ({bond_weight/current_defensive_weight_decimal:.1%} of defensive), "
+            f"Safe Haven allocation: {selected_ticker}={bond_weight:.3f} "
+            f"({bond_weight/current_defensive_weight_decimal:.1%} of defensive), "
             f"CASH={cash_weight:.3f}"
         )
 
@@ -1295,19 +1052,7 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         target_tmf_weight: Decimal = Decimal("0"),
         target_tmv_weight: Decimal = Decimal("0")
     ) -> bool:
-        """
-        Check if portfolio weights drifted beyond threshold.
-
-        Args:
-            target_tqqq_weight: Target TQQQ weight
-            target_qqq_weight: Target QQQ weight
-            target_psq_weight: Target PSQ weight
-            target_tmf_weight: Target TMF weight (Treasury Overlay)
-            target_tmv_weight: Target TMV weight (Treasury Overlay)
-
-        Returns:
-            True if rebalancing needed, False otherwise
-        """
+        """Check if portfolio weights drifted beyond threshold."""
         weight_deviation = (
             abs(self.current_tqqq_weight - target_tqqq_weight) +
             abs(self.current_qqq_weight - target_qqq_weight) +
@@ -1325,25 +1070,11 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         target_tmf_weight: Decimal = Decimal("0"),
         target_tmv_weight: Decimal = Decimal("0")
     ) -> None:
-        """
-        Rebalance portfolio to target weights using two-phase execution.
-
-        Phase 1: Reduce positions (execute SELLs first to free cash)
-        Phase 2: Increase positions (execute BUYs with freed cash)
-
-        Args:
-            target_tqqq_weight: Target TQQQ weight
-            target_qqq_weight: Target QQQ weight
-            target_psq_weight: Target PSQ weight
-            target_tmf_weight: Target TMF weight (Treasury Overlay)
-            target_tmv_weight: Target TMV weight (Treasury Overlay)
-        """
-        # Helper: Check if allocation is sufficient for at least 1 share
+        """Rebalance portfolio to target weights using two-phase execution."""
         def _validate_weight(symbol: str, weight: Decimal) -> Decimal:
             if weight <= Decimal("0"):
                 return Decimal("0")
 
-            # Get latest price
             closes = self.get_closes(lookback=1, symbol=symbol)
             if closes.empty:
                 return Decimal("0")
@@ -1352,7 +1083,6 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
             if price <= Decimal("0"):
                 return Decimal("0")
 
-            # Calculate portfolio equity
             portfolio_equity = self._cash
             for sym, qty in self._positions.items():
                 if qty > 0:
@@ -1370,64 +1100,51 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
 
             return weight
 
-        # Validate weights before execution
         target_tqqq_weight = _validate_weight(self.leveraged_long_symbol, target_tqqq_weight)
         target_qqq_weight = _validate_weight(self.core_long_symbol, target_qqq_weight)
         target_psq_weight = _validate_weight(self.inverse_hedge_symbol, target_psq_weight)
         target_tmf_weight = _validate_weight(self.bull_bond_symbol, target_tmf_weight)
         target_tmv_weight = _validate_weight(self.bear_bond_symbol, target_tmv_weight)
 
-        # Phase 1: REDUCE positions (execute SELLs first)
-
-        # TQQQ: Reduce if needed
+        # Phase 1: REDUCE positions
         if target_tqqq_weight == Decimal("0"):
             self.sell(self.leveraged_long_symbol, Decimal("0.0"))
         elif target_tqqq_weight > Decimal("0") and target_tqqq_weight < self.current_tqqq_weight:
             self.buy(self.leveraged_long_symbol, target_tqqq_weight)
 
-        # QQQ: Reduce if needed
         if target_qqq_weight == Decimal("0"):
             self.sell(self.core_long_symbol, Decimal("0.0"))
         elif target_qqq_weight > Decimal("0") and target_qqq_weight < self.current_qqq_weight:
             self.buy(self.core_long_symbol, target_qqq_weight)
 
-        # PSQ: Reduce if needed
         if target_psq_weight == Decimal("0"):
             self.sell(self.inverse_hedge_symbol, Decimal("0.0"))
         elif target_psq_weight > Decimal("0") and target_psq_weight < self.current_psq_weight:
             self.buy(self.inverse_hedge_symbol, target_psq_weight)
 
-        # TMF: Reduce if needed
         if target_tmf_weight == Decimal("0"):
             self.sell(self.bull_bond_symbol, Decimal("0.0"))
         elif target_tmf_weight > Decimal("0") and target_tmf_weight < getattr(self, 'current_tmf_weight', Decimal("0")):
             self.buy(self.bull_bond_symbol, target_tmf_weight)
 
-        # TMV: Reduce if needed
         if target_tmv_weight == Decimal("0"):
             self.sell(self.bear_bond_symbol, Decimal("0.0"))
         elif target_tmv_weight > Decimal("0") and target_tmv_weight < getattr(self, 'current_tmv_weight', Decimal("0")):
             self.buy(self.bear_bond_symbol, target_tmv_weight)
 
-        # Phase 2: INCREASE positions (execute BUYs second)
-
-        # TQQQ: Increase if needed
+        # Phase 2: INCREASE positions
         if target_tqqq_weight > Decimal("0") and target_tqqq_weight > self.current_tqqq_weight:
             self.buy(self.leveraged_long_symbol, target_tqqq_weight)
 
-        # QQQ: Increase if needed
         if target_qqq_weight > Decimal("0") and target_qqq_weight > self.current_qqq_weight:
             self.buy(self.core_long_symbol, target_qqq_weight)
 
-        # PSQ: Increase if needed
         if target_psq_weight > Decimal("0") and target_psq_weight > self.current_psq_weight:
             self.buy(self.inverse_hedge_symbol, target_psq_weight)
 
-        # TMF: Increase if needed
         if target_tmf_weight > Decimal("0") and target_tmf_weight > getattr(self, 'current_tmf_weight', Decimal("0")):
             self.buy(self.bull_bond_symbol, target_tmf_weight)
 
-        # TMV: Increase if needed
         if target_tmv_weight > Decimal("0") and target_tmv_weight > getattr(self, 'current_tmv_weight', Decimal("0")):
             self.buy(self.bear_bond_symbol, target_tmv_weight)
 
@@ -1439,7 +1156,7 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         self.current_tmv_weight = target_tmv_weight
 
         logger.info(
-            f"Executed v3.5b rebalance: TQQQ={target_tqqq_weight:.3f}, "
+            f"Executed v3.5c rebalance: TQQQ={target_tqqq_weight:.3f}, "
             f"QQQ={target_qqq_weight:.3f}, PSQ={target_psq_weight:.3f}, "
             f"TMF={target_tmf_weight:.3f}, TMV={target_tmv_weight:.3f}"
         )
@@ -1448,22 +1165,10 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         """
         Get current regime classification.
 
-        Returns regime state for external analysis (e.g., RegimePerformanceAnalyzer).
-        Used to track performance metrics across different market regimes.
-
         Returns:
-            Tuple of (trend_state, vol_state, cell_id):
-            - trend_state: "BullStrong", "Sideways", or "BearStrong"
-            - vol_state: "Low" or "High"
-            - cell_id: 1-6 (regime cell identifier)
-
-        Example:
-            trend, vol, cell = strategy.get_current_regime()
-            # Returns: ("BullStrong", "Low", 1)
+            Tuple of (trend_state, vol_state, cell_id)
         """
         if self.trend_state is None or self.cell_id is None:
-            # Not yet initialized (before first bar processed)
-            # Return safe default: Sideways + Low Vol = Cell 3
             return ("Sideways", "Low", 3)
 
         return (self.trend_state, self.vol_state, self.cell_id)
@@ -1485,12 +1190,14 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
             - SMA_fast: Fast SMA value
             - SMA_slow: Slow SMA value
             - vol_crush: Vol-crush triggered flag (1.0 or 0.0)
+            - shock_timer: Shock brake countdown (v3.5c specific)
+            - shock_active: Shock brake currently active (1.0 or 0.0)
             - Bond_SMA_fast: Bond fast SMA (only when treasury enabled)
             - Bond_SMA_slow: Bond slow SMA (only when treasury enabled)
 
         Example:
             indicators = strategy.get_current_indicators()
-            # Returns: {'T_norm': 0.15, 'z_score': -0.3, ...}
+            # Returns: {'T_norm': 0.15, 'z_score': -0.3, 'shock_timer': 3, ...}
         """
         indicators = {}
 
@@ -1510,6 +1217,13 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         if hasattr(self, '_last_vol_crush_triggered'):
             indicators['vol_crush'] = 1.0 if self._last_vol_crush_triggered else 0.0
 
+        # Shock brake indicators (v3.5c specific)
+        if hasattr(self, '_shock_timer'):
+            indicators['shock_timer'] = float(self._shock_timer)
+
+        if hasattr(self, '_shock_brake_active'):
+            indicators['shock_active'] = 1.0 if self._shock_brake_active else 0.0
+
         # Bond indicators (only when treasury is enabled and computed)
         if hasattr(self, '_last_bond_sma_fast') and self._last_bond_sma_fast is not None:
             indicators['Bond_SMA_fast'] = float(self._last_bond_sma_fast)
@@ -1518,3 +1232,24 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
             indicators['Bond_SMA_slow'] = float(self._last_bond_sma_slow)
 
         return indicators
+
+    def get_shock_brake_status(self) -> dict:
+        """
+        Get current Shock Brake status (NEW in v3.5c).
+
+        Returns:
+            Dictionary with shock brake state:
+            - enabled: Whether shock brake feature is enabled
+            - active: Whether shock brake is currently forcing High vol
+            - timer: Remaining cooldown days
+            - threshold: Shock detection threshold
+            - direction_mode: "DOWN_ONLY" or "ABS"
+        """
+        return {
+            "enabled": self.enable_shock_brake,
+            "active": self._shock_brake_active,
+            "timer": self._shock_timer,
+            "threshold": float(self.shock_threshold_pct),
+            "cooldown_days": self.shock_cooldown_days,
+            "direction_mode": self.shock_direction_mode
+        }

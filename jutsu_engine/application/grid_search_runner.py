@@ -823,6 +823,7 @@ class GridSearchRunner:
             result = runner.run(strategy, output_dir=str(run_dir))
 
             # Extract metrics
+            baseline_data = result.get('baseline', {}) or {}
             metrics = {
                 'final_value': result.get('final_value', 0.0),
                 'total_return_pct': float(result.get('total_return', 0.0) * 100),
@@ -835,7 +836,10 @@ class GridSearchRunner:
                 'total_trades': result.get('total_trades', 0),
                 'profit_factor': result.get('profit_factor', 0.0),
                 'avg_win_usd': result.get('avg_win', 0.0),
-                'avg_loss_usd': result.get('avg_loss', 0.0)
+                'avg_loss_usd': result.get('avg_loss', 0.0),
+                # Beta metrics (systematic risk vs market benchmarks)
+                'beta_vs_qqq': baseline_data.get('beta_vs_QQQ'),
+                'beta_vs_spy': baseline_data.get('beta_vs_SPY')
             }
 
             # Generate plots for this run if requested
@@ -963,6 +967,10 @@ class GridSearchRunner:
                     # Baseline return is zero, cannot calculate ratio
                     alpha = 'N/A'
 
+            # Extract beta metrics
+            beta_vs_qqq = result.metrics.get('beta_vs_qqq')
+            beta_vs_spy = result.metrics.get('beta_vs_spy')
+
             # Create row with METRICS FIRST, then PARAMETERS
             row = {
                 'Run ID': result.run_config.run_id,
@@ -979,7 +987,9 @@ class GridSearchRunner:
                 'Win Rate %': win_rate_pct,
                 'Avg Win ($)': avg_win,
                 'Avg Loss ($)': avg_loss,
-                'Alpha': alpha  # NEW COLUMN
+                'Alpha': alpha,
+                'Beta vs QQQ': f'{beta_vs_qqq:.3f}' if beta_vs_qqq is not None else 'N/A',
+                'Beta vs SPY': f'{beta_vs_spy:.3f}' if beta_vs_spy is not None else 'N/A'
             }
 
             # Add parameters with Title Case names
@@ -1012,10 +1022,10 @@ class GridSearchRunner:
             'Sharpe Ratio', 'Sortino Ratio', 'Calmar Ratio',
             'Total Trades', 'Profit Factor', 'Win Rate %',
             'Avg Win ($)', 'Avg Loss ($)',
+            'Alpha', 'Beta vs QQQ', 'Beta vs SPY',  # Comparison metrics
             'EMA Period', 'ATR Stop Multiplier', 'Risk Bull',
             'MACD Fast Period', 'MACD Slow Period', 'MACD Signal Period',
-            'ATR Period', 'Allocation Defense',
-            'Alpha'  # NEW - alpha column at end
+            'ATR Period', 'Allocation Defense'
         ]
 
         df = pd.DataFrame(rows)
@@ -1309,9 +1319,14 @@ Files:
         """
         initial_capital = self.config.base_config['initial_capital']
 
+        # For baseline (buy-and-hold), beta vs itself is 1.0 by definition
+        # Beta vs SPY requires calculation which we don't do for baseline
+        baseline_symbol = baseline["baseline_symbol"]
+        beta_vs_qqq = '1.000' if baseline_symbol == 'QQQ' else 'N/A'
+
         return {
             'Run ID': '000',
-            'Symbol Set': f'Buy & Hold {baseline["baseline_symbol"]}',
+            'Symbol Set': f'Buy & Hold {baseline_symbol}',
             'Portfolio Balance': round(baseline['baseline_final_value'], 2),
             'Total Return %': round(baseline['baseline_total_return'] * 100, 2),  # Convert decimal to percentage
             'Annualized Return %': round(baseline['baseline_annualized_return'] * 100, 2),  # Convert decimal to percentage
@@ -1324,7 +1339,9 @@ Files:
             'Win Rate %': 'N/A',  # No trades
             'Avg Win ($)': 'N/A',  # No trades
             'Avg Loss ($)': 'N/A',  # No trades
-            'Alpha': '1.00'  # Baseline has alpha = 1.00 by definition
+            'Alpha': '1.00',  # Baseline has alpha = 1.00 by definition
+            'Beta vs QQQ': beta_vs_qqq,  # Beta vs QQQ (1.0 for QQQ baseline)
+            'Beta vs SPY': 'N/A'  # Beta vs SPY not calculated for baseline
         }
 
 
@@ -2085,15 +2102,31 @@ class GridSearchAnalyzer:
         drawdown = (pd.Series(values) - peak) / peak
         max_drawdown = drawdown.min()
 
-        # Calmar Ratio
-        calmar_ratio = total_return / abs(max_drawdown) if max_drawdown != 0 else 0.0
+        # Calculate CAGR for Calmar ratio (geometric, not arithmetic)
+        days = len(daily_data)
+        years = days / 252.0  # Trading days per year
+        if years > 0 and total_return > -1:
+            cagr = (1 + total_return) ** (1 / years) - 1
+        else:
+            cagr = 0.0
 
-        # Sharpe Ratio (annualized)
+        # Calmar Ratio: CAGR / |Max Drawdown| (industry standard)
+        calmar_ratio = cagr / abs(max_drawdown) if max_drawdown != 0 else 0.0
+
+        # Sharpe Ratio (annualized, arithmetic - no risk-free rate for comparison)
         sharpe_ratio = (daily_returns.mean() / daily_returns.std()) * np.sqrt(252) if daily_returns.std() > 0 else 0.0
 
-        # Sortino Ratio (annualized, downside deviation)
-        negative_returns = daily_returns[daily_returns < 0]
-        sortino_ratio = (daily_returns.mean() / negative_returns.std()) * np.sqrt(252) if len(negative_returns) > 0 and negative_returns.std() > 0 else 0.0
+        # Sortino Ratio (semi-deviation per Sortino & Price 1994)
+        # Key: Use ALL returns, clip at 0 (don't filter), then take sqrt(mean(squared))
+        downside_returns = np.minimum(daily_returns.values, 0)  # Clip at 0, keep all obs
+        semi_variance = (downside_returns ** 2).mean()  # Mean squared deviation
+        if semi_variance > 0:
+            semi_deviation = np.sqrt(semi_variance)
+            annualized_semi_dev = semi_deviation * np.sqrt(252)
+            # Use CAGR for numerator consistency
+            sortino_ratio = cagr / annualized_semi_dev if annualized_semi_dev > 0 else 0.0
+        else:
+            sortino_ratio = 0.0
 
         # Profit Factor
         positive_sum = daily_returns[daily_returns > 0].sum()

@@ -1087,33 +1087,43 @@ class PortfolioSimulator:
         """
         return self.portfolio_value_history
 
-    def record_daily_snapshot(self, timestamp: datetime) -> None:
+    def record_daily_snapshot(
+        self,
+        timestamp: datetime,
+        indicators: Optional[Dict[str, float]] = None
+    ) -> None:
         """
         Record complete portfolio state snapshot for daily CSV reporting.
 
         Called at end of each trading day by EventLoop. Captures cash,
-        positions, holdings, and total portfolio value for comprehensive
-        daily reporting and performance analysis.
+        positions, holdings, total portfolio value, and optional indicator
+        values for comprehensive daily reporting and performance analysis.
 
         Args:
             timestamp: End-of-day timestamp for this snapshot
+            indicators: Optional dict of indicator values from strategy
+                        (e.g., {'T_norm': 0.15, 'z_score': -0.3})
 
         Example:
             portfolio.record_daily_snapshot(bar.timestamp)
+            portfolio.record_daily_snapshot(bar.timestamp, indicators={'T_norm': 0.15})
         """
         snapshot = {
             'timestamp': timestamp,
             'cash': self.cash,
             'positions': self.positions.copy(),  # {symbol: qty}
             'holdings': self.current_holdings.copy(),  # {symbol: market_value}
-            'total_value': self.get_portfolio_value()
+            'total_value': self.get_portfolio_value(),
+            'indicators': indicators.copy() if indicators else {}
         }
         self.daily_snapshots.append(snapshot)
+        indicator_count = len(snapshot['indicators'])
         logger.debug(
             f"Daily snapshot recorded: {timestamp.date()}, "
             f"value=${snapshot['total_value']:,.2f}, "
             f"cash=${snapshot['cash']:,.2f}, "
-            f"positions={len(snapshot['positions'])}"
+            f"positions={len(snapshot['positions'])}, "
+            f"indicators={indicator_count}"
         )
 
     def get_daily_snapshots(self) -> List[Dict]:
@@ -1121,8 +1131,8 @@ class PortfolioSimulator:
         Get all daily portfolio snapshots.
 
         Returns complete portfolio state history including cash, positions,
-        holdings, and total value for each trading day. Used for CSV export
-        and detailed performance analysis.
+        holdings, total value, and indicator values for each trading day.
+        Used for CSV export and detailed performance analysis.
 
         Returns:
             List of snapshot dictionaries with keys:
@@ -1131,11 +1141,14 @@ class PortfolioSimulator:
                 - positions: Dict[symbol, quantity]
                 - holdings: Dict[symbol, market_value]
                 - total_value: Total portfolio value
+                - indicators: Dict[str, float] of indicator values (may be empty)
 
         Example:
             snapshots = portfolio.get_daily_snapshots()
             for snap in snapshots:
                 print(f"{snap['timestamp'].date()}: ${snap['total_value']:,.2f}")
+                if snap['indicators']:
+                    print(f"  T_norm: {snap['indicators'].get('T_norm', 'N/A')}")
         """
         return self.daily_snapshots.copy()
 

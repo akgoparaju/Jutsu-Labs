@@ -1,0 +1,295 @@
+# Grid Search Configuration for Hierarchical Adaptive v3.5c
+# =========================================================
+# Grid Search: ~81 runs (focused on Shock Brake parameters)
+# Validates v3.5c Shock Brake safety feature
+#
+# v3.5c Changes from v3.5b:
+# -------------------------
+# 1. SHOCK BRAKE FEATURE:
+#    - v3.5b: No single-day tail-risk protection
+#    - v3.5c: Shock Brake forces VolState = High after large daily moves
+#    - Reduces leverage exposure during tail-risk events
+#
+# 2. SHOCK BRAKE PARAMETERS:
+#    - enable_shock_brake: Toggle feature on/off (default: true)
+#    - shock_threshold_pct: Daily return threshold to trigger brake (default: 3%)
+#    - shock_cooldown_days: Duration of forced High vol state (default: 5 days)
+#    - shock_direction_mode: "DOWN_ONLY" (negative returns) or "ABS" (both)
+#
+# 3. SHOCK BRAKE TIMING:
+#    - Day t: Detect shock at EOD (close vs previous close)
+#    - Day t+1 onwards: Force VolState = High for cooldown_days
+#    - Timer decrements AFTER allocation processing
+#    - Precedence: Shock Brake > Vol-crush override > Hysteresis
+#
+# Strategy Overview (v3.5c = v3.5b + Shock Brake):
+# ------------------------------------------------
+# All v3.5b features retained:
+# - 6-Cell Regime Grid (Bull/Sideways/Bear × Low/High Vol)
+# - Hierarchical Trend Detection (Kalman + SMA structure)
+# - Rolling Z-Score Volatility with Hysteresis
+# - Vol-Crush Override for V-shaped recoveries
+# - Treasury Overlay (TLT/TMF/TMV)
+#
+# NEW: Shock Brake Safety Feature
+# - After large daily moves (≥3%), force High vol state
+# - Forces allocation to defensive cells for cooldown period
+# - Protects against continued tail risk after shock events
+#
+# Grid Search Strategy:
+# ---------------------
+# Focus: Shock Brake Parameters (tail-risk protection tuning)
+# - Fix v3.5b regime boundary parameters at optimized values
+# - Test Shock Brake sensitivity and duration
+#
+# Parameter Groups:
+# 1. Shock Brake Threshold (3 values)
+#    - shock_threshold_pct: [0.025, 0.03, 0.035]
+#
+# 2. Shock Brake Cooldown (3 values)
+#    - shock_cooldown_days: [3, 5, 7]
+#
+# 3. Shock Brake Direction Mode (3 values)
+#    - shock_direction_mode: ["DOWN_ONLY", "ABS"]
+#
+# 4. All other parameters fixed at v3.5b optimized values
+#
+# Total Combinations: 3 (threshold) × 3 (cooldown) × 3 (direction) = 27 runs
+# With enable/disable toggle: 27 + 1 (disabled baseline) = 28 runs
+# Estimated Runtime: 15-20 minutes
+
+# Strategy to optimize
+strategy: "Hierarchical_Adaptive_v3_5c"
+
+# Symbol Sets
+# -----------
+# Same as v3.5b - requires 6 symbols for Treasury Overlay
+symbol_sets:
+  - name: "QQQ_TQQQ_PSQ_Bonds"
+    signal_symbol: "QQQ"                # Kalman + SMA + vol calculations
+    core_long_symbol: "QQQ"             # 1x base allocation
+    leveraged_long_symbol: "TQQQ"       # 3x leveraged overlay
+    inverse_hedge_symbol: "PSQ"         # -1x inverse (optional)
+    treasury_trend_symbol: "TLT"        # 20+ Year Treasury (bond trend signal)
+    bull_bond_symbol: "TMF"             # 3x Bull Bonds (deflation/safety)
+    bear_bond_symbol: "TMV"             # 3x Bear Bonds (inflation/rate shock)
+
+# Base Configuration
+# ------------------
+base_config:
+  # Date range - Full history (2010-2024)
+  # Includes major tail-risk events: Flash Crash 2010, COVID crash 2020,
+  # 2022 bear market, various volatility spikes
+  start_date: "2010-01-01"
+  end_date: "2025-12-12"
+
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 10000   # $10,000 starting capital
+  commission: 0.0          # $0.00 per trade
+  slippage: 0.0005         # 0.05% per trade
+
+# Parameters to Optimize
+# ----------------------
+# v3.5c Grid Search: Focus on Shock Brake parameters
+# All v3.5b parameters fixed at optimized values
+#
+# Total combinations: 3 × 3 × 3 = 27 runs (enabled) + 1 (disabled baseline)
+
+parameters:
+  # ===========================================================================
+  # SHOCK BRAKE PARAMETERS (v3.5c NEW - GRID SEARCH)
+  # ===========================================================================
+  # Controls tail-risk protection via forced High volatility state
+
+  # Enable Shock Brake feature (GRID-SEARCH - 2 values)
+  # Default: true (feature enabled)
+  # Test false to compare with v3.5b baseline performance
+  enable_shock_brake: [true, false]    # Fixed at enabled for parameter optimization
+
+  # Shock Threshold Percentage (GRID-SEARCH - 3 values)
+  # Daily return magnitude to trigger shock brake
+  # Default: 0.03 (3% daily move)
+  # Range: [0.025, 0.03, 0.035]
+  #   0.025: More sensitive (2.5% triggers, ~10-15 triggers/year)
+  #   0.030: Balanced (3% triggers, ~5-10 triggers/year)
+  #   0.035: Conservative (3.5% triggers, ~3-5 triggers/year)
+  shock_threshold_pct: [0.05]  # 3 values - OPTIMIZE
+
+  # Shock Cooldown Days (GRID-SEARCH - 3 values)
+  # Duration of forced High vol state after shock
+  # Default: 5 days
+  # Range: [3, 5, 7]
+  #   3: Quick recovery (3 trading days in defensive mode)
+  #   5: Balanced (1 trading week in defensive mode)
+  #   7: Conservative (1.5 weeks in defensive mode)
+  shock_cooldown_days: [5]  # 3 values - OPTIMIZE
+
+  # Shock Direction Mode (GRID-SEARCH - 3 values)
+  # Which direction triggers shock brake
+  # Default: "DOWN_ONLY" (only negative returns trigger)
+  # Options: ["DOWN_ONLY", "ABS"]
+  #   DOWN_ONLY: Only large down days trigger (tail-risk focus)
+  #   ABS: Both up and down days trigger (volatility focus)
+  shock_direction_mode: ["DOWN_ONLY"]  # 2 values - OPTIMIZE
+
+  # ===========================================================================
+  # KALMAN TREND PARAMETERS (Fixed at v3.5b optimized values)
+  # ===========================================================================
+
+  measurement_noise: [3000]      # Fixed: v3.5b optimized
+  process_noise_1: [0.01]        # Fixed
+  process_noise_2: [0.01]        # Fixed
+  osc_smoothness: [10]           # Fixed
+  strength_smoothness: [15]      # Fixed
+  T_max: [50.0]                  # Fixed
+
+  # ===========================================================================
+  # SMA STRUCTURE PARAMETERS (Fixed at v3.5b optimized values)
+  # ===========================================================================
+
+  sma_fast: [40]                 # Fixed: v3.5b optimized
+  sma_slow: [140, 100, 75]                # Fixed: v3.5b optimized
+  symmetric_volume_adjustment: [true]
+  double_smoothing: [false]
+
+  # ===========================================================================
+  # TREND CLASSIFICATION THRESHOLDS (Fixed at v3.5b values)
+  # ===========================================================================
+
+  t_norm_bull_thresh: [0.05]     # Fixed
+  t_norm_bear_thresh: [-0.3]     # Fixed
+
+  # ===========================================================================
+  # VOLATILITY Z-SCORE PARAMETERS (Fixed at v3.5b optimized values)
+  # ===========================================================================
+
+  realized_vol_window: [21]      # Fixed
+  vol_baseline_window: [200]     # Fixed
+  upper_thresh_z: [1]            # Fixed: v3.5b optimized
+  lower_thresh_z: [0.2]          # Fixed: v3.5b optimized
+
+  # ===========================================================================
+  # VOL-CRUSH OVERRIDE PARAMETERS (Fixed at v3.5b optimized values)
+  # ===========================================================================
+
+  vol_crush_threshold: [-0.15]   # Fixed: v3.5b optimized
+  vol_crush_lookback: [5]        # Fixed
+
+  # ===========================================================================
+  # ALLOCATION PARAMETERS (Fixed at v3.5b values)
+  # ===========================================================================
+
+  leverage_scalar: [1]           # Fixed
+  use_inverse_hedge: [false]     # Fixed
+  w_PSQ_max: [0.5]               # Fixed
+
+  # ===========================================================================
+  # TREASURY OVERLAY PARAMETERS (Fixed at v3.5b values)
+  # ===========================================================================
+
+  allow_treasury: [true]         # Fixed
+  bond_sma_fast: [20]            # Fixed
+  bond_sma_slow: [60]            # Fixed
+  max_bond_weight: [0.4]         # Fixed
+  treasury_trend_symbol: ["TLT"] # Fixed
+  bull_bond_symbol: ["TMF"]      # Fixed
+  bear_bond_symbol: ["TMV"]      # Fixed
+
+  # ===========================================================================
+  # REBALANCING (Fixed at v3.5b value)
+  # ===========================================================================
+
+  rebalance_threshold: [0.025]   # Fixed
+
+# Optional Constraints
+# --------------------
+
+# Maximum total combinations to run
+max_combinations: 50
+
+# Checkpoint interval (save progress every N runs)
+checkpoint_interval: 10
+
+# Expected Output
+# ---------------
+# output/grid_search_Hierarchical_Adaptive_v3_5c_YYYYMMDD_HHMMSS/
+# ├── summary_comparison.csv   # Metrics for all runs
+# ├── run_config.csv          # Parameter mapping
+# ├── parameters.yaml         # Copy of this config
+# ├── README.txt             # Summary statistics
+# └── run_XXXX/              # Individual runs
+#     ├── portfolio_daily.csv
+#     ├── trades.csv
+#     └── summary.csv
+
+# Usage
+# -----
+# jutsu grid-search --config grid-configs/examples/grid_search_hierarchical_adaptive_v3_5c.yaml
+#
+# After completion:
+# 1. Review summary_comparison.csv for top performers
+# 2. Analyze Shock Brake parameter sensitivity:
+#    - Which shock_threshold_pct wins? (2.5% vs 3% vs 3.5%)
+#    - Which shock_cooldown_days wins? (3 vs 5 vs 7)
+#    - Which shock_direction_mode wins? (DOWN_ONLY vs ABS)
+# 3. Compare enabled vs disabled (v3.5c vs v3.5b baseline)
+# 4. Validate Shock Brake trigger frequency:
+#    - Too frequent? → increase threshold or decrease cooldown
+#    - Too rare? → decrease threshold or increase cooldown
+# 5. Review performance in key tail-risk events:
+#    - COVID crash (March 2020): Did Shock Brake protect capital?
+#    - Flash crashes: Did Shock Brake activate appropriately?
+#    - Recovery periods: Did cooldown period prevent upside capture?
+# 6. Check for overfitting:
+#    - Does Shock Brake help in multiple crisis periods?
+#    - Or just fit to one specific event (COVID)?
+
+# v3.5c SPECIFIC ANALYSIS:
+# -----------------------
+# SHOCK BRAKE VALIDATION:
+# - [ ] Trigger frequency: How often does Shock Brake activate?
+# - [ ] Trigger timing: Does it catch major tail-risk events?
+# - [ ] False positives: Does it trigger on recoverable dips?
+# - [ ] Cooldown appropriateness: Is duration too short/long?
+#
+# PERFORMANCE COMPARISON (v3.5c vs v3.5b):
+# - [ ] Max drawdown: v3.5c ≤ v3.5b during crises?
+# - [ ] Annual return: v3.5c comparable to v3.5b in bull markets?
+# - [ ] Sharpe ratio: v3.5c risk-adjusted return improved?
+# - [ ] Sortino ratio: v3.5c downside protection improved?
+#
+# TAIL-RISK EVENT ANALYSIS:
+# - [ ] COVID crash (March 2020): Protection during -30% drawdown?
+# - [ ] Flash crashes: Quick brake activation?
+# - [ ] 2022 bear market: Sustained protection during decline?
+# - [ ] Recovery capture: Does cooldown prevent upside?
+#
+# PARAMETER SENSITIVITY ANALYSIS:
+# - [ ] shock_threshold_pct: 2.5% (sensitive) vs 3.0% vs 3.5% (conservative)
+# - [ ] shock_cooldown_days: 3 (quick) vs 5 vs 7 (long)
+# - [ ] shock_direction_mode: DOWN_ONLY (tail-risk) vs ABS (volatility)
+#
+# DECISION CRITERIA:
+# ✅ SUCCESS: v3.5c better crisis protection, comparable bull market returns
+# ⚠️  INVESTIGATE: Mixed results, check parameter sensitivity
+# ❌ ROLLBACK: v3.5c worse than v3.5b, disable Shock Brake
+
+# Phase 2 Planning (After Shock Brake Optimization)
+# --------------------------------------------------
+# IF Shock Brake validates well:
+#
+# PHASE 2A: Combined Regime + Shock Optimization
+# - Fix winning Shock Brake params from this grid-search
+# - Re-optimize regime boundary params with Shock Brake enabled
+# - Validate no negative interaction between features
+#
+# PHASE 2B: Threshold Refinement
+# - Narrow threshold range around winner (e.g., [0.028, 0.03, 0.032])
+# - Test asymmetric cooldown (shorter for down-only, longer for abs)
+#
+# PHASE 2C: Walk-Forward Validation
+# - Use WFO to validate Shock Brake robustness across time periods
+# - Check parameter stability (do same params win across windows?)

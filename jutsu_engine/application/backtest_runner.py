@@ -32,12 +32,13 @@ Example:
 """
 from decimal import Decimal
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from sqlalchemy import create_engine, and_
 from sqlalchemy.orm import sessionmaker
 import yaml
 import inspect
 from pathlib import Path
+import pandas as pd
 
 from jutsu_engine.core.strategy_base import Strategy
 from jutsu_engine.core.event_loop import EventLoop
@@ -511,64 +512,56 @@ class BacktestRunner:
             # Use configurable baseline symbol (defaults to QQQ if not specified)
             baseline_symbol = self.config.get('baseline_symbol', 'QQQ')
 
-            # First check if baseline symbol is already loaded in event loop (multi-symbol strategy)
-            if baseline_symbol in symbols:
-                # Extract baseline bars from event loop
-                # IMPORTANT: Filter out warmup bars to match grid search baseline calculation
-                if warmup_end_date is not None:
-                    qqq_bars = [
-                        bar for bar in event_loop.all_bars
-                        if bar.symbol == baseline_symbol and bar.timestamp >= warmup_end_date
-                    ]
-                else:
-                    qqq_bars = [bar for bar in event_loop.all_bars if bar.symbol == baseline_symbol]
-            else:
-                # Baseline symbol not in strategy symbols - query directly from database
-                from jutsu_engine.data.models import MarketData
+            # ALWAYS query database directly for baseline calculation
+            # This ensures consistent behavior with grid search baseline calculation
+            # and avoids issues with event_loop.all_bars extraction/filtering
+            from jutsu_engine.data.models import MarketData
 
-                # Prepare date boundaries for baseline query
-                # Database stores timestamps as naive TEXT in SQLite, so convert to naive
-                baseline_start_date = self.config['start_date']
-                baseline_end_date = self.config['end_date']
+            # Prepare date boundaries for baseline query
+            # Database stores timestamps as naive TEXT in SQLite, so convert to naive
+            baseline_start_date = self.config['start_date']
+            baseline_end_date = self.config['end_date']
 
-                if baseline_start_date.tzinfo is not None:
-                    baseline_start_date = baseline_start_date.replace(tzinfo=None)
-                if baseline_end_date.tzinfo is not None:
-                    baseline_end_date = baseline_end_date.replace(tzinfo=None)
+            if baseline_start_date.tzinfo is not None:
+                baseline_start_date = baseline_start_date.replace(tzinfo=None)
+            if baseline_end_date.tzinfo is not None:
+                baseline_end_date = baseline_end_date.replace(tzinfo=None)
 
-                # If end_date is midnight (date-only input), set to end of day
-                # to include ALL bars for that date (e.g., intraday timestamps like 05:00:00)
-                if baseline_end_date.hour == 0 and baseline_end_date.minute == 0 and baseline_end_date.second == 0:
-                    baseline_end_date = baseline_end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-                    logger.debug(f"Baseline query: end_date set to end of day: {baseline_end_date}")
+            # If end_date is midnight (date-only input), set to end of day
+            # to include ALL bars for that date (e.g., intraday timestamps like 05:00:00)
+            if baseline_end_date.hour == 0 and baseline_end_date.minute == 0 and baseline_end_date.second == 0:
+                baseline_end_date = baseline_end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+                logger.debug(f"Baseline query: end_date set to end of day: {baseline_end_date}")
 
-                qqq_db_bars = (
-                    self.session.query(MarketData)
-                    .filter(
-                        and_(
-                            MarketData.symbol == baseline_symbol,
-                            MarketData.timeframe == self.config['timeframe'],
-                            MarketData.timestamp >= baseline_start_date,
-                            MarketData.timestamp <= baseline_end_date,
-                            MarketData.is_valid == True,  # noqa: E712
-                        )
+            qqq_db_bars = (
+                self.session.query(MarketData)
+                .filter(
+                    and_(
+                        MarketData.symbol == baseline_symbol,
+                        MarketData.timeframe == self.config['timeframe'],
+                        MarketData.timestamp >= baseline_start_date,
+                        MarketData.timestamp <= baseline_end_date,
+                        MarketData.is_valid == True,  # noqa: E712
                     )
-                    .order_by(MarketData.timestamp.asc())
-                    .all()
                 )
+                .order_by(MarketData.timestamp.asc())
+                .all()
+            )
 
-                if qqq_db_bars:
-                    # Convert to simple objects with just the data we need
-                    qqq_bars = [
-                        type('Bar', (), {
-                            'symbol': bar.symbol,
-                            'timestamp': bar.timestamp,
-                            'close': bar.close
-                        })()
-                        for bar in qqq_db_bars
-                    ]
-                else:
-                    qqq_bars = []
+            if qqq_db_bars:
+                # Convert to simple objects with just the data we need
+                qqq_bars = [
+                    type('Bar', (), {
+                        'symbol': bar.symbol,
+                        'timestamp': bar.timestamp,
+                        'close': bar.close
+                    })()
+                    for bar in qqq_db_bars
+                ]
+                logger.debug(f"Baseline: loaded {len(qqq_bars)} bars for {baseline_symbol} from database")
+            else:
+                qqq_bars = []
+                logger.warning(f"Baseline: no {baseline_symbol} bars found in database for date range")
 
             # Calculate baseline if we have sufficient data
             if len(qqq_bars) >= 2:
@@ -640,6 +633,40 @@ class BacktestRunner:
         except Exception as e:
             logger.error(f"Baseline calculation failed: {e}", exc_info=True)
             baseline_result = None
+
+        # Calculate beta vs benchmarks (QQQ and SPY)
+        # Beta measures systematic risk relative to market benchmarks
+        try:
+            daily_snapshots = portfolio.get_daily_snapshots()
+            if daily_snapshots and len(daily_snapshots) >= 20:
+                beta_results = self._calculate_beta_vs_benchmarks(
+                    daily_snapshots=daily_snapshots,
+                    benchmark_symbols=['QQQ', 'SPY']
+                )
+                # Add beta values to baseline_result (or create if baseline_result is None)
+                if baseline_result is None:
+                    baseline_result = {}
+                baseline_result['beta_vs_QQQ'] = beta_results.get('beta_vs_QQQ')
+                baseline_result['beta_vs_SPY'] = beta_results.get('beta_vs_SPY')
+                logger.info(
+                    f"Beta calculated: vs QQQ={beta_results.get('beta_vs_QQQ')}, "
+                    f"vs SPY={beta_results.get('beta_vs_SPY')}"
+                )
+            else:
+                logger.info(
+                    f"Skipping beta calculation: insufficient snapshots "
+                    f"({len(daily_snapshots) if daily_snapshots else 0} days, need >= 20)"
+                )
+                if baseline_result is None:
+                    baseline_result = {}
+                baseline_result['beta_vs_QQQ'] = None
+                baseline_result['beta_vs_SPY'] = None
+        except Exception as e:
+            logger.error(f"Beta calculation failed: {e}")
+            if baseline_result is None:
+                baseline_result = {}
+            baseline_result['beta_vs_QQQ'] = None
+            baseline_result['beta_vs_SPY'] = None
 
         # ALWAYS export trades and portfolio CSVs to output directory
         try:
@@ -823,6 +850,142 @@ class BacktestRunner:
         results['config_yaml_path'] = config_yaml_path
 
         return results
+
+    def _calculate_beta_vs_benchmarks(
+        self,
+        daily_snapshots: List[Dict],
+        benchmark_symbols: List[str] = None
+    ) -> Dict[str, Optional[float]]:
+        """
+        Calculate beta of strategy vs benchmark indices.
+
+        Beta measures systematic risk - how much the strategy moves relative
+        to the benchmark. Beta > 1 means more volatile than benchmark,
+        Beta < 1 means less volatile.
+
+        Formula: Beta = Cov(strategy_returns, benchmark_returns) / Var(benchmark_returns)
+
+        Args:
+            daily_snapshots: List of portfolio daily snapshots from PortfolioSimulator
+            benchmark_symbols: List of benchmark symbols (default: ['QQQ', 'SPY'])
+
+        Returns:
+            Dict with beta values: {'beta_vs_QQQ': 1.15, 'beta_vs_SPY': 1.08}
+            None values if calculation failed (insufficient data)
+        """
+        if benchmark_symbols is None:
+            benchmark_symbols = ['QQQ', 'SPY']
+
+        result = {}
+
+        # Need at least 20 days for meaningful beta calculation
+        if len(daily_snapshots) < 20:
+            logger.warning(
+                f"Insufficient data for beta calculation: {len(daily_snapshots)} days "
+                f"(need >= 20)"
+            )
+            for symbol in benchmark_symbols:
+                result[f'beta_vs_{symbol}'] = None
+            return result
+
+        try:
+            # Extract strategy daily values and calculate returns
+            strategy_values = pd.Series([
+                float(snap['total_value']) for snap in daily_snapshots
+            ])
+            strategy_returns = strategy_values.pct_change().dropna()
+
+            # Get date range from snapshots
+            start_date = daily_snapshots[0]['timestamp']
+            end_date = daily_snapshots[-1]['timestamp']
+
+            # Remove timezone if present (database stores naive timestamps)
+            if start_date.tzinfo is not None:
+                start_date = start_date.replace(tzinfo=None)
+            if end_date.tzinfo is not None:
+                end_date = end_date.replace(tzinfo=None)
+
+            # Ensure end_date includes full day
+            if end_date.hour == 0 and end_date.minute == 0:
+                end_date = end_date.replace(hour=23, minute=59, second=59)
+
+            from jutsu_engine.data.models import MarketData
+
+            for benchmark_symbol in benchmark_symbols:
+                try:
+                    # Query benchmark data from database
+                    benchmark_bars = (
+                        self.session.query(MarketData)
+                        .filter(
+                            and_(
+                                MarketData.symbol == benchmark_symbol,
+                                MarketData.timeframe == self.config['timeframe'],
+                                MarketData.timestamp >= start_date,
+                                MarketData.timestamp <= end_date,
+                                MarketData.is_valid == True,  # noqa: E712
+                            )
+                        )
+                        .order_by(MarketData.timestamp.asc())
+                        .all()
+                    )
+
+                    if len(benchmark_bars) < 20:
+                        logger.warning(
+                            f"Insufficient {benchmark_symbol} data for beta: "
+                            f"{len(benchmark_bars)} bars (need >= 20)"
+                        )
+                        result[f'beta_vs_{benchmark_symbol}'] = None
+                        continue
+
+                    # Calculate benchmark returns
+                    benchmark_prices = pd.Series([
+                        float(bar.close) for bar in benchmark_bars
+                    ])
+                    benchmark_returns = benchmark_prices.pct_change().dropna()
+
+                    # Align series lengths (use minimum length)
+                    min_len = min(len(strategy_returns), len(benchmark_returns))
+                    if min_len < 20:
+                        logger.warning(
+                            f"Insufficient aligned data for {benchmark_symbol} beta: "
+                            f"{min_len} periods (need >= 20)"
+                        )
+                        result[f'beta_vs_{benchmark_symbol}'] = None
+                        continue
+
+                    # Use last N returns for alignment
+                    strat_ret = strategy_returns.tail(min_len).values
+                    bench_ret = benchmark_returns.tail(min_len).values
+
+                    # Calculate beta: Cov(strategy, benchmark) / Var(benchmark)
+                    covariance = pd.Series(strat_ret).cov(pd.Series(bench_ret))
+                    benchmark_variance = pd.Series(bench_ret).var()
+
+                    if benchmark_variance == 0:
+                        logger.warning(
+                            f"{benchmark_symbol} variance is zero - cannot calculate beta"
+                        )
+                        result[f'beta_vs_{benchmark_symbol}'] = None
+                        continue
+
+                    beta = covariance / benchmark_variance
+                    result[f'beta_vs_{benchmark_symbol}'] = round(float(beta), 3)
+
+                    logger.info(
+                        f"Beta vs {benchmark_symbol}: {beta:.3f} "
+                        f"(calculated from {min_len} daily returns)"
+                    )
+
+                except Exception as e:
+                    logger.error(f"Failed to calculate beta vs {benchmark_symbol}: {e}")
+                    result[f'beta_vs_{benchmark_symbol}'] = None
+
+        except Exception as e:
+            logger.error(f"Beta calculation failed: {e}", exc_info=True)
+            for symbol in benchmark_symbols:
+                result[f'beta_vs_{symbol}'] = None
+
+        return result
 
     def __del__(self):
         """Cleanup database connection."""

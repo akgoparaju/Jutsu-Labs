@@ -81,6 +81,20 @@ class PerformanceAnalyzer:
             self.equity_df['value'] = self.equity_df['value'].astype(float)
             self.equity_df['timestamp'] = pd.to_datetime(self.equity_df['timestamp'], utc=True)
             self.equity_df.set_index('timestamp', inplace=True)
+            
+            # CRITICAL: Aggregate to daily values to prevent inflated ratios
+            # Multi-symbol strategies create multiple entries per day (one per symbol's bar).
+            # Without aggregation, pct_change() treats intraday changes as daily returns,
+            # artificially deflating volatility and inflating Sharpe/Sortino ratios.
+            # Fix: Keep only the LAST value of each trading day.
+            raw_count = len(self.equity_df)
+            self.equity_df = self.equity_df.resample('D').last().dropna()
+            daily_count = len(self.equity_df)
+            if raw_count != daily_count:
+                logger.debug(
+                    f"Equity curve aggregated to daily: {raw_count} → {daily_count} entries "
+                    f"(avg {raw_count/daily_count:.1f} entries/day)"
+                )
         else:
             self.equity_df = pd.DataFrame()
 
@@ -412,42 +426,66 @@ class PerformanceAnalyzer:
         """
         Calculate Sortino ratio (downside deviation-adjusted returns).
 
+        Uses geometric CAGR for annualized return and semi-deviation for
+        downside risk measurement (industry standard per Sortino & Price, 1994).
+
         Args:
-            returns: Series of returns
-            target_return: Minimum acceptable return (MAR)
-            periods: Number of periods per year for annualization
+            returns: Series of returns (daily, as decimals e.g. 0.01 = 1%)
+            target_return: Minimum acceptable return (MAR), annualized
+            periods: Number of periods per year for annualization (default: 252)
 
         Returns:
             Sortino ratio (higher is better, focuses on downside risk)
 
         Formula:
-            Sortino = (Mean Return - Target) / Downside Deviation
-            where Downside Deviation = std of returns below target
+            Sortino = (CAGR - Target) / Semi-Deviation
+            where:
+            - CAGR = (1 + total_return)^(1/years) - 1  (geometric)
+            - Semi-Deviation = sqrt(mean(min(returns - target, 0)^2)) * sqrt(periods)
+
+        Note:
+            Semi-deviation differs from std(negative_returns) by including ALL
+            observations in the calculation, just clipping positive excess returns
+            to zero. This is the correct industry standard formula.
         """
         if len(returns) < 2:
             logger.warning(f"Insufficient data for Sortino ratio: {len(returns)} returns")
             return 0.0
 
-        excess_returns = returns - target_return
-        downside_returns = excess_returns[excess_returns < 0]
+        # Filter out NaN values for robust calculation
+        clean_returns = returns.dropna()
+        if len(clean_returns) < 2:
+            logger.warning(f"Insufficient clean data for Sortino ratio: {len(clean_returns)} returns")
+            return 0.0
 
-        if len(downside_returns) == 0:
-            logger.debug("No downside returns - returning infinite Sortino ratio")
+        # Convert annualized target to daily for comparison
+        daily_target = target_return / periods if target_return != 0 else 0.0
+
+        # Calculate SEMI-DEVIATION (correct Sortino formula per industry standard)
+        # Key: Use ALL returns, clip excess at 0, don't filter
+        excess_returns = clean_returns - daily_target
+        downside = np.minimum(excess_returns, 0)  # Clip at 0, don't filter
+        semi_variance = (downside ** 2).mean()  # Mean squared deviation
+
+        if semi_variance == 0:
+            logger.debug("Zero semi-variance - returning infinite Sortino ratio")
             return float('inf')
 
-        downside_std = downside_returns.std()
+        semi_deviation = np.sqrt(semi_variance)
+        annualized_semi_dev = semi_deviation * np.sqrt(periods)
 
-        if downside_std == 0:
-            logger.debug("Zero downside deviation - returning infinite Sortino ratio")
-            return float('inf')
+        # Annualize return using geometric CAGR (consistent with Sharpe and Calmar)
+        total_return = (1 + clean_returns).prod() - 1
+        years = len(clean_returns) / periods
 
-        # Annualize
-        annualized_return = returns.mean() * periods
-        annualized_downside = downside_std * np.sqrt(periods)
+        if years > 0:
+            annualized_return = (1 + total_return) ** (1 / years) - 1
+        else:
+            annualized_return = 0.0
 
-        sortino = (annualized_return - target_return) / annualized_downside
+        sortino = (annualized_return - target_return) / annualized_semi_dev
 
-        logger.debug(f"Sortino ratio calculated: {sortino:.2f}")
+        logger.debug(f"Sortino ratio calculated: {sortino:.2f} (CAGR: {annualized_return:.2%}, Semi-Dev: {annualized_semi_dev:.2%})")
         return float(sortino)
 
     def calculate_omega_ratio(

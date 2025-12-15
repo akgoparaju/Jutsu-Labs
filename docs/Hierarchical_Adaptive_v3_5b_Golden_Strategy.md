@@ -261,7 +261,7 @@ bear_bond_symbol: "TMV"          # 3x Bear Bonds
 ### Trend Classification Logic
 
 **BullStrong Requirements** (both must be true):
-1. Kalman: `T_norm > 0.20` (bullish momentum)
+1. Kalman: `T_norm > 0.05` (bullish momentum)
 2. SMA: `SMA_fast > SMA_slow` (bull structure)
 
 **BearStrong Requirements** (both must be true):
@@ -474,7 +474,7 @@ slippage: 0.0005                  # 0.05% per trade
 measurement_noise: 3000.0         # Smooth filter
 process_noise_1: 0.01             # Position uncertainty
 process_noise_2: 0.01             # Velocity uncertainty
-osc_smoothness: 15                # Oscillator smoothing
+osc_smoothness: 10                # Oscillator smoothing
 strength_smoothness: 15           # Trend strength smoothing
 T_max: 50.0                       # Normalization threshold
 
@@ -483,12 +483,12 @@ sma_fast: 40                      # Fast structural trend (days)
 sma_slow: 140                     # Slow structural trend (days)
 
 # Trend Classification Thresholds
-t_norm_bull_thresh: 0.20          # Bull threshold
+t_norm_bull_thresh: 0.05          # Bull threshold
 t_norm_bear_thresh: -0.3          # Bear threshold
 
 # Volatility Z-Score Parameters
 realized_vol_window: 21           # Short-term vol (days)
-vol_baseline_window: 126          # Baseline window (days)
+vol_baseline_window: 200          # Baseline window (days)
 upper_thresh_z: 1.0               # High vol threshold
 lower_thresh_z: 0.2               # Low vol threshold
 
