@@ -43,7 +43,7 @@ slowapi>=0.1.9  # Rate limiting for FastAPI (install if needed)
 # Authentication
 python-jose[cryptography]==3.5.0
 passlib[bcrypt]==1.7.4
-bcrypt==4.3.0  # Direct bcrypt for passlib compatibility
+bcrypt==5.0.0  # Direct bcrypt for passlib compatibility
 
 # Two-Factor Authentication (2FA/TOTP)
 pyotp==2.9.0
