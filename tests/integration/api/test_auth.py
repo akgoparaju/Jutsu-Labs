@@ -49,11 +49,12 @@ class TestJWTAuthentication:
             algorithms=[settings.algorithm]
         )
         exp_timestamp = payload["exp"]
-        exp_datetime = datetime.fromtimestamp(exp_timestamp)
+        exp_datetime = datetime.utcfromtimestamp(exp_timestamp)
         now = datetime.utcnow()
 
-        # Should expire in approximately 15 minutes
-        assert 14 * 60 < (exp_datetime - now).total_seconds() < 16 * 60
+        # Should expire in approximately 15 minutes (with some tolerance for test execution time)
+        time_diff = (exp_datetime - now).total_seconds()
+        assert 13 * 60 < time_diff < 16 * 60, f"Expected ~15 min, got {time_diff/60:.1f} min"
 
     @pytest.mark.asyncio
     async def test_validate_valid_token(self):

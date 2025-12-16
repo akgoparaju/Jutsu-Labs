@@ -143,51 +143,8 @@ async def run_backtest(
         )
 
 
-@router.get("/{backtest_id}", response_model=BacktestResponse)
-async def get_backtest_results(backtest_id: str):
-    """
-    Retrieve results for a specific backtest.
-
-    Args:
-        backtest_id: Unique backtest identifier
-
-    Returns:
-        Backtest results
-
-    Raises:
-        HTTPException: 404 if backtest not found
-
-    Example:
-        GET /api/v1/backtest/bt_20240101_120000_AAPL_SMA_Crossover
-    """
-    try:
-        if backtest_id not in _backtest_results:
-            logger.warning(f"Backtest not found: {backtest_id}")
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Backtest not found: {backtest_id}"
-            )
-
-        results = _backtest_results[backtest_id]
-
-        logger.info(f"Retrieved results for: {backtest_id}")
-
-        return BacktestResponse(
-            backtest_id=backtest_id,
-            status="success",
-            metrics=results,
-            config=results.get('config')
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to retrieve backtest: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve backtest: {str(e)}"
-        )
-
+# NOTE: Static paths (/history) must be defined BEFORE dynamic paths (/{backtest_id})
+# to prevent FastAPI from matching "history" as a backtest_id parameter.
 
 @router.get("/history", response_model=List[Dict[str, Any]])
 async def list_backtest_history(
@@ -241,6 +198,52 @@ async def list_backtest_history(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve history: {str(e)}"
+        )
+
+
+@router.get("/{backtest_id}", response_model=BacktestResponse)
+async def get_backtest_results(backtest_id: str):
+    """
+    Retrieve results for a specific backtest.
+
+    Args:
+        backtest_id: Unique backtest identifier
+
+    Returns:
+        Backtest results
+
+    Raises:
+        HTTPException: 404 if backtest not found
+
+    Example:
+        GET /api/v1/backtest/bt_20240101_120000_AAPL_SMA_Crossover
+    """
+    try:
+        if backtest_id not in _backtest_results:
+            logger.warning(f"Backtest not found: {backtest_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Backtest not found: {backtest_id}"
+            )
+
+        results = _backtest_results[backtest_id]
+
+        logger.info(f"Retrieved results for: {backtest_id}")
+
+        return BacktestResponse(
+            backtest_id=backtest_id,
+            status="success",
+            metrics=results,
+            config=results.get('config')
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to retrieve backtest: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve backtest: {str(e)}"
         )
 
 

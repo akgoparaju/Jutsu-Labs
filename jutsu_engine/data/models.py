@@ -5,7 +5,6 @@ Defines the schema for storing OHLCV data and metadata for incremental updates.
 """
 from datetime import datetime, timezone
 from sqlalchemy import (
-    ARRAY,
     Column,
     Integer,
     String,
@@ -19,6 +18,7 @@ from sqlalchemy import (
     Index,
     ForeignKey,
     LargeBinary,
+    JSON,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -456,7 +456,7 @@ class User(Base):
     # Two-Factor Authentication (2FA/TOTP)
     totp_secret = Column(String(32), nullable=True)  # Base32 secret for TOTP
     totp_enabled = Column(Boolean, default=False)    # Whether 2FA is active
-    backup_codes = Column(ARRAY(String), nullable=True)  # Array of one-time backup codes
+    backup_codes = Column(JSON, nullable=True)  # List of one-time backup codes (JSON for SQLite/PostgreSQL compatibility)
 
     # Passkey/WebAuthn relationship
     passkeys = relationship("Passkey", back_populates="user", cascade="all, delete-orphan")

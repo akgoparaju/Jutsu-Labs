@@ -13,6 +13,7 @@ from datetime import datetime
 from decimal import Decimal
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from jutsu_api.main import app
 from jutsu_api.dependencies import get_db
@@ -20,8 +21,13 @@ from jutsu_engine.data.models import Base
 
 
 # Test database setup
+# Use StaticPool to ensure the same in-memory database is shared across all connections
 TEST_DATABASE_URL = "sqlite:///:memory:"
-test_engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
+test_engine = create_engine(
+    TEST_DATABASE_URL,
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool
+)
 TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
 
@@ -85,7 +91,7 @@ class TestBacktestEndpoints:
             "parameters": {
                 "short_period": 20,
                 "long_period": 50,
-                "position_size": 100
+                "position_percent": "1.0"
             },
             "timeframe": "1D"
         }
@@ -228,8 +234,7 @@ class TestStrategyEndpoints:
             },
             json={
                 "short_period": 20,
-                "long_period": 50,
-                "position_size": 100
+                "long_period": 50
             }
         )
         assert response.status_code == 200

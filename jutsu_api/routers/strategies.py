@@ -23,12 +23,12 @@ STRATEGY_REGISTRY = {
         "parameters": {
             "short_period": "Short-term SMA period (bars)",
             "long_period": "Long-term SMA period (bars)",
-            "position_size": "Number of shares per trade"
+            "position_percent": "Position size as percent of capital (0.0-1.0)"
         },
         "defaults": {
             "short_period": 20,
             "long_period": 50,
-            "position_size": 100
+            "position_percent": "1.0"
         }
     },
     # Add more strategies as they're implemented
@@ -153,7 +153,7 @@ async def validate_strategy_parameters(
             "parameters": {
                 "short_period": 20,
                 "long_period": 50,
-                "position_size": 100
+                "position_percent": "1.0"
             }
         }
     """

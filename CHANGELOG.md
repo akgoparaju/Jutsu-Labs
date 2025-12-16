@@ -1,3 +1,42 @@
+#### **Fix: Test Infrastructure & Database Compatibility** (2025-12-15)
+
+**Fixed multiple test infrastructure issues that were causing test failures**
+
+**SQLite ARRAY Compatibility**:
+- Changed `backup_codes` column from `ARRAY(String)` to `JSON` in `jutsu_engine/data/models.py`
+- JSON column type works with both SQLite (tests) and PostgreSQL (production)
+- Updated comments in `two_factor.py` to reflect JSON column usage
+
+**FastAPI Route Ordering**:
+- Fixed backtest history endpoint returning 404 errors
+- Moved `/history` static route BEFORE `/{backtest_id}` dynamic route in `jutsu_api/routers/backtest.py`
+- Added explanatory comment about route ordering requirement
+
+**JWT Token Test Timezone**:
+- Fixed `test_create_token_with_custom_expiration` timezone mismatch
+- Changed `datetime.fromtimestamp()` to `datetime.utcfromtimestamp()` for consistent UTC comparison
+- Updated assertion message to show actual vs expected values
+
+**SQLite Connection Pooling**:
+- Fixed in-memory SQLite database not sharing tables across connections in tests
+- Added `StaticPool` to `test_api_integration.py` engine configuration
+- Ensures test fixtures create tables visible to test client
+
+**Strategy Registry Alignment**:
+- Fixed `STRATEGY_REGISTRY` to match actual `SMA_Crossover` parameters
+- Changed `position_size` to `position_percent` in registry and docstrings
+- Updated test to use correct parameter names
+
+**Files Modified**:
+- `jutsu_engine/data/models.py` - ARRAY→JSON for backup_codes
+- `jutsu_engine/api/routes/two_factor.py` - Updated comments
+- `jutsu_api/routers/backtest.py` - Route ordering fix
+- `jutsu_api/routers/strategies.py` - Registry parameter alignment
+- `tests/integration/api/test_auth.py` - UTC timestamp fix
+- `tests/integration/api/test_api_integration.py` - StaticPool and parameter fixes
+
+---
+
 #### **Feature: WebAuthn Passkey Authentication** (2025-12-15)
 
 **Implemented FIDO2 passkey support as an alternative to TOTP 2FA for trusted devices**

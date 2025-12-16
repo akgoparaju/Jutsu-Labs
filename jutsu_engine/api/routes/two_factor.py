@@ -191,7 +191,7 @@ def verify_backup_code(user, code: str, db: Session) -> bool:
         return False
 
     try:
-        # backup_codes is now a PostgreSQL ARRAY, convert to list for manipulation
+        # backup_codes is a JSON column (list of strings)
         codes = list(user.backup_codes)
         # Normalize code format (remove hyphens for comparison)
         normalized_code = code.replace('-', '').upper()
@@ -200,7 +200,7 @@ def verify_backup_code(user, code: str, db: Session) -> bool:
             if stored_code.replace('-', '').upper() == normalized_code:
                 # Remove used code
                 codes.pop(i)
-                user.backup_codes = codes  # Assign list directly to ARRAY column
+                user.backup_codes = codes  # Assign list directly to JSON column
                 db.commit()
                 return True
 
@@ -363,7 +363,7 @@ async def verify_2fa(
 
     # Enable 2FA
     current_user.totp_enabled = True
-    current_user.backup_codes = backup_codes  # Assign list directly to ARRAY column
+    current_user.backup_codes = backup_codes  # Assign list directly to JSON column
     db.commit()
 
     # Log security event
@@ -558,7 +558,7 @@ async def regenerate_backup_codes(
 
     # Generate new backup codes
     backup_codes = generate_backup_codes(10)
-    current_user.backup_codes = backup_codes  # Assign list directly to ARRAY column
+    current_user.backup_codes = backup_codes  # Assign list directly to JSON column
     db.commit()
 
     logger.info(f"New backup codes generated for user '{current_user.username}'")
