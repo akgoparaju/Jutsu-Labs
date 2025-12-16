@@ -54,6 +54,12 @@ class SecurityEventType(str, Enum):
     TWO_FA_SUCCESS = "2FA_SUCCESS"
     TWO_FA_FAILURE = "2FA_FAILURE"
 
+    # Passkey/WebAuthn events
+    PASSKEY_REGISTERED = "PASSKEY_REGISTERED"
+    PASSKEY_AUTHENTICATED = "PASSKEY_AUTHENTICATED"
+    PASSKEY_REVOKED = "PASSKEY_REVOKED"
+    PASSKEY_AUTH_FAILED = "PASSKEY_AUTH_FAILED"
+
 
 class SecuritySeverity(str, Enum):
     """Severity levels for security events."""
@@ -393,9 +399,84 @@ class SecurityLogger:
         )
         self._log_event(event)
 
+    # Passkey/WebAuthn events
+    def log_passkey_registered(
+        self,
+        username: str,
+        device_name: Optional[str] = None,
+        ip_address: Optional[str] = None
+    ) -> None:
+        """Log passkey registration."""
+        event = SecurityEvent(
+            event_type=SecurityEventType.PASSKEY_REGISTERED,
+            severity=SecuritySeverity.INFO,
+            timestamp=self._get_timestamp(),
+            username=username,
+            ip_address=ip_address,
+            details={"device_name": device_name} if device_name else None
+        )
+        self._log_event(event)
+
+    def log_passkey_authenticated(
+        self,
+        username: str,
+        device_name: Optional[str] = None,
+        ip_address: Optional[str] = None
+    ) -> None:
+        """Log successful passkey authentication."""
+        event = SecurityEvent(
+            event_type=SecurityEventType.PASSKEY_AUTHENTICATED,
+            severity=SecuritySeverity.INFO,
+            timestamp=self._get_timestamp(),
+            username=username,
+            ip_address=ip_address,
+            details={"device_name": device_name} if device_name else None
+        )
+        self._log_event(event)
+
+    def log_passkey_revoked(
+        self,
+        username: str,
+        device_name: Optional[str] = None,
+        ip_address: Optional[str] = None
+    ) -> None:
+        """Log passkey revocation."""
+        event = SecurityEvent(
+            event_type=SecurityEventType.PASSKEY_REVOKED,
+            severity=SecuritySeverity.WARNING,
+            timestamp=self._get_timestamp(),
+            username=username,
+            ip_address=ip_address,
+            details={"device_name": device_name} if device_name else None
+        )
+        self._log_event(event)
+
+    def log_passkey_auth_failed(
+        self,
+        username: str,
+        ip_address: Optional[str] = None,
+        reason: Optional[str] = None
+    ) -> None:
+        """Log failed passkey authentication attempt."""
+        event = SecurityEvent(
+            event_type=SecurityEventType.PASSKEY_AUTH_FAILED,
+            severity=SecuritySeverity.WARNING,
+            timestamp=self._get_timestamp(),
+            username=username,
+            ip_address=ip_address,
+            details={"reason": reason} if reason else None
+        )
+        self._log_event(event)
+
 
 # Global security logger instance
 security_logger = SecurityLogger()
+
+# Module-level constants for passkey security events (for easy imports)
+PASSKEY_REGISTERED = "passkey_registered"
+PASSKEY_AUTHENTICATED = "passkey_authenticated"
+PASSKEY_REVOKED = "passkey_revoked"
+PASSKEY_AUTH_FAILED = "passkey_auth_failed"
 
 
 def get_client_ip(request) -> Optional[str]:

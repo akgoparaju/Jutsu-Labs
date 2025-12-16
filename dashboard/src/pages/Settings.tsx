@@ -1,6 +1,7 @@
 import { User, Shield } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import TwoFactorSettings from '../components/TwoFactorSettings'
+import PasskeySettings from '../components/PasskeySettings'
 
 function Settings() {
   const { user, isAuthRequired } = useAuth()
@@ -67,6 +68,13 @@ function Settings() {
 
       {/* Two-Factor Authentication */}
       {isAuthRequired && <TwoFactorSettings />}
+
+      {/* Passkey Authentication */}
+      {isAuthRequired && (
+        <div className="bg-slate-800 rounded-lg p-6">
+          <PasskeySettings />
+        </div>
+      )}
 
       {/* Auth not required message */}
       {!isAuthRequired && (

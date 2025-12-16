@@ -84,14 +84,16 @@ class Token(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    """Login response - either tokens or 2FA required indicator."""
+    """Login response - either tokens, passkey challenge, or 2FA required indicator."""
     access_token: Optional[str] = None
     refresh_token: Optional[str] = None
     token_type: str = "bearer"
     expires_in: Optional[int] = None
     refresh_expires_in: Optional[int] = None
     requires_2fa: bool = False
-    username: Optional[str] = None  # Included when 2FA is required
+    requires_passkey: bool = False  # Passkey authentication available
+    passkey_options: Optional[str] = None  # WebAuthn authentication options JSON
+    username: Optional[str] = None  # Included when 2FA or passkey is required
 
 
 class UserInfo(BaseModel):
@@ -344,6 +346,53 @@ async def login(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User account is disabled",
         )
+
+    # Check if user has passkeys registered - if so, offer passkey authentication
+    # Passkey authentication bypasses 2FA (it IS the second factor)
+    from jutsu_engine.data.models import Passkey
+    passkey_count = db.query(Passkey).filter(Passkey.user_id == user.id).count()
+
+    if passkey_count > 0:
+        # Generate passkey authentication options
+        try:
+            from jutsu_engine.api.routes.passkey import (
+                WEBAUTHN_AVAILABLE,
+                WEBAUTHN_RP_ID,
+                _authentication_challenges,
+            )
+            if WEBAUTHN_AVAILABLE:
+                from webauthn import generate_authentication_options, options_to_json
+                from webauthn.helpers.structs import (
+                    PublicKeyCredentialDescriptor,
+                    UserVerificationRequirement,
+                )
+
+                # Get user's passkey credentials
+                passkeys = db.query(Passkey).filter(Passkey.user_id == user.id).all()
+                allow_credentials = [
+                    PublicKeyCredentialDescriptor(id=p.credential_id)
+                    for p in passkeys
+                ]
+
+                # Generate authentication options
+                options = generate_authentication_options(
+                    rp_id=WEBAUTHN_RP_ID,
+                    allow_credentials=allow_credentials,
+                    user_verification=UserVerificationRequirement.PREFERRED,
+                )
+
+                # Store challenge for verification
+                _authentication_challenges[user.username] = options.challenge
+
+                logger.info(f"User '{user.username}' has passkeys, offering passkey authentication")
+                return LoginResponse(
+                    requires_passkey=True,
+                    passkey_options=options_to_json(options),
+                    username=user.username,
+                    token_type="bearer"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to generate passkey options: {e}, falling back to 2FA")
 
     # Check if 2FA is enabled - if so, don't issue tokens yet
     if user.totp_enabled:

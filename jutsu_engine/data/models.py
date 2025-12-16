@@ -18,8 +18,10 @@ from sqlalchemy import (
     UniqueConstraint,
     Index,
     ForeignKey,
+    LargeBinary,
 )
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship
 import enum
 
 Base = declarative_base()
@@ -456,8 +458,61 @@ class User(Base):
     totp_enabled = Column(Boolean, default=False)    # Whether 2FA is active
     backup_codes = Column(ARRAY(String), nullable=True)  # Array of one-time backup codes
 
+    # Passkey/WebAuthn relationship
+    passkeys = relationship("Passkey", back_populates="user", cascade="all, delete-orphan")
+
     def __repr__(self):
         return f"<User(username={self.username}, active={self.is_active})>"
+
+
+class Passkey(Base):
+    """
+    WebAuthn passkey credential for passwordless 2FA bypass.
+
+    Each user can have multiple passkeys (one per device).
+    Passkeys are valid forever until manually revoked.
+
+    Security features:
+    - sign_count: Protects against cloned authenticators (replay attacks)
+    - credential_id: Unique identifier from the authenticator
+    - public_key: COSE-format public key for signature verification
+
+    Design decisions:
+    - Multiple passkeys per user (multi-device support)
+    - Replaces 2FA only (password still required)
+    - Falls back to TOTP if no passkey for device
+    - Never expires until manually revoked
+
+    Indexes:
+        - credential_id for fast lookup during authentication
+        - user_id for listing user's passkeys
+    """
+
+    __tablename__ = 'passkeys'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+
+    # WebAuthn credential data (from registration)
+    credential_id = Column(LargeBinary, nullable=False, unique=True, index=True)
+    public_key = Column(LargeBinary, nullable=False)  # COSE format
+    sign_count = Column(Integer, default=0, nullable=False)  # Replay attack protection
+
+    # User-friendly metadata
+    device_name = Column(String(100), nullable=True)  # "MacBook Pro", "iPhone 15"
+
+    # AAGUID for authenticator identification (optional)
+    aaguid = Column(String(36), nullable=True)
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationship
+    user = relationship("User", back_populates="passkeys")
+
+    def __repr__(self):
+        return f"<Passkey(id={self.id}, user_id={self.user_id}, device={self.device_name})>"
 
 
 class BlacklistedToken(Base):

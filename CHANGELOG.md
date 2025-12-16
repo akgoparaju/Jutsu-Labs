@@ -1,3 +1,103 @@
+#### **Feature: WebAuthn Passkey Authentication** (2025-12-15)
+
+**Implemented FIDO2 passkey support as an alternative to TOTP 2FA for trusted devices**
+
+**Overview**:
+- Passkeys allow users to bypass TOTP 2FA on trusted devices
+- Password authentication still required (passkey replaces 2FA step only)
+- Multiple passkeys per user (support for multiple devices)
+- Falls back to TOTP 2FA if no passkey registered for device
+- Passkeys trusted forever until manually revoked
+
+**Backend Implementation**:
+- Added `webauthn==2.2.0` to requirements.txt
+- Created `Passkey` model in `jutsu_engine/data/models.py`
+- Added passkeys relationship to `User` model
+- New API router: `jutsu_engine/api/routes/passkey.py`
+  - `POST /api/passkey/register-options` - Generate registration challenge
+  - `POST /api/passkey/register` - Complete passkey registration
+  - `GET /api/passkey/list` - List user's registered passkeys
+  - `DELETE /api/passkey/{id}` - Revoke a specific passkey
+  - `POST /api/passkey/authenticate-options` - Generate auth challenge
+  - `POST /api/passkey/authenticate` - Verify passkey and issue tokens
+
+**Frontend Implementation**:
+- Created `PasskeySettings.tsx` component for Settings page
+- Updated `Login.tsx` with passkey authentication UI
+- Updated `AuthContext.tsx` with passkey state management
+
+**Security Features**:
+- sign_count validation prevents replay attacks
+- Rate limiting: 5 attempts/minute per IP
+- Security logging for all passkey events (registered, authenticated, revoked, failed)
+- WebAuthn origin validation (prevents phishing)
+
+**Configuration (Environment Variables)**:
+```env
+WEBAUTHN_RP_ID=localhost                    # Domain (no protocol, no port)
+WEBAUTHN_RP_NAME=Jutsu Trading              # Display name
+WEBAUTHN_ORIGIN=http://localhost:3000       # Full origin with protocol (must match frontend URL)
+```
+
+**Files Modified**:
+- `requirements.txt` - Added webauthn dependency
+- `jutsu_engine/data/models.py` - Added Passkey model and User relationship
+- `jutsu_engine/api/routes/passkey.py` - New passkey API endpoints
+- `jutsu_engine/api/routes/auth.py` - Added passkey check in login flow
+- `jutsu_engine/api/routes/__init__.py` - Export passkey_router
+- `jutsu_engine/api/main.py` - Register passkey router
+- `jutsu_engine/utils/security_logger.py` - Added passkey security events
+- `dashboard/src/components/PasskeySettings.tsx` - New passkey management component
+- `dashboard/src/pages/Settings.tsx` - Added PasskeySettings component
+- `dashboard/src/pages/Login.tsx` - Added passkey authentication handling
+- `dashboard/src/contexts/AuthContext.tsx` - Added passkey state management
+
+**Database Migration Required**:
+Run migration to create `passkeys` table with columns:
+- id, user_id, credential_id (unique), public_key, sign_count, device_name, aaguid, created_at, last_used_at
+
+**Migration File**: `alembic/versions/20251216_0011_b7b84bccdb08_create_passkeys_table.py`
+- Idempotent (safe to run multiple times)
+- Supports both SQLite (development) and PostgreSQL (production)
+- Adds missing User columns: failed_login_count, locked_until, totp_secret, totp_enabled, backup_codes
+
+---
+
+#### **Bugfix: WebAuthn Origin Mismatch** (2025-12-15)
+
+**Fixed passkey registration failure due to origin validation error**
+
+- **Error**: `Unexpected client data origin "http://localhost:3000", expected "https://localhost"`
+- **Root Cause**: Default `WEBAUTHN_ORIGIN` was `https://localhost` but frontend runs on `http://localhost:3000`
+- **Fix**: Added WebAuthn environment variables to `.env`:
+  ```env
+  WEBAUTHN_ORIGIN=http://localhost:3000
+  WEBAUTHN_RP_ID=localhost
+  WEBAUTHN_RP_NAME=Jutsu Trading
+  ```
+- **Files Modified**: `.env`
+- **Note**: For production, set `WEBAUTHN_ORIGIN` to your actual domain with HTTPS
+
+---
+
+#### **Bugfix: Passkey Authentication and 2FA Fallback** (2025-12-15)
+
+**Fixed two critical auth bugs: passkey auth 500 error and 2FA fallback password loss**
+
+**Issue 1: Passkey Authentication Returns 500 Internal Server Error**
+- **Error**: `AttributeError: 'SecurityLogger' object has no attribute 'log_event'`
+- **Root Cause**: `passkey.py` called non-existent `security_logger.log_event()` method
+- **Fix**: Replaced with proper methods: `log_passkey_registered()`, `log_passkey_authenticated()`, `log_passkey_revoked()`, `log_passkey_auth_failed()`
+- **Files**: `jutsu_engine/api/routes/passkey.py` (5 locations fixed)
+
+**Issue 2: 2FA Fallback Fails with "Invalid Password"**
+- **Error**: `LOGIN_FAILURE ... "reason": "invalid_password"` when clicking "Use 2FA Instead"
+- **Root Cause**: `handleCancelPasskey()` in Login.tsx cleared password state before 2FA form submission
+- **Fix**: Removed `setPassword('')` from `handleCancelPasskey()` - password needed for 2FA
+- **Files**: `dashboard/src/pages/Login.tsx`
+
+---
+
 #### **Bugfix: Dashboard UI Data Display Issues** (2025-12-15)
 
 **Fixed three dashboard data display issues: Z-score N/A, Treasury Overlay N/A, Max Drawdown wrong value**

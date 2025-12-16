@@ -22,12 +22,16 @@ interface AuthContextType {
   isAuthRequired: boolean
   isLoading: boolean
   requires2FA: boolean
+  requiresPasskey: boolean
+  passkeyOptions: string | null
   pendingUsername: string | null
   user: User | null
   error: string | null
   login: (username: string, password: string) => Promise<boolean>
   loginWith2FA: (username: string, password: string, totpCode: string) => Promise<boolean>
+  loginWithPasskey: (username: string, credential: string) => Promise<boolean>
   cancel2FA: () => void
+  cancelPasskey: () => void
   logout: () => void
   checkAuthStatus: () => Promise<void>
 }
@@ -48,6 +52,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [requires2FA, setRequires2FA] = useState(false)
   const [pendingUsername, setPendingUsername] = useState<string | null>(null)
   const [_pendingPassword, setPendingPassword] = useState<string | null>(null)
+
+  // Passkey state
+  const [requiresPasskey, setRequiresPasskey] = useState(false)
+  const [passkeyOptions, setPasskeyOptions] = useState<string | null>(null)
 
   // Check auth status on mount
   useEffect(() => {
@@ -136,7 +144,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (response.ok) {
         const data = await response.json()
 
-        // Check if 2FA is required
+        // Check if passkey is available (takes priority over 2FA)
+        if (data.requires_passkey) {
+          setPendingUsername(username)
+          setPendingPassword(password)
+          setPasskeyOptions(data.passkey_options)
+          setRequiresPasskey(true)
+          setIsLoading(false)
+          return false // Not fully logged in yet, passkey required
+        }
+
+        // Check if 2FA is required (fallback if no passkey)
         if (data.requires_2fa) {
           setPendingUsername(username)
           setPendingPassword(password)
@@ -244,6 +262,72 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setError(null)
   }
 
+  const cancelPasskey = () => {
+    setRequiresPasskey(false)
+    setPasskeyOptions(null)
+    // Fall back to 2FA - passkeys are only available for users with 2FA enabled
+    setRequires2FA(true)
+    setError(null)
+  }
+
+  const loginWithPasskey = async (username: string, credential: string): Promise<boolean> => {
+    setError(null)
+    setIsLoading(true)
+
+    try {
+      const response = await fetch(`${API_BASE}/api/passkey/authenticate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          username,
+          credential,
+        }),
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        const newToken = data.access_token
+
+        // Store token
+        localStorage.setItem(TOKEN_KEY, newToken)
+        setToken(newToken)
+
+        // Clear passkey state
+        setRequiresPasskey(false)
+        setPasskeyOptions(null)
+        setPendingUsername(null)
+        setPendingPassword(null)
+
+        // Fetch user info
+        const userResponse = await fetch(`${API_BASE}/api/auth/me`, {
+          headers: {
+            'Authorization': `Bearer ${newToken}`
+          }
+        })
+
+        if (userResponse.ok) {
+          const userData: User = await userResponse.json()
+          setUser(userData)
+        }
+
+        setIsAuthenticated(true)
+        return true
+      } else {
+        const errorData = await response.json()
+        setError(errorData.detail || 'Passkey verification failed')
+        return false
+      }
+    } catch (err) {
+      console.error('Passkey login error:', err)
+      setError('Failed to connect to server')
+      return false
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
   const logout = () => {
     localStorage.removeItem(TOKEN_KEY)
     setToken(null)
@@ -262,12 +346,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isAuthRequired,
         isLoading,
         requires2FA,
+        requiresPasskey,
+        passkeyOptions,
         pendingUsername,
         user,
         error,
         login,
         loginWith2FA,
+        loginWithPasskey,
         cancel2FA,
+        cancelPasskey,
         logout,
         checkAuthStatus,
       }}
