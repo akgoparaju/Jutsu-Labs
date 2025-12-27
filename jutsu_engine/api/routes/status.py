@@ -26,6 +26,7 @@ from jutsu_engine.api.dependencies import (
     verify_credentials,
     EngineState,
 )
+from jutsu_engine.api.startup_state import startup_state
 from jutsu_engine.data.models import Position, PerformanceSnapshot
 
 logger = logging.getLogger('API.STATUS')
@@ -207,12 +208,15 @@ async def get_status(
 
 @router.get(
     "/health",
-    summary="Health check",
-    description="Simple health check endpoint for monitoring."
+    summary="Health check (liveness)",
+    description="Simple liveness check - returns OK if the process is running."
 )
 async def health_check() -> dict:
     """
-    Health check endpoint.
+    Liveness check endpoint.
+
+    This is a simple check that the FastAPI process is running.
+    Use /health/ready for readiness checks (startup complete, DB connected).
 
     Returns:
         Simple OK status with timestamp.
@@ -221,6 +225,51 @@ async def health_check() -> dict:
         "status": "ok",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "service": "jutsu-api",
+    }
+
+
+@router.get(
+    "/health/ready",
+    summary="Readiness check",
+    description="Checks if the application has completed startup and is ready to serve traffic.",
+    responses={
+        200: {"description": "Application is ready"},
+        503: {"description": "Application is not ready yet"},
+    },
+)
+async def readiness_check() -> dict:
+    """
+    Readiness check endpoint for load balancers and orchestrators.
+
+    This endpoint implements the Kubernetes-style readiness probe pattern.
+    It returns 503 Service Unavailable if the application has not completed
+    its startup sequence (lifespan handler) or if critical services (like
+    the database) are not available.
+
+    Use this endpoint in nginx/load balancer health checks to prevent
+    routing traffic before the application is fully initialized.
+
+    Returns:
+        200 with status details if ready
+        503 with status details if not ready
+    """
+    status = startup_state.status
+
+    if not status["ready"]:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "not_ready",
+                "message": "Application startup not complete",
+                **status,
+            }
+        )
+
+    return {
+        "status": "ready",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "service": "jutsu-api",
+        **status,
     }
 
 

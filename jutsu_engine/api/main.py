@@ -36,6 +36,7 @@ except ImportError:
     RATE_LIMITING_AVAILABLE = False
 
 from jutsu_engine.api.websocket import websocket_endpoint, manager
+from jutsu_engine.api.startup_state import startup_state
 from jutsu_engine.api.routes import (
     auth_router,
     two_factor_router,
@@ -128,8 +129,10 @@ async def lifespan(app: FastAPI):
             from sqlalchemy import text
             db.execute(text("SELECT 1"))
         logger.info("Database connection verified")
+        startup_state.mark_db_ready()
     except Exception as e:
         logger.warning(f"Database connection check failed: {e}")
+        startup_state.mark_error(f"Database connection failed: {e}")
 
     # Create default admin user if auth is enabled
     try:
@@ -207,9 +210,14 @@ async def lifespan(app: FastAPI):
         
         # Schedule the refresh to run after startup completes
         asyncio.create_task(startup_data_refresh())
-        
+
     except Exception as e:
         logger.warning(f"Failed to check data freshness on startup: {e}")
+
+    # Mark application as ready for traffic
+    # This signals to load balancers that startup is complete
+    startup_state.mark_ready()
+    logger.info("Application startup complete - ready to serve traffic")
 
     yield
 

@@ -1,4 +1,69 @@
+#### **Feature: Application Readiness Probe System** (2025-12-27)
+
+**Implemented Kubernetes-style readiness probes for proper startup sequencing**
+
+**Problem**:
+- Nginx `/health` endpoint returned static "healthy" response regardless of FastAPI state
+- Load balancers could route traffic before application startup completed
+- No way for external systems to know when the app was truly ready to serve requests
+
+**Solution**:
+- Created `jutsu_engine/api/startup_state.py` - Thread-safe singleton tracking:
+  - Database connectivity (`mark_db_ready()`)
+  - Lifespan initialization complete (`mark_ready()`)
+  - Startup errors (`mark_error()`)
+  - Detailed status with timestamps and uptime
+
+- Added `/api/status/health/ready` endpoint that:
+  - Returns 200 with detailed status when fully ready
+  - Returns 503 "Service Unavailable" if not ready (proper load balancer signal)
+  - Checks: lifespan complete, database connected, no startup errors
+
+- Updated lifespan handler in `main.py`:
+  - Calls `startup_state.mark_db_ready()` after database verification
+  - Calls `startup_state.mark_ready()` before yield (startup complete)
+  - Records errors with `startup_state.mark_error()` if critical failures occur
+
+- Updated nginx configuration:
+  - `/health` - Liveness check (nginx process alive)
+  - `/ready` - Readiness check (proxies to FastAPI, returns 503 if not ready)
+
+**Files Modified**:
+- `jutsu_engine/api/startup_state.py` (NEW) - Startup state singleton
+- `jutsu_engine/api/routes/status.py` - Added readiness endpoint
+- `jutsu_engine/api/main.py` - Integrated startup state tracking
+- `docker/nginx.conf` - Added `/ready` endpoint with proper 503 handling
+- `tests/unit/api/test_startup_state.py` (NEW) - Unit tests for startup state
+
+**Agent**: API_INFRASTRUCTURE_AGENT | **Layer**: INFRASTRUCTURE
+
+---
+
 #### **Fix: Test Infrastructure & Database Compatibility** (2025-12-15)
+
+#### **Fix: Schwab Token Expiration Blocking Dashboard Startup** (2025-12-27)
+
+**Fixed Schwab OAuth flow blocking Docker startup when token is expired**
+
+**Root Cause**:
+- The `SchwabDataFetcher._get_client()` method only checked if the token FILE existed
+- When the token existed but was expired (>7 days old), `schwab-py`'s `easy_client()` 
+  attempted to refresh the token via browser-based OAuth flow
+- In Docker/headless environments, this blocks forever since no browser is available
+- The dashboard startup called `sync_market_data()` which triggered this blocking behavior
+
+**Solution**:
+- Added `_check_token_validity()` method to verify token expiration, not just existence
+- Updated `_get_client()` to check both token existence AND validity before calling `easy_client()`
+- If token is expired in Docker, raises `AuthError` with helpful message instead of blocking
+- Users must re-authenticate via dashboard `/config` page when token expires
+
+**Files Modified**:
+- `jutsu_engine/data/fetchers/schwab.py` - Added token validity check and expiration handling
+
+**Agent**: SCHWAB_FETCHER_AGENT | **Layer**: INFRASTRUCTURE
+
+---
 
 **Fixed multiple test infrastructure issues that were causing test failures**
 

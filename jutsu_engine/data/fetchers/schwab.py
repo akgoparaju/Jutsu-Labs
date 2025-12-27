@@ -26,12 +26,13 @@ Example:
         end_date=datetime(2024, 12, 31)
     )
 """
+import json
 import os
 import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 import requests
 from schwab import auth
@@ -189,6 +190,45 @@ class SchwabDataFetcher(DataFetcher):
         logger.debug(f"Token path: {self.token_path}")
         logger.debug("Rate limiter initialized: 2 requests/second")
 
+    def _check_token_validity(self) -> Tuple[bool, bool, Optional[float]]:
+        """
+        Check if token file exists and is valid (not expired).
+
+        Schwab tokens expire after 7 days and require re-authentication.
+        This check prevents easy_client() from blocking in Docker environments
+        when the token is expired.
+
+        Returns:
+            Tuple of (exists: bool, is_valid: bool, expires_in_days: Optional[float])
+        """
+        if not os.path.exists(self.token_path):
+            return False, False, None
+
+        try:
+            with open(self.token_path, 'r') as f:
+                token_data = json.load(f)
+
+            # schwab-py wraps tokens with metadata including creation_timestamp
+            if 'creation_timestamp' not in token_data:
+                # Legacy token format - can't determine validity, assume expired
+                logger.warning("Token file has legacy format without creation_timestamp")
+                return True, False, None
+
+            creation_ts = token_data['creation_timestamp']
+            age_seconds = time.time() - creation_ts
+
+            # Schwab tokens expire after 7 days
+            max_age_seconds = 7 * 24 * 60 * 60
+            remaining_seconds = max_age_seconds - age_seconds
+            expires_in_days = remaining_seconds / (24 * 60 * 60)
+
+            is_valid = remaining_seconds > 0
+            return True, is_valid, expires_in_days
+
+        except (json.JSONDecodeError, KeyError, IOError) as e:
+            logger.warning(f"Error reading token file: {e}")
+            return True, False, None
+
     def _get_client(self) -> Client:
         """
         Get or create authenticated Schwab client.
@@ -209,14 +249,15 @@ class SchwabDataFetcher(DataFetcher):
             return self._client
 
         try:
-            # Check if token file exists
-            token_exists = os.path.exists(self.token_path)
+            # Check if token file exists AND is valid (not expired)
+            # CRITICAL: In Docker/headless environments, easy_client blocks forever
+            # if the token is missing OR expired (it tries to open browser for OAuth)
+            # See: https://schwab-py.readthedocs.io/en/latest/auth.html
+            token_exists, token_valid, expires_in_days = self._check_token_validity()
+            is_docker = Path('/app').exists()
 
             if not token_exists:
-                # CRITICAL: In Docker/headless environments, easy_client blocks forever
-                # waiting for interactive OAuth flow if no token exists
-                # See: https://schwab-py.readthedocs.io/en/latest/auth.html
-                if Path('/app').exists():
+                if is_docker:
                     logger.error(
                         f"No Schwab token found at {self.token_path}. "
                         "In Docker, authenticate via dashboard /config page first. "
@@ -232,8 +273,28 @@ class SchwabDataFetcher(DataFetcher):
                         "Browser will open for first-time authentication."
                     )
                     logger.info("Please log in to Schwab in the browser window that opens.")
+            elif not token_valid:
+                # Token exists but is expired (>7 days old)
+                if is_docker:
+                    logger.error(
+                        f"Schwab token at {self.token_path} has expired. "
+                        "In Docker, re-authenticate via dashboard /config page. "
+                        "Tokens expire after 7 days and require manual re-authentication."
+                    )
+                    raise AuthError(
+                        f"Schwab token has expired (>7 days old). "
+                        "Please re-authenticate via dashboard /config page."
+                    )
+                else:
+                    logger.warning(
+                        f"Token at {self.token_path} has expired. "
+                        "Browser will open for re-authentication."
+                    )
             else:
-                logger.info(f"Using existing token from {self.token_path}")
+                logger.info(
+                    f"Using existing token from {self.token_path} "
+                    f"(expires in {expires_in_days:.1f} days)"
+                )
 
             # Create client using schwab-py's easy_client
             # This handles OAuth flow, token storage, and auto-refresh
