@@ -1,3 +1,40 @@
+#### **Feature: Baseline Reference Data Persistence** (2025-12-27)
+
+**Persisted baseline calculation parameters to PostgreSQL for container restart resilience**
+
+**Problem**:
+- Baseline reference data (`initial_qqq_price`, `baseline_shares`) was only stored in `state/state.json`
+- Container restarts or state.json loss would corrupt baseline calculations
+- Dashboard showed incorrect baseline returns if reference price was lost
+
+**Solution**:
+- Stored baseline reference values in PostgreSQL `system_state` table:
+  - `baseline_initial_qqq_price`: $622.94 (QQQ close on Dec 4, 2025)
+  - `baseline_shares`: 16.052910... ($10,000 ÷ $622.94)
+  - `baseline_initial_capital`: $10,000
+  - `baseline_start_date`: 2025-12-04
+
+- Updated baseline calculation to use database-first approach:
+  - Priority: Database → state.json → hardcoded fallback
+  - Uses shares method when available: `baseline_value = shares × current_price`
+  - Falls back to returns method: `baseline_value = capital × (1 + qqq_return)`
+
+- Maintained backward compatibility:
+  - Old deployments continue using state.json
+  - API routes unchanged (read from PerformanceSnapshot)
+
+**Files Modified**:
+- `scripts/daily_dry_run.py` - Added `get_baseline_config_from_db()` function
+- `jutsu_engine/live/data_refresh.py` - Database-first baseline lookup
+- `scripts/backfill_paper_trading.py` (NEW) - Backfill missing paper trading days
+
+**Database Changes**:
+- Added 4 keys to `system_state` table for baseline reference data
+
+**Agent**: LIVE_TRADING_AGENT | **Layer**: INFRASTRUCTURE
+
+---
+
 #### **Feature: Application Readiness Probe System** (2025-12-27)
 
 **Implemented Kubernetes-style readiness probes for proper startup sequencing**
