@@ -56,6 +56,56 @@ def _is_weekend(timestamp: datetime) -> bool:
     return timestamp.weekday() in (5, 6)  # Saturday=5, Sunday=6
 
 
+def _is_market_holiday(timestamp: datetime) -> bool:
+    """
+    Check if timestamp falls on a market holiday (NYSE closed).
+
+    Defensive filter for read-side data quality protection.
+    For daily bars (time >= 20:00 or <= 04:00), uses date directly.
+    For intraday bars, converts to ET to get correct trading date.
+
+    Args:
+        timestamp: datetime to check
+
+    Returns:
+        True if NYSE is closed for holiday, False otherwise
+    """
+    import pytz
+    import pandas_market_calendars as mcal
+    from datetime import date, time, timezone
+
+    # For daily bars, use date directly (avoid ET conversion issue)
+    ts_time = timestamp.time()
+    if ts_time >= time(20, 0) or ts_time <= time(4, 0):
+        trading_date = timestamp.date()
+    else:
+        et = pytz.timezone('America/New_York')
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        ts_et = timestamp.astimezone(et)
+        trading_date = ts_et.date()
+
+    # Skip weekend check (handled by _is_weekend)
+    if trading_date.weekday() >= 5:
+        return False
+
+    # Get NYSE calendar - cache for efficiency
+    if not hasattr(_is_market_holiday, '_nyse_cache'):
+        _is_market_holiday._nyse_cache = {}
+
+    year = trading_date.year
+    if year not in _is_market_holiday._nyse_cache:
+        nyse = mcal.get_calendar('NYSE')
+        schedule = nyse.schedule(
+            start_date=date(year, 1, 1),
+            end_date=date(year, 12, 31)
+        )
+        _is_market_holiday._nyse_cache[year] = set(schedule.index.date)
+
+    trading_days = _is_market_holiday._nyse_cache[year]
+    return trading_date not in trading_days
+
+
 class DatabaseDataHandler(DataHandler):
     """
     Reads historical market data from database for backtesting.
@@ -242,8 +292,9 @@ class DatabaseDataHandler(DataHandler):
         )
 
         # Stream results to avoid loading all into memory
-        # Track weekend skips for summary logging
+        # Track skips for summary logging
         weekend_skip_count = 0
+        holiday_skip_count = 0
 
         for db_bar in query.yield_per(1000):
             # Filter out weekend dates (data quality issue)
@@ -251,15 +302,20 @@ class DatabaseDataHandler(DataHandler):
                 weekend_skip_count += 1
                 continue
 
+            # Filter out market holidays (defensive - should be filtered at sync)
+            if _is_market_holiday(db_bar.timestamp):
+                holiday_skip_count += 1
+                continue
+
             event = self._convert_to_event(db_bar)
             self._latest_bar = event
             yield event
 
-        # Log summary of skipped weekend bars
-        if weekend_skip_count > 0:
+        # Log summary of skipped bars
+        if weekend_skip_count > 0 or holiday_skip_count > 0:
             logger.warning(
-                f"Skipped {weekend_skip_count} weekend bars for {self.symbol} "
-                f"(data quality issue - weekend dates in database)"
+                f"Skipped {weekend_skip_count} weekend, {holiday_skip_count} holiday "
+                f"bars for {self.symbol} (data quality issue)"
             )
 
     def get_latest_bar(self, symbol: str) -> Optional[MarketDataEvent]:
@@ -634,8 +690,9 @@ class MultiSymbolDataHandler(DataHandler):
         )
 
         # Stream results to avoid loading all into memory
-        # Track weekend skips per symbol for summary logging
+        # Track skips per symbol for summary logging
         weekend_skip_counts = {symbol: 0 for symbol in self.symbols}
+        holiday_skip_counts = {symbol: 0 for symbol in self.symbols}
 
         for db_bar in query.yield_per(1000):
             # Filter out weekend dates (data quality issue)
@@ -643,19 +700,22 @@ class MultiSymbolDataHandler(DataHandler):
                 weekend_skip_counts[db_bar.symbol] += 1
                 continue
 
+            # Filter out market holidays (defensive - should be filtered at sync)
+            if _is_market_holiday(db_bar.timestamp):
+                holiday_skip_counts[db_bar.symbol] += 1
+                continue
+
             event = self._convert_to_event(db_bar)
             self._latest_bars[event.symbol] = event
             yield event
 
-        # Log summary of skipped weekend bars per symbol
-        total_skipped = sum(weekend_skip_counts.values())
-        if total_skipped > 0:
-            skipped_details = ", ".join(
-                f"{sym}:{cnt}" for sym, cnt in weekend_skip_counts.items() if cnt > 0
-            )
+        # Log summary of skipped bars
+        total_weekend = sum(weekend_skip_counts.values())
+        total_holiday = sum(holiday_skip_counts.values())
+        if total_weekend > 0 or total_holiday > 0:
             logger.warning(
-                f"Skipped {total_skipped} weekend bars across symbols "
-                f"(data quality issue - weekend dates in database): {skipped_details}"
+                f"Skipped {total_weekend} weekend, {total_holiday} holiday bars "
+                f"across symbols (data quality issue)"
             )
 
     def get_latest_bar(self, symbol: str) -> Optional[MarketDataEvent]:

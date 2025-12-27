@@ -60,7 +60,12 @@ def _is_market_holiday(timestamp: datetime) -> bool:
     Check if timestamp falls on a market holiday (NYSE closed).
 
     Uses NYSE calendar to determine if the trading date is a holiday.
-    Converts timestamp to Eastern Time to get the correct trading date.
+    
+    For daily bars, the date in the timestamp IS the trading date (regardless
+    of timezone). For intraday bars, we use the date after converting to ET.
+    
+    Note: Daily bars from Schwab come with timestamp like 22:00 PST which is
+    01:00 ET the next day - we must NOT use the ET-converted date for these.
 
     Args:
         timestamp: datetime to check (should be timezone-aware)
@@ -70,14 +75,25 @@ def _is_market_holiday(timestamp: datetime) -> bool:
     """
     import pytz
     import pandas_market_calendars as mcal
-    from datetime import date
+    from datetime import date, time
 
-    # Convert to Eastern Time to get the correct trading date
-    et = pytz.timezone('America/New_York')
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=timezone.utc)
-    ts_et = timestamp.astimezone(et)
-    trading_date = ts_et.date()
+    # For daily bars, use the date directly from the timestamp
+    # Daily bars have time at market close (typically 16:00 ET = 22:00 PST)
+    # Converting late-night PST to ET would give the NEXT day, which is wrong
+    # 
+    # Heuristic: If time is after 20:00 local or before 04:00 local, it's likely
+    # a daily bar and we should use the date as-is. Otherwise, convert to ET.
+    ts_time = timestamp.time()
+    if ts_time >= time(20, 0) or ts_time <= time(4, 0):
+        # Likely a daily bar - use date directly
+        trading_date = timestamp.date()
+    else:
+        # Intraday bar - convert to ET to get correct trading date
+        et = pytz.timezone('America/New_York')
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        ts_et = timestamp.astimezone(et)
+        trading_date = ts_et.date()
 
     # Skip weekend check (handled by _is_weekend)
     if trading_date.weekday() >= 5:
