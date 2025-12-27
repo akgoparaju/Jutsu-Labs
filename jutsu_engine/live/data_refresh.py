@@ -38,6 +38,7 @@ from jutsu_engine.data.models import (
     PerformanceSnapshot,
     Position,
     DataMetadata,
+    SystemState,
 )
 from jutsu_engine.live.mode import TradingMode
 from jutsu_engine.live.market_calendar import (
@@ -700,80 +701,69 @@ class DashboardDataRefresher:
                         logger.debug(f"Trend state defaulted to: {trend_state}")
 
                     # Calculate QQQ baseline (with initialization if needed)
-                    initial_qqq_price = state.get('initial_qqq_price')
+                    # Priority: 1) Database system_state, 2) state.json, 3) fallback value
+                    initial_qqq_price = None
+                    baseline_shares = None
+
+                    # First, try to get baseline config from database (most reliable)
+                    try:
+                        db_baseline_price = session.query(SystemState).filter(
+                            SystemState.key == 'baseline_initial_qqq_price'
+                        ).first()
+                        db_baseline_shares = session.query(SystemState).filter(
+                            SystemState.key == 'baseline_shares'
+                        ).first()
+
+                        if db_baseline_price and db_baseline_shares:
+                            initial_qqq_price = float(db_baseline_price.value)
+                            baseline_shares = float(db_baseline_shares.value)
+                            logger.info(
+                                f"Baseline from DATABASE: initial_qqq_price=${initial_qqq_price:.2f}, "
+                                f"shares={baseline_shares:.6f}"
+                            )
+                    except Exception as db_err:
+                        logger.warning(f"Could not query system_state for baseline: {db_err}")
+
+                    # Fallback to state.json if not in database
+                    if initial_qqq_price is None:
+                        initial_qqq_price = state.get('initial_qqq_price')
+                        if initial_qqq_price:
+                            logger.debug(f"Baseline from state.json: initial_qqq_price=${initial_qqq_price:.2f}")
+
                     logger.info(
                         f"Baseline check: initial_qqq_price={initial_qqq_price}, "
                         f"'QQQ' in prices={('QQQ' in prices)}, prices_keys={list(prices.keys())}"
                     )
-                    
+
                     if 'QQQ' in prices:
                         current_qqq_price = float(prices['QQQ'])
-                        
+
                         if initial_qqq_price is None:
-                            # FIX: Try to recover initial_qqq_price from database first
-                            # Query for earliest snapshot with baseline data to calculate back
-                            db_initial_qqq_price = None
-                            try:
-                                earliest_with_baseline = session.query(
-                                    PerformanceSnapshot.baseline_value,
-                                    PerformanceSnapshot.baseline_return,
-                                    PerformanceSnapshot.timestamp
-                                ).filter(
-                                    PerformanceSnapshot.baseline_value.isnot(None),
-                                    PerformanceSnapshot.baseline_return.isnot(None)
-                                ).order_by(PerformanceSnapshot.timestamp.asc()).first()
-                                
-                                if earliest_with_baseline:
-                                    # We have historical baseline data - recover initial_qqq_price
-                                    # Formula: baseline_value = initial_capital * (1 + qqq_return)
-                                    # baseline_return = qqq_return * 100
-                                    # So: qqq_return = baseline_return / 100
-                                    # At that time: current_qqq = initial_qqq * (1 + qqq_return)
-                                    # Therefore: initial_qqq = current_qqq / (1 + qqq_return)
-                                    # But we need the QQQ price AT THAT SNAPSHOT TIME, not now
-                                    # Better approach: use baseline_value to back-calculate
-                                    # baseline_value = 10000 * (1 + qqq_return)
-                                    # qqq_return = (baseline_value / 10000) - 1
-                                    # Need initial_qqq... use stored value if any metadata exists
-                                    logger.info(
-                                        f"Found historical baseline: value=${float(earliest_with_baseline.baseline_value):.2f}, "
-                                        f"return={float(earliest_with_baseline.baseline_return):.2f}% from {earliest_with_baseline.timestamp}"
-                                    )
-                                    # For now, we'll use known inception date value (Dec 4, 2025 QQQ close)
-                                    # This is the safest fallback as it's project-specific
-                                    db_initial_qqq_price = 622.94  # QQQ close on Dec 4, 2025
-                                    logger.info(f"Using historical initial_qqq_price: ${db_initial_qqq_price:.2f}")
-                            except Exception as db_err:
-                                logger.warning(f"Could not query database for baseline recovery: {db_err}")
-                            
-                            if db_initial_qqq_price:
-                                # Use recovered value from database/known history
-                                initial_qqq_price = db_initial_qqq_price
-                            else:
-                                # First run - no history, initialize with current QQQ price
-                                initial_qqq_price = current_qqq_price
-                                logger.info("No baseline history found, initializing with current QQQ price")
-                            
+                            # Last resort: use known inception date value (Dec 4, 2025 QQQ close)
+                            initial_qqq_price = 622.94
+                            logger.warning(
+                                f"Baseline not in database or state.json, using fallback: ${initial_qqq_price:.2f}"
+                            )
                             state['initial_qqq_price'] = initial_qqq_price
-                            # Save updated state back to file
                             with open(state_path, 'w') as f:
                                 json.dump(state, f, indent=2, default=str)
-                            
-                            # Calculate baseline with recovered/initialized price
-                            qqq_return = (current_qqq_price / initial_qqq_price) - 1
-                            baseline_value = float(initial_capital) * (1 + qqq_return)
-                            baseline_return = qqq_return * 100
+
+                        # Calculate baseline using shares method if available, otherwise use returns method
+                        if baseline_shares:
+                            # Shares method: baseline_value = shares * current_price
+                            baseline_value = baseline_shares * current_qqq_price
+                            baseline_return = (baseline_value / float(initial_capital) - 1) * 100
                             logger.info(
-                                f"QQQ baseline INITIALIZED: ${initial_qqq_price:.2f} -> ${current_qqq_price:.2f}, "
-                                f"baseline=${baseline_value:.2f} ({baseline_return:+.2f}%)"
+                                f"Baseline (shares method): {baseline_shares:.6f} shares × ${current_qqq_price:.2f} = "
+                                f"${baseline_value:.2f} ({baseline_return:+.2f}%)"
                             )
                         else:
-                            # Calculate baseline based on QQQ price change since inception
+                            # Returns method: baseline based on QQQ price change since inception
                             qqq_return = (current_qqq_price / initial_qqq_price) - 1
                             baseline_value = float(initial_capital) * (1 + qqq_return)
                             baseline_return = qqq_return * 100
                             logger.info(
-                                f"Baseline calculated: QQQ ${initial_qqq_price:.2f} -> ${current_qqq_price:.2f}, "
+                                f"Baseline (returns method): QQQ ${initial_qqq_price:.2f} -> ${current_qqq_price:.2f}, "
                                 f"baseline=${baseline_value:.2f} ({baseline_return:+.2f}%)"
                             )
                     else:

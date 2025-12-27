@@ -54,7 +54,7 @@ from jutsu_engine.live.position_rounder import PositionRounder
 from jutsu_engine.live.mode import TradingMode
 from jutsu_engine.live.executor_router import ExecutorRouter
 from jutsu_engine.live.data_freshness import DataFreshnessChecker, DataFreshnessError
-from jutsu_engine.data.models import Position
+from jutsu_engine.data.models import Position, SystemState
 from jutsu_engine.utils.config import get_database_url, get_database_type, DATABASE_TYPE_SQLITE
 
 # Setup logging
@@ -75,6 +75,51 @@ def load_config(config_path: Path = Path('config/live_trading_config.yaml')) -> 
         config = yaml.safe_load(f)
     logger.info(f"Config loaded: {config['strategy']['name']}")
     return config
+
+
+def get_baseline_config_from_db(db_session) -> Dict:
+    """
+    Get baseline configuration from database system_state table.
+    
+    Returns dict with:
+        - initial_qqq_price: float (QQQ price on paper trading start date)
+        - baseline_shares: float (number of QQQ shares for baseline)
+        - initial_capital: float (starting capital for baseline)
+        - start_date: str (date paper trading started)
+    
+    Returns empty dict if no baseline config found in database.
+    """
+    try:
+        baseline_config = {}
+        keys_to_fetch = [
+            'baseline_initial_qqq_price',
+            'baseline_shares', 
+            'baseline_initial_capital',
+            'baseline_start_date'
+        ]
+        
+        for key in keys_to_fetch:
+            result = db_session.query(SystemState).filter(
+                SystemState.key == key
+            ).first()
+            
+            if result:
+                # Convert based on value_type
+                if result.value_type == 'float':
+                    baseline_config[key.replace('baseline_', '')] = float(result.value)
+                elif result.value_type == 'date':
+                    baseline_config[key.replace('baseline_', '')] = result.value
+                else:
+                    baseline_config[key.replace('baseline_', '')] = result.value
+        
+        if baseline_config:
+            logger.info(f"  Baseline config loaded from database: initial_qqq_price=${baseline_config.get('initial_qqq_price', 'N/A')}")
+        
+        return baseline_config
+        
+    except Exception as e:
+        logger.warning(f"  Failed to load baseline config from database: {e}")
+        return {}
 
 
 def initialize_schwab_client():
@@ -552,21 +597,40 @@ def main(check_freshness: bool = False):
         # Get current QQQ price
         qqq_price = current_prices.get('QQQ', current_prices.get(symbols['signal_symbol']))
 
-        # Get initial QQQ price from state (stored on first run)
-        initial_qqq_price = state.get('initial_qqq_price')
-
-        if initial_qqq_price is None:
-            # First run - store initial QQQ price
-            initial_qqq_price = float(qqq_price)
-            state['initial_qqq_price'] = initial_qqq_price
-            logger.info(f"  QQQ baseline initialized: ${initial_qqq_price:.2f}")
-            baseline_value = initial_capital
-            baseline_return = 0.0
+        # Get baseline config from database first (persistent), then fall back to state.json
+        # Database storage ensures baseline survives container restarts and state.json loss
+        baseline_db_config = get_baseline_config_from_db(db_session)
+        
+        if baseline_db_config.get('initial_qqq_price'):
+            # Use database values (preferred - persistent storage)
+            initial_qqq_price = baseline_db_config['initial_qqq_price']
+            baseline_shares = baseline_db_config.get('shares', float(initial_capital) / initial_qqq_price)
+            logger.info(f"  Baseline from DATABASE: initial_qqq_price=${initial_qqq_price:.2f}, shares={baseline_shares:.4f}")
+            
+            # Calculate baseline using shares * current price
+            baseline_value = Decimal(str(baseline_shares)) * Decimal(str(qqq_price))
+            baseline_return = (float(baseline_value) / float(initial_capital) - 1) * 100
+            
+            # Sync to state.json for backward compatibility
+            if state.get('initial_qqq_price') != initial_qqq_price:
+                state['initial_qqq_price'] = initial_qqq_price
+                logger.info(f"  Synced initial_qqq_price to state.json")
         else:
-            # Calculate baseline based on QQQ price change since inception
-            qqq_return = (float(qqq_price) / initial_qqq_price) - 1
-            baseline_value = initial_capital * Decimal(str(1 + qqq_return))
-            baseline_return = qqq_return * 100
+            # Fall back to state.json (legacy behavior)
+            initial_qqq_price = state.get('initial_qqq_price')
+            
+            if initial_qqq_price is None:
+                # First run - store initial QQQ price
+                initial_qqq_price = float(qqq_price)
+                state['initial_qqq_price'] = initial_qqq_price
+                logger.info(f"  QQQ baseline initialized: ${initial_qqq_price:.2f}")
+                baseline_value = initial_capital
+                baseline_return = 0.0
+            else:
+                # Calculate baseline based on QQQ price change since inception
+                qqq_return = (float(qqq_price) / initial_qqq_price) - 1
+                baseline_value = initial_capital * Decimal(str(1 + qqq_return))
+                baseline_return = qqq_return * 100
 
         logger.info(f"  QQQ Baseline: ${baseline_value:,.2f} ({baseline_return:+.2f}%)")
 
