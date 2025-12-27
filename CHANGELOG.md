@@ -1,3 +1,38 @@
+#### **Fix: Holiday Filtering Timezone Bug for Daily Bars** (2025-12-27)
+
+**Corrected market holiday detection for daily bars with late-night timestamps**
+
+**Problem**:
+- Daily bars from Schwab API have timestamps at 22:00 PST (-08:00), representing market close
+- The `_is_market_holiday()` function converted these timestamps to Eastern Time
+- Converting 22:00 PST → 01:00 ET the NEXT day caused wrong date evaluation
+- Result: Christmas 2025 (12/25) bars were NOT filtered because they appeared as 12/26
+
+**Root Cause**:
+- Schwab returns daily bar for 12/25 with timestamp `2025-12-25 22:00:00-08:00`
+- Converting to ET: 22:00 PST + 3 hours = 01:00 ET on 12/26
+- Holiday check evaluated 12/26 (a trading day) instead of 12/25 (Christmas)
+- 20 holiday bars for 12/25 were incorrectly inserted into the database
+
+**Solution**:
+- Modified `_is_market_holiday()` in data_sync.py:
+  - For timestamps with time >= 20:00 or <= 04:00, use date directly (daily bar pattern)
+  - For intraday timestamps, continue converting to ET for correct trading date
+- Added defensive `_is_market_holiday()` to database.py for read-side filtering
+- Updated `DatabaseDataHandler.get_next_bar()` and `MultiSymbolDataHandler.get_next_bar()`
+
+**Database Cleanup**:
+- Deleted 20 rows for 2025-12-25 from market_data table
+- Updated data_metadata to point to correct last_bar_timestamp (12/23)
+
+**Files Modified**:
+- `jutsu_engine/application/data_sync.py` - Fixed timezone handling in `_is_market_holiday()`
+- `jutsu_engine/data/handlers/database.py` - Added defensive holiday filtering
+
+**Agent**: DATA_SYNC_AGENT | **Layer**: DATA_INFRASTRUCTURE
+
+---
+
 #### **Feature: Baseline Reference Data Persistence** (2025-12-27)
 
 **Persisted baseline calculation parameters to PostgreSQL for container restart resilience**
