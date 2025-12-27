@@ -26,6 +26,7 @@ import asyncio
 import json
 import logging
 import sys
+import time
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -339,10 +340,12 @@ class DashboardDataRefresher:
                 else:
                     token_path = project_root / token_path_raw
                 
-                # CRITICAL: Check if token exists BEFORE calling easy_client
+                # CRITICAL: Check if token exists AND is valid BEFORE calling easy_client
                 # In Docker/headless environments, easy_client blocks forever waiting for
-                # interactive OAuth flow if no token exists
+                # interactive OAuth flow if token is missing OR expired
                 # See: https://schwab-py.readthedocs.io/en/latest/auth.html
+                is_docker = Path('/app').exists()
+
                 if not token_path.exists():
                     logger.warning(
                         f"No Schwab token found at {token_path}. "
@@ -350,6 +353,34 @@ class DashboardDataRefresher:
                         "Falling back to database prices."
                     )
                     raise FileNotFoundError(f"Token not found: {token_path}")
+
+                # Check if token is expired (>7 days old)
+                # schwab-py tokens have creation_timestamp in the JSON
+                try:
+                    with open(token_path, 'r') as f:
+                        token_data = json.load(f)
+
+                    if 'creation_timestamp' in token_data:
+                        creation_ts = token_data['creation_timestamp']
+                        age_seconds = time.time() - creation_ts
+                        max_age_seconds = 7 * 24 * 60 * 60  # 7 days
+
+                        if age_seconds > max_age_seconds:
+                            age_days = age_seconds / (24 * 60 * 60)
+                            logger.error(
+                                f"Schwab token at {token_path} has expired ({age_days:.1f} days old). "
+                                "In Docker, re-authenticate via dashboard /config page. "
+                                "Tokens expire after 7 days and require manual re-authentication."
+                            )
+                            if is_docker:
+                                raise ValueError(
+                                    "Schwab token has expired (>7 days old). "
+                                    "Please re-authenticate via dashboard /config page."
+                                )
+                            # On local dev, let easy_client handle refresh via browser
+                            logger.warning("Token expired - browser will open for re-authentication")
+                except (json.JSONDecodeError, IOError) as e:
+                    logger.warning(f"Could not read token file for expiration check: {e}")
                 
                 # IMPORTANT: schwab-py only allows 127.0.0.1, NOT localhost
                 # See: https://schwab-py.readthedocs.io/en/latest/auth.html#callback-url-advisory
