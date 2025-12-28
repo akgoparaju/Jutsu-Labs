@@ -520,9 +520,9 @@ class DashboardDataRefresher:
         
         try:
             # Get market data from database
-            from jutsu_engine.data.database_handler import DatabaseHandler
-            
-            db_handler = DatabaseHandler(db_path=self._db_path)
+            from jutsu_engine.data.handlers.database import DatabaseDataHandler
+
+            db_handler = DatabaseDataHandler(db_path=self._db_path)
             
             # Get QQQ data for main indicators
             qqq_df = db_handler.get_historical_data('QQQ', lookback=250)
