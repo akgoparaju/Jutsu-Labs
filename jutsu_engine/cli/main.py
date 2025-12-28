@@ -21,6 +21,7 @@ import importlib
 import inspect
 import os
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
@@ -39,6 +40,33 @@ from jutsu_engine.data.models import Base
 from jutsu_engine.strategies.sma_crossover import SMA_Crossover
 
 logger = setup_logger('CLI', log_to_console=True)
+
+# Eastern timezone for NYSE trading date extraction
+ET = ZoneInfo('America/New_York')
+
+
+def get_trading_date(timestamp: datetime) -> str:
+    """
+    Extract NYSE trading date from timestamp.
+    
+    Daily bars from Schwab have UTC timestamps that may display as the previous
+    day in Pacific time. For consistent display, we extract dates using Eastern
+    time since NYSE trading dates are defined in ET.
+    
+    Args:
+        timestamp: UTC or timezone-aware datetime
+        
+    Returns:
+        Date string in YYYY-MM-DD format representing the NYSE trading date
+    """
+    if timestamp is None:
+        return 'N/A'
+    # Convert to Eastern time and extract date
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    et_time = timestamp.astimezone(ET)
+    return et_time.strftime('%Y-%m-%d')
+
 
 # Load environment variables from .env file
 load_dotenv()
@@ -261,8 +289,9 @@ def sync(
             click.echo("=" * 90)
 
             for item in metadata_list:
-                first_bar_str = item['first_bar'].strftime('%Y-%m-%d') if item['first_bar'] else 'N/A'
-                last_bar_str = item['last_bar'].strftime('%Y-%m-%d') if item['last_bar'] else 'N/A'
+                # Use Eastern Time for date extraction (NYSE trading dates)
+                first_bar_str = get_trading_date(item['first_bar'])
+                last_bar_str = get_trading_date(item['last_bar'])
 
                 click.echo(
                     f"{item['symbol']:<12} {item['timeframe']:<10} {first_bar_str:<12} "
@@ -286,11 +315,14 @@ def sync(
 
                     writer.writeheader()
                     for item in metadata_list:
+                        # Use Eastern Time for date extraction (NYSE trading dates)
+                        first_bar_str = get_trading_date(item['first_bar'])
+                        last_bar_str = get_trading_date(item['last_bar'])
                         writer.writerow({
                             'symbol': item['symbol'],
                             'timeframe': item['timeframe'],
-                            'first_bar': item['first_bar'].strftime('%Y-%m-%d') if item['first_bar'] else '',
-                            'last_bar': item['last_bar'].strftime('%Y-%m-%d') if item['last_bar'] else '',
+                            'first_bar': first_bar_str if first_bar_str != 'N/A' else '',
+                            'last_bar': last_bar_str if last_bar_str != 'N/A' else '',
                             'total_bars': item['total_bars'],
                         })
 
@@ -399,6 +431,11 @@ def sync(
                 # Go back 4 days to account for weekend + UTC timezone offset
                 safe_date = datetime.now(timezone.utc).date() - timedelta(days=4)
                 end_date = datetime.combine(safe_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+                
+                # CRITICAL: Ensure end_date >= start_date
+                # The 4-day buffer can cause end_date < start_date when user specifies recent dates
+                if end_date < start_date:
+                    end_date = datetime.now(timezone.utc)
             else:
                 end_date = datetime.now(timezone.utc)
 

@@ -1,3 +1,71 @@
+#### **Fix: Sync Date Calculation and Timezone Normalization** (2025-12-27)
+
+**Resolved sync command "Start date must be before end date" error**
+
+**Problem**:
+- `jutsu sync --symbol TQQQ --start 2025-12-25` failed with error:
+- `Start date (2025-12-24 00:00:00-08:00) must be before end date (2025-12-24 00:00:00+00:00)`
+- Two root causes identified
+
+**Root Cause 1 - CLI Date Calculation**:
+- When `--end` not specified for daily bars, CLI calculates `end_date = now - 4 days`
+- This caused `end_date < start_date` when user specified recent start dates
+- Example: start=Dec 25, end=Dec 23 (4 days before Dec 27) → invalid range
+
+**Root Cause 2 - Timezone Mismatch**:
+- PostgreSQL returns timestamps with local timezone (e.g., `-08:00 PST`)
+- Code only handled naive datetimes with `if tzinfo is None: replace(tzinfo=UTC)`
+- When PostgreSQL returned `2025-12-24 00:00:00-08:00`, check passed but no conversion
+- Comparison of PST datetime vs UTC datetime failed
+
+**Solution**:
+- Added guard in CLI: if `end_date < start_date`, use `datetime.now(UTC)` instead
+- Added `_normalize_to_utc()` helper that handles naive, UTC, and non-UTC timezones
+- Updated all timestamp handling to use `.astimezone(timezone.utc)` for proper conversion
+
+**Files Modified**:
+- `jutsu_engine/cli/main.py` - Added end_date guard
+- `jutsu_engine/application/data_sync.py` - Added `_normalize_to_utc()` and fixed 4+ places
+
+**Agent**: DATABASE_HANDLER_AGENT | **Layer**: INFRASTRUCTURE
+
+---
+
+#### **Investigation: Schwab API Daily Bar Timestamp Convention** (2025-12-27)
+
+**Confirmed: 06:00 UTC timestamp is Schwab's API convention, not a bug**
+
+**Question Investigated**:
+- Why does Schwab API return 06:00 UTC (01:00 AM ET) timestamps for daily bars?
+- Our design calls for "trading hours only" (9:30 AM - 4:00 PM ET)
+- Is this a data quality issue?
+
+**Data-Driven Evidence**:
+```
+Raw Schwab API Response:
+- Daily Bar Epoch: 1766728800000 ms → 2025-12-26 06:00:00 UTC → 01:00 AM ET
+- 15m Bar Epoch:   1766781900000 ms → 2025-12-26 20:45:00 UTC → 03:45 PM ET
+
+Test: need_extended_hours_data=True vs False
+- Same timestamps, same OHLCV prices for daily bars
+- Flag affects intraday bars, NOT daily bars
+```
+
+**Conclusion**:
+- **NOT a bug** - This is Schwab's documented convention for daily bars
+- Daily bars represent entire trading day (9:30 AM - 4:00 PM ET)
+- The 06:00 UTC is an arbitrary anchor point, not when trading occurred
+- OHLCV data correctly represents regular trading hours prices
+
+**Design Compliance**:
+- ✅ `need_extended_hours_data=False` ensures regular hours prices
+- ✅ Earlier fix extracts trading DATE using Eastern Time for correct display
+- ✅ No additional code changes required
+
+**Agent**: SCHWAB_FETCHER_AGENT | **Layer**: INFRASTRUCTURE
+
+---
+
 #### **Fix: Holiday Filtering Timezone Bug for Daily Bars** (2025-12-27)
 
 **Corrected market holiday detection for daily bars with late-night timestamps**
@@ -28,6 +96,53 @@
 **Files Modified**:
 - `jutsu_engine/application/data_sync.py` - Fixed timezone handling in `_is_market_holiday()`
 - `jutsu_engine/data/handlers/database.py` - Added defensive holiday filtering
+
+**Agent**: DATA_SYNC_AGENT | **Layer**: DATA_INFRASTRUCTURE
+
+---
+
+#### **Fix: Trading Date Display Using Eastern Time** (2025-12-27)
+
+**Corrected date extraction to use NYSE Eastern Time for consistent display**
+
+**Problem**:
+- Schwab API uses 06:00 UTC as timestamp convention for daily bars
+- Pacific timezone users saw "12/25" (Christmas) for trading day 12/26 bars
+- `timestamp::date` extracted local date, causing off-by-one errors in western timezones
+
+**Root Cause Analysis**:
+- NYSE trading hours (9:30 AM - 4:00 PM ET) occur on the same calendar day in ALL US timezones
+- Schwab's 06:00 UTC timestamp = 10:00 PM PT previous day, causing date rollback
+- Pacific users expected to see trading date 12/26, but saw 12/25
+
+**Solution**:
+Extract dates using Eastern Time since NYSE trading dates are defined in ET:
+
+```python
+# Python - jutsu_engine/cli/main.py
+from zoneinfo import ZoneInfo
+ET = ZoneInfo('America/New_York')
+et_time = timestamp.astimezone(ET)
+trading_date = et_time.strftime('%Y-%m-%d')
+```
+
+```sql
+-- SQL queries
+(timestamp AT TIME ZONE 'America/New_York')::date as trading_date
+```
+
+**Files Modified**:
+- `jutsu_engine/cli/main.py` - Added `get_trading_date()` helper, updated `sync --list` display
+- `scripts/backfill_paper_trading.py` - Updated SQL queries to use ET for date matching
+
+**Verification**:
+```
+# Before fix (Pacific timezone display):
+QQQ 1D: Last Bar = 2025-12-25 (WRONG - shows Christmas for 12/26 trading day)
+
+# After fix (Eastern Time extraction):
+QQQ 1D: Last Bar = 2025-12-26 (CORRECT - shows actual trading day)
+```
 
 **Agent**: DATA_SYNC_AGENT | **Layer**: DATA_INFRASTRUCTURE
 

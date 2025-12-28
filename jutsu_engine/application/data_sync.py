@@ -38,6 +38,36 @@ from jutsu_engine.utils.logging_config import get_data_logger
 logger = get_data_logger('SYNC')
 
 
+def _normalize_to_utc(dt: datetime) -> datetime:
+    """
+    Normalize datetime to UTC timezone.
+    
+    Handles three cases:
+    1. Naive datetime (no tzinfo) - assumes UTC and attaches tzinfo
+    2. UTC datetime - returns as-is
+    3. Non-UTC timezone (e.g., PST, EST) - converts to UTC
+    
+    This is critical for PostgreSQL which may return timestamps with
+    local timezone offset (e.g., -08:00 PST) that need conversion to
+    UTC for consistent comparisons.
+    
+    Args:
+        dt: datetime to normalize (can be naive or timezone-aware)
+        
+    Returns:
+        datetime in UTC timezone
+    """
+    if dt.tzinfo is None:
+        # Naive datetime - assume UTC
+        return dt.replace(tzinfo=timezone.utc)
+    elif dt.tzinfo == timezone.utc:
+        # Already UTC
+        return dt
+    else:
+        # Convert from non-UTC timezone to UTC
+        return dt.astimezone(timezone.utc)
+
+
 def _is_weekend(timestamp: datetime) -> bool:
     """
     Check if timestamp falls on a weekend (Saturday=5, Sunday=6).
@@ -265,11 +295,10 @@ class DataSync:
         if not force_refresh:
             metadata = self._get_metadata(symbol, timeframe)
             if metadata:
-                # Ensure last_bar_timestamp is timezone-aware (UTC)
-                # SQLite may return naive datetime even with timezone=True
-                last_bar = metadata.last_bar_timestamp
-                if last_bar.tzinfo is None:
-                    last_bar = last_bar.replace(tzinfo=timezone.utc)
+                # Normalize last_bar_timestamp to UTC
+                # PostgreSQL may return timestamps with local timezone (e.g., -08:00 PST)
+                # SQLite may return naive datetime
+                last_bar = _normalize_to_utc(metadata.last_bar_timestamp)
 
                 # Get earliest bar timestamp for backfill detection
                 first_bar_result = (
@@ -286,14 +315,8 @@ class DataSync:
                 )
 
                 if first_bar_result:
-                    first_bar = first_bar_result[0]
-                    # Ensure first_bar is timezone-aware (UTC)
-                    if first_bar.tzinfo is None:
-                        first_bar = first_bar.replace(tzinfo=timezone.utc)
-                    
-                    # Ensure last_bar is also timezone-aware before comparison
-                    if last_bar.tzinfo is None:
-                        last_bar = last_bar.replace(tzinfo=timezone.utc)
+                    # Normalize first_bar to UTC (handles both naive and non-UTC timezones)
+                    first_bar = _normalize_to_utc(first_bar_result[0])
 
                     # Determine fetch strategy based on start_date vs existing data range
                     if start_date.date() >= last_bar.date():
@@ -889,10 +912,8 @@ class DataSync:
             timeframe = metadata.timeframe
             symbol_key = f"{symbol}:{timeframe}"
 
-            # Defensive: Ensure last_bar_timestamp is timezone-aware (UTC)
-            last_bar = metadata.last_bar_timestamp
-            if last_bar.tzinfo is None:
-                last_bar = last_bar.replace(tzinfo=timezone.utc)
+            # Normalize last_bar_timestamp to UTC (handles naive, UTC, and non-UTC timezones)
+            last_bar = _normalize_to_utc(metadata.last_bar_timestamp)
 
             # Determine start_date based on force mode
             if force:
@@ -905,9 +926,7 @@ class DataSync:
                     .scalar()
                 )
                 if first_bar_query:
-                    first_bar = first_bar_query
-                    if first_bar.tzinfo is None:
-                        first_bar = first_bar.replace(tzinfo=timezone.utc)
+                    first_bar = _normalize_to_utc(first_bar_query)
                     start_date = first_bar.replace(hour=0, minute=0, second=0, microsecond=0)
                     logger.info(
                         f"🔄 {symbol_key}: Force mode - full refresh from {start_date.date()}"
@@ -1103,16 +1122,14 @@ class DataSync:
             # Get last bar timestamp (use metadata for consistency)
             last_bar = metadata.last_bar_timestamp
 
-            # Defensive: Ensure timestamps are timezone-aware (UTC)
+            # Normalize timestamps to UTC (handles naive, UTC, and non-UTC timezones)
             if first_bar_result:
-                first_bar = first_bar_result[0]
-                if first_bar.tzinfo is None:
-                    first_bar = first_bar.replace(tzinfo=timezone.utc)
+                first_bar = _normalize_to_utc(first_bar_result[0])
             else:
                 first_bar = None
 
-            if last_bar and last_bar.tzinfo is None:
-                last_bar = last_bar.replace(tzinfo=timezone.utc)
+            if last_bar:
+                last_bar = _normalize_to_utc(last_bar)
 
             results.append({
                 'symbol': symbol,
