@@ -19,6 +19,7 @@ from sqlalchemy import (
     ForeignKey,
     LargeBinary,
     JSON,
+    func,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -55,7 +56,7 @@ class MarketData(Base):
 
     # Metadata
     data_source = Column(String(20), nullable=False)  # 'schwab', 'csv', 'yahoo', etc.
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     is_valid = Column(Boolean, default=True)  # For marking bad data without deleting
 
     # Unique constraint: one bar per symbol/timeframe/timestamp
@@ -197,7 +198,7 @@ class LiveTrade(Base):
     mode = Column(String(20), nullable=False)  # 'offline_mock' or 'online_live'
 
     # Metadata
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     __table_args__ = (
         Index('idx_live_trades_mode_ts', 'mode', 'timestamp'),
@@ -234,7 +235,7 @@ class Position(Base):
 
     mode = Column(String(20), nullable=False)  # 'offline_mock' or 'online_live'
 
-    last_updated = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    last_updated = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     __table_args__ = (
         UniqueConstraint('symbol', 'mode', name='uix_position_symbol_mode'),
@@ -290,7 +291,7 @@ class PerformanceSnapshot(Base):
 
     mode = Column(String(20), nullable=False)  # 'offline_mock' or 'online_live'
 
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     __table_args__ = (
         Index('idx_perf_snapshot_mode_ts', 'mode', 'timestamp'),
@@ -328,7 +329,7 @@ class ConfigOverride(Base):
     is_active = Column(Boolean, default=True)  # Currently applied
     reason = Column(String(200))  # Why override was created
 
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     deactivated_at = Column(DateTime(timezone=True))  # When override was removed
 
     __table_args__ = (
@@ -395,7 +396,8 @@ class SystemState(Base):
     value = Column(Text)  # JSON-serialized value
     value_type = Column(String(20))  # 'string', 'int', 'float', 'json', 'datetime'
 
-    last_updated = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    # Renamed from 'last_updated' to 'updated_at' for consistency
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     def __repr__(self):
         return f"<SystemState({self.key}={self.value[:50] if self.value else None}...)>"
@@ -451,7 +453,7 @@ class User(Base):
 
     # Session tracking
     last_login = Column(DateTime(timezone=True))
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     # Two-Factor Authentication (2FA/TOTP)
     totp_secret = Column(String(32), nullable=True)  # Base32 secret for TOTP
@@ -505,7 +507,7 @@ class Passkey(Base):
     aaguid = Column(String(36), nullable=True)
 
     # Timestamps
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     last_used_at = Column(DateTime(timezone=True), nullable=True)
 
     # Relationship

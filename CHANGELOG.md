@@ -1,3 +1,37 @@
+#### **Fix: PostgreSQL Schema NOT NULL Constraints and Column Naming** (2025-12-27)
+
+**Resolved two schema errors preventing proper database inserts**
+
+**Problem 1 - `updated_at` Column Missing**:
+- Error: `column "updated_at" does not exist at character 32`
+- SQLAlchemy model and init script used `last_updated`, but queries expected `updated_at`
+- Inconsistency between schema definition and actual usage
+
+**Problem 2 - `created_at` NOT NULL Violation**:
+- Error: `null value in column "created_at" of relation "performance_snapshots" violates not-null constraint`
+- SQLAlchemy used Python-side `default=datetime.utcnow` which doesn't apply to raw SQL inserts
+- Database had no `DEFAULT` constraint, causing NULLs on direct inserts
+
+**Solution**:
+- Renamed `system_state.last_updated` → `system_state.updated_at` for consistency
+- Changed all `default=datetime.utcnow` to `server_default=func.now()` in SQLAlchemy models
+- Added `NOT NULL DEFAULT CURRENT_TIMESTAMP` to all timestamp columns in init script
+
+**Files Modified**:
+- `scripts/init_postgres_tables.sql` - Updated column names and constraints
+- `jutsu_engine/data/models.py` - Added `func` import, fixed `server_default` usage
+
+**Migration Required** (for existing databases):
+```sql
+ALTER TABLE system_state RENAME COLUMN last_updated TO updated_at;
+UPDATE performance_snapshots SET created_at = timestamp WHERE created_at IS NULL;
+ALTER TABLE performance_snapshots ALTER COLUMN created_at SET NOT NULL;
+```
+
+**Agent**: DATABASE_HANDLER_AGENT | **Layer**: INFRASTRUCTURE
+
+---
+
 #### **Fix: Sync Date Calculation and Timezone Normalization** (2025-12-27)
 
 **Resolved sync command "Start date must be before end date" error**

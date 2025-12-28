@@ -23,6 +23,50 @@ This will automatically diagnose:
 
 ## Error Categories
 
+### 0. PostgreSQL Docker Issues (Production)
+
+#### Symptom: Schema Errors After PostgreSQL Upgrade
+```
+ERROR: column "updated_at" does not exist at character 32
+ERROR: null value in column "created_at" violates not-null constraint
+```
+
+#### Root Cause
+PostgreSQL major version upgrades (e.g., v16 → v17) require data migration. The new version starts with empty tables.
+
+#### Solution
+
+**Step 1: Backup Before Upgrade**
+```bash
+# Find container ID
+docker ps | grep postgres
+
+# Create backup (replace CONTAINER_ID)
+docker exec CONTAINER_ID pg_dump -U jutsudB -d jutsu_labs > jutsu_backup_$(date +%Y%m%d_%H%M%S).sql
+```
+
+**Step 2: After Upgrade - Restore Tables**
+```bash
+# Option A: Initialize fresh tables
+docker exec -i CONTAINER_ID psql -U jutsudB -d jutsu_labs < scripts/init_postgres_tables.sql
+
+# Option B: Restore from backup
+docker exec -i CONTAINER_ID psql -U jutsudB -d jutsu_labs < jutsu_backup_YYYYMMDD_HHMMSS.sql
+```
+
+**Step 3: Apply Schema Migrations (if needed)**
+```bash
+# Fix column naming issues
+docker exec -i CONTAINER_ID psql -U jutsudB -d jutsu_labs << 'EOF'
+ALTER TABLE system_state RENAME COLUMN last_updated TO updated_at;
+ALTER TABLE performance_snapshots ALTER COLUMN created_at SET DEFAULT CURRENT_TIMESTAMP;
+EOF
+```
+
+See `docs/DATABASE_OPERATIONS.md` for complete backup/restore procedures.
+
+---
+
 ### 1. Authentication Errors (401 Unauthorized)
 
 #### Symptom

@@ -115,10 +115,13 @@ def load_historical_data(target_date: date) -> dict:
     market_data = {}
 
     for symbol in symbols:
+        # Use Eastern Time for date extraction (NYSE trading dates)
         query = f"""
-            SELECT timestamp::date as date, open, high, low, close, volume
+            SELECT (timestamp AT TIME ZONE 'America/New_York')::date as date, 
+                   open, high, low, close, volume
             FROM market_data
-            WHERE symbol = '{symbol}' AND timeframe = '1D' AND timestamp::date <= '{target_date}'
+            WHERE symbol = '{symbol}' AND timeframe = '1D' 
+              AND (timestamp AT TIME ZONE 'America/New_York')::date <= '{target_date}'
             ORDER BY timestamp ASC
         """
         df = pd.read_sql(query, conn)
@@ -141,11 +144,12 @@ def get_eod_prices(target_date: date) -> dict:
 
     prices = {}
 
-    # Get daily data for QQQ, TLT
+    # Get daily data for QQQ, TLT (use Eastern Time for date matching)
     for symbol in ['QQQ', 'TLT']:
         cur.execute(f"""
             SELECT close FROM market_data
-            WHERE symbol = '{symbol}' AND timeframe = '1D' AND timestamp::date = '{target_date}'
+            WHERE symbol = '{symbol}' AND timeframe = '1D' 
+              AND (timestamp AT TIME ZONE 'America/New_York')::date = '{target_date}'
             LIMIT 1
         """)
         row = cur.fetchone()
@@ -154,10 +158,12 @@ def get_eod_prices(target_date: date) -> dict:
             logger.info(f"    {symbol} EOD: ${prices[symbol]:.2f}")
 
     # Get last 15m bar for TQQQ (no daily data available)
+    # Note: For 15m bars, use Eastern Time for date matching
     for symbol in ['TQQQ']:
         cur.execute(f"""
             SELECT close FROM market_data
-            WHERE symbol = '{symbol}' AND timeframe = '15m' AND timestamp::date = '{target_date}'
+            WHERE symbol = '{symbol}' AND timeframe = '15m' 
+              AND (timestamp AT TIME ZONE 'America/New_York')::date = '{target_date}'
             ORDER BY timestamp DESC
             LIMIT 1
         """)

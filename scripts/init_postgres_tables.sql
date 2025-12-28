@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS market_data (
     close NUMERIC(18, 6) NOT NULL,
     volume BIGINT NOT NULL,
     data_source VARCHAR(20) NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     is_valid BOOLEAN DEFAULT TRUE
 );
 
@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS live_trades (
     z_score NUMERIC(10, 6),
     reason VARCHAR(50),
     mode VARCHAR(20) NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_live_trades_symbol
@@ -114,7 +114,7 @@ CREATE TABLE IF NOT EXISTS positions (
     market_value NUMERIC(18, 6),
     unrealized_pnl NUMERIC(18, 6),
     mode VARCHAR(20) NOT NULL,
-    last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    last_updated TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uix_position_symbol_mode
@@ -138,7 +138,7 @@ CREATE TABLE IF NOT EXISTS performance_snapshots (
     baseline_value NUMERIC(18, 6),
     baseline_return NUMERIC(10, 6),
     mode VARCHAR(20) NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_perf_snapshot_timestamp
@@ -160,7 +160,7 @@ CREATE TABLE IF NOT EXISTS config_overrides (
     value_type VARCHAR(20) NOT NULL,
     is_active BOOLEAN DEFAULT TRUE,
     reason VARCHAR(200),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deactivated_at TIMESTAMP WITH TIME ZONE
 );
 
@@ -188,7 +188,9 @@ CREATE TABLE IF NOT EXISTS system_state (
     key VARCHAR(50) NOT NULL UNIQUE,
     value TEXT,
     value_type VARCHAR(20),
-    last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    -- Renamed from 'last_updated' to 'updated_at' for consistency
+    -- SQLAlchemy model also updated to use 'updated_at'
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_system_state_key
@@ -206,7 +208,7 @@ CREATE TABLE IF NOT EXISTS users (
     is_active BOOLEAN DEFAULT TRUE,
     is_admin BOOLEAN DEFAULT TRUE,
     last_login TIMESTAMP WITH TIME ZONE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_username
