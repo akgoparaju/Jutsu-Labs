@@ -1,3 +1,82 @@
+#### **Fix: Schwab Re-Auth Modal with Callback URL Input** (2026-01-02)
+
+**Fixed re-authentication flow to properly capture callback URL**
+
+**Problem**:
+- Clicking "Re-authenticate" on dashboard banner opened popup to Schwab
+- After login, Schwab redirects to callback URL (e.g., `https://127.0.0.1:8182/?code=...`)
+- Popup had no way to capture/enter the callback URL to complete authentication
+
+**Solution**:
+- Replaced popup approach with a proper modal dialog
+- Modal shows authorization URL with Copy/Open buttons
+- User opens Schwab login in new tab
+- After login, user pastes callback URL into modal textarea
+- Click "Complete Authentication" to finish the flow
+
+**New Re-Auth Flow**:
+1. Click "Re-authenticate" button on dashboard banner
+2. Modal opens with instructions and Schwab login link
+3. Open link, login at Schwab, get redirected
+4. Copy the redirect URL from browser address bar
+5. Paste into modal and click "Complete Authentication"
+
+**Files Modified**:
+- `dashboard/src/components/SchwabTokenBanner.tsx` - Added modal with callback URL input
+
+**Agent**: DASHBOARD_FRONTEND_AGENT | **Layer**: UI
+
+---
+
+#### **Feature: Schwab Token Expiration Monitoring & One-Click Re-Auth** (2026-01-02)
+
+**Proactive token monitoring with webhook notifications and dashboard UX improvements**
+
+**Problem**:
+- Schwab OAuth tokens expire after 7 days (hard limit, cannot be extended)
+- Users had to manually monitor token age and re-authenticate
+- Re-authentication required navigating to config page, clicking initiate, copying URL
+
+**Solution - Phase 1: Proactive Notifications**:
+- New scheduled job checks token expiration every 12 hours
+- Webhook notifications at thresholds: 5d, 2d, 1d, 12h, expired
+- Supports Slack, Discord, and generic webhook endpoints
+- Configuration via environment variables:
+  - `NOTIFICATION_WEBHOOK_URL`: Webhook endpoint
+  - `NOTIFICATION_WEBHOOK_TYPE`: 'slack', 'discord', or 'generic' (auto-detect)
+  - `NOTIFICATION_ENABLED`: Enable/disable (default: true if URL set)
+
+**Solution - Phase 2: Dashboard UX**:
+- New `SchwabTokenBanner` component on dashboard home
+- Shows warning banners based on token status:
+  - Critical (red): Expired or <12h remaining
+  - Warning (yellow): <2 days remaining
+  - Info (blue): <5 days remaining
+- **One-click re-auth button** opens OAuth flow in popup window
+- Popup closes automatically after successful authentication
+- No more manual URL copying required!
+
+**Files Added**:
+- `jutsu_engine/utils/notifications.py` - Webhook notification system
+- `dashboard/src/components/SchwabTokenBanner.tsx` - Token status banner
+- `tests/unit/api/test_token_expiration.py` - 35 unit tests for all expiration scenarios
+
+**Files Modified**:
+- `jutsu_engine/api/scheduler.py` - Added `_check_token_expiration_job()` and helper methods
+- `dashboard/src/pages/Dashboard.tsx` - Added SchwabTokenBanner import and component
+
+**Test Coverage**:
+| Scenario | Banner | Notification | Status |
+|----------|--------|--------------|--------|
+| 5 days | Info (blue) | NOTICE | ✅ |
+| 2 days | Warning (yellow) | WARNING | ✅ |
+| -1 day (expired) | Critical (red) | EXPIRED | ✅ |
+| -3 days (expired) | Critical (red) | EXPIRED | ✅ |
+
+**Agent**: API_AGENT, FRONTEND_AGENT | **Layer**: AUTH, SCHEDULER, UI
+
+---
+
 #### **Fix: Scheduler Jobs Frequently Missed** (2026-01-02)
 
 **Resolved APScheduler jobs being skipped due to strict misfire grace time**

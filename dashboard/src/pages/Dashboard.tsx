@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExecuteTradeModal } from '../components/ExecuteTradeModal'
 import { SchedulerControl } from '../components/SchedulerControl'
+import { SchwabTokenBanner } from '../components/SchwabTokenBanner'
 import { performanceApi } from '../api/client'
 
 function Dashboard() {
@@ -77,6 +78,9 @@ function Dashboard() {
           Execute Trade
         </button>
       </div>
+
+      {/* Schwab Token Status Banner - Shows warnings when token is expiring */}
+      <SchwabTokenBanner hideWhenHealthy={true} />
 
       {/* Execute Trade Modal */}
       <ExecuteTradeModal

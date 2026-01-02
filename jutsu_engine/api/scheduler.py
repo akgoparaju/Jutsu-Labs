@@ -184,6 +184,7 @@ class SchedulerService:
         self._job_id = 'daily_trading_job'
         self._refresh_job_id = 'market_close_refresh_job'  # Market close refresh job
         self._hourly_refresh_job_id = 'hourly_refresh_job'  # Hourly price refresh job
+        self._token_check_job_id = 'token_expiration_check_job'  # Schwab token monitoring
         self._is_running_job = False
         self._is_running_refresh = False  # Track refresh job state
         self._is_running_hourly_refresh = False  # Track hourly refresh state
@@ -419,6 +420,122 @@ class SchedulerService:
         finally:
             self._is_running_hourly_refresh = False
 
+    async def _check_token_expiration_job(self):
+        """
+        Check Schwab token expiration and send notifications.
+        
+        Runs every 12 hours. Sends notifications at these thresholds:
+        - 5 days remaining: INFO notification
+        - 2 days remaining: WARNING notification  
+        - 1 day remaining: CRITICAL notification
+        - 12 hours remaining: URGENT notification
+        - Expired: CRITICAL expired alert
+        
+        Notification thresholds are tracked to avoid duplicate alerts.
+        """
+        logger.info("Checking Schwab token expiration status...")
+        
+        try:
+            # Import token status checker
+            from jutsu_engine.api.routes.schwab_auth import get_token_status
+            from jutsu_engine.utils.notifications import (
+                send_token_expiration_warning,
+                send_token_expired_alert,
+            )
+            
+            token_status = get_token_status()
+            
+            if not token_status['token_exists']:
+                logger.info("No Schwab token found - skipping expiration check")
+                return
+            
+            expires_in_days = token_status.get('expires_in_days')
+            
+            if expires_in_days is None:
+                logger.warning("Could not determine token expiration - legacy token format?")
+                return
+            
+            # Log current status
+            if expires_in_days > 0:
+                logger.info(f"Schwab token expires in {expires_in_days:.1f} days")
+            else:
+                logger.warning(f"Schwab token is EXPIRED ({abs(expires_in_days):.1f} days ago)")
+            
+            # Track which notifications we've sent to avoid duplicates
+            # Use state file for persistence
+            notification_state = self._get_token_notification_state()
+            
+            # Determine if we should send a notification
+            should_notify = False
+            notification_level = None
+            
+            if expires_in_days <= 0:
+                # Token expired
+                if notification_state.get('expired_notified') != True:
+                    send_token_expired_alert()
+                    self._update_token_notification_state({'expired_notified': True})
+                    logger.info("Sent token expired notification")
+                return
+            
+            # Check thresholds (notify once per threshold)
+            if expires_in_days <= 0.5:  # 12 hours
+                notification_level = '12h'
+            elif expires_in_days <= 1:
+                notification_level = '1d'
+            elif expires_in_days <= 2:
+                notification_level = '2d'
+            elif expires_in_days <= 5:
+                notification_level = '5d'
+            
+            if notification_level:
+                last_level = notification_state.get('last_notification_level')
+                level_order = ['5d', '2d', '1d', '12h']
+                
+                # Only notify if this is a more urgent level than last notification
+                if last_level is None or (
+                    notification_level in level_order and 
+                    (last_level not in level_order or 
+                     level_order.index(notification_level) > level_order.index(last_level))
+                ):
+                    success = send_token_expiration_warning(expires_in_days)
+                    if success:
+                        self._update_token_notification_state({
+                            'last_notification_level': notification_level,
+                            'last_notification_time': datetime.now(timezone.utc).isoformat(),
+                            'expired_notified': False,  # Reset expired flag
+                        })
+                        logger.info(f"Sent token expiration warning ({notification_level})")
+                    else:
+                        logger.debug("Notification not sent (webhook not configured or disabled)")
+            else:
+                logger.debug("Token has sufficient time remaining, no notification needed")
+                
+        except Exception as e:
+            logger.error(f"Token expiration check failed: {e}", exc_info=True)
+    
+    def _get_token_notification_state(self) -> dict:
+        """Load token notification state from file."""
+        state_file = Path('state/token_notification_state.json')
+        if state_file.exists():
+            try:
+                with open(state_file, 'r') as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
+    
+    def _update_token_notification_state(self, updates: dict):
+        """Update token notification state file."""
+        state_file = Path('state/token_notification_state.json')
+        try:
+            state = self._get_token_notification_state()
+            state.update(updates)
+            state_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(state_file, 'w') as f:
+                json.dump(state, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to save notification state: {e}")
+
     def start(self):
         """Start the scheduler."""
         if self._scheduler is not None and self._scheduler.running:
@@ -509,8 +626,24 @@ class SchedulerService:
 
         logger.info("Hourly refresh job scheduled: Every 1 hour (market hours only: 10 AM - 3:30 PM EST)")
 
+        # Add token expiration check job (runs every 12 hours)
+        # Monitors Schwab OAuth token and sends notifications before expiration
+        token_check_trigger = IntervalTrigger(hours=12, timezone=EASTERN)
+
+        self._scheduler.add_job(
+            self._check_token_expiration_job,
+            trigger=token_check_trigger,
+            id=self._token_check_job_id,
+            name='Schwab Token Expiration Monitor',
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
+
+        logger.info("Token expiration check job scheduled: Every 12 hours")
+
     def _remove_job(self):
-        """Remove the trading job, data refresh job, and hourly refresh job from the scheduler."""
+        """Remove the trading job, data refresh job, hourly refresh job, and token check job from the scheduler."""
         if self._scheduler is None:
             return
 
@@ -531,6 +664,12 @@ class SchedulerService:
             logger.info("Hourly refresh job removed from scheduler")
         except Exception:
             pass  # Job may not exist
+
+        try:
+            self._scheduler.remove_job(self._token_check_job_id)
+            logger.info("Token expiration check job removed from scheduler")
+        except Exception:
+            pass  # Job may not exist  # Job may not exist
 
     def enable(self) -> Dict[str, Any]:
         """
