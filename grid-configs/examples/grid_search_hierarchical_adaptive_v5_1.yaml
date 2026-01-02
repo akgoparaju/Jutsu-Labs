@@ -1,0 +1,212 @@
+# Grid Search Configuration for Hierarchical Adaptive v5.1
+# =========================================================
+# Grid Search: 9 runs (focused on v5.1 DXY filter parameters)
+# Validates v5.1 DXY-Filtered Commodity-Augmented Regime Allocator
+#
+# v5.1 Changes from v5.0:
+# -----------------------
+# 1. DXY FILTER (NEW v5.1):
+#    - v5.0: Hedge preference based on QQQ/TLT correlation only
+#    - v5.1: Hedge preference based on correlation + DXY momentum
+#    - Logic: PAPER if (corr < 0.2 AND DXY > SMA_50), else HARD
+#    - Addresses currency debasement scenarios
+#
+# 2. UPDATED CELL ALLOCATIONS:
+#    - Cell 1 (Bull/Low): 80% TQQQ, 20% QQQ → 100% TQQQ
+#    - Cell 2 (Bull/High): 50% TQQQ, 20% GLD, 30% Cash → 50/25/25
+#    - Cell 9 (Vol-Crush): Explicit 100% TQQQ override
+#
+# 3. SYMBOL SET EXTENDED:
+#    - v5.0: QQQ, TQQQ, PSQ, TLT, TMF, TMV, GLD, SLV
+#    - v5.1: + UUP (Dollar Index ETF as DXY proxy)
+#
+# Grid Search Strategy:
+# ---------------------
+# FIX all v3.5b golden parameters (proven baseline)
+# OPTIMIZE only v5.1-specific parameters:
+#   - hedge_corr_threshold: [0.10, 0.20, 0.30] (3 values)
+#   - dxy_sma_period: [30, 50, 70] (3 values)
+#
+# Total Combinations: 3 × 3 = 9 runs
+# Estimated Runtime: 10-15 minutes
+
+# Strategy to optimize
+strategy: "Hierarchical_Adaptive_v5_1"
+
+# Symbol Sets
+# -----------
+# v5.1 requires 9 symbols (adds UUP for DXY proxy)
+symbol_sets:
+  - name: "QQQ_TQQQ_PSQ_Bonds_Commodities_DXY"
+    signal_symbol: "QQQ"                # Kalman + SMA + vol calculations
+    core_long_symbol: "QQQ"             # 1x base allocation
+    leveraged_long_symbol: "TQQQ"       # 3x leveraged overlay
+    inverse_hedge_symbol: "PSQ"         # -1x inverse (optional)
+    treasury_trend_symbol: "TLT"        # 20+ Year Treasury (bond trend signal)
+    bull_bond_symbol: "TMF"             # 3x Bull Bonds (Paper hedge)
+    bear_bond_symbol: "TMV"             # 3x Bear Bonds
+    gold_symbol: "GLD"                  # Gold ETF (Hard hedge)
+    silver_symbol: "SLV"                # Silver ETF (Hard hedge)
+    dxy_symbol: "UUP"                   # Dollar Index ETF (NEW v5.1)
+
+# Base Configuration
+# ------------------
+base_config:
+  # Date range - Full history (2010-2025)
+  start_date: "2010-02-01"
+  end_date: "2025-12-28"
+
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 100000    # $100,000 starting capital
+  commission: 0.0            # $0.00 per trade
+  slippage: 0.0005           # 0.05% per trade
+
+# Parameters to Optimize
+# ----------------------
+# v5.1 Grid Search: FIX v3.5b golden + OPTIMIZE DXY filter params
+#
+# Total combinations: 3 × 3 = 9 runs
+
+parameters:
+  # ===========================================================================
+  # KALMAN TREND PARAMETERS (Fixed at v3.5b Golden)
+  # ===========================================================================
+  measurement_noise: [3000]
+  process_noise_1: [0.01]
+  process_noise_2: [0.01]
+  osc_smoothness: [10]
+  strength_smoothness: [15]
+  T_max: [50.0]
+  symmetric_volume_adjustment: [true]
+  double_smoothing: [false]
+
+  # ===========================================================================
+  # SMA STRUCTURE PARAMETERS (Fixed at v3.5b Golden)
+  # ===========================================================================
+  sma_fast: [40]
+  sma_slow: [140]
+
+  # ===========================================================================
+  # TREND CLASSIFICATION THRESHOLDS (Fixed at v3.5b Golden)
+  # ===========================================================================
+  t_norm_bull_thresh: [0.05]
+  t_norm_bear_thresh: [-0.3]
+
+  # ===========================================================================
+  # VOLATILITY Z-SCORE PARAMETERS (Fixed at v3.5b Golden)
+  # ===========================================================================
+  realized_vol_window: [21]
+  vol_baseline_window: [200]
+  upper_thresh_z: [1.0]
+  lower_thresh_z: [0.2]
+
+  # ===========================================================================
+  # VOL-CRUSH OVERRIDE (Fixed at v3.5b Golden)
+  # ===========================================================================
+  vol_crush_threshold: [-0.15]
+  vol_crush_lookback: [5]
+
+  # ===========================================================================
+  # ALLOCATION PARAMETERS (Fixed)
+  # ===========================================================================
+  leverage_scalar: [1.0]
+
+  # ===========================================================================
+  # INSTRUMENT TOGGLES (Fixed)
+  # ===========================================================================
+  use_inverse_hedge: [true]
+  w_PSQ_max: [0.5]
+
+  # ===========================================================================
+  # TREASURY OVERLAY (Fixed at v3.5b Golden)
+  # ===========================================================================
+  allow_treasury: [true]
+  bond_sma_fast: [20]
+  bond_sma_slow: [60]
+  max_bond_weight: [0.4]
+  treasury_trend_symbol: ["TLT"]
+  bull_bond_symbol: ["TMF"]
+  bear_bond_symbol: ["TMV"]
+
+  # ===========================================================================
+  # HEDGE PREFERENCE SIGNAL (OPTIMIZE - v5.0/v5.1)
+  # ===========================================================================
+  # v5.1 uses this in combination with DXY filter
+  # Range: 0.10 to 0.30 (spec default: 0.20)
+  hedge_corr_threshold: [0.10, 0.20, 0.30]  # 3 values - OPTIMIZE
+  hedge_corr_lookback: [60]
+
+  # ===========================================================================
+  # DXY FILTER PARAMETERS (OPTIMIZE - NEW v5.1)
+  # ===========================================================================
+  # Controls Dollar Index momentum for Paper vs Hard routing
+  # Range: 30 to 70 days (spec default: 50)
+  dxy_symbol: ["UUP"]
+  dxy_sma_period: [30, 50, 70]  # 3 values - OPTIMIZE
+
+  # ===========================================================================
+  # COMMODITY/PRECIOUS METALS OVERLAY (Fixed at v5.0 defaults)
+  # ===========================================================================
+  commodity_ma_period: [150]
+  gold_weight_max: [0.60]
+  silver_vol_multiplier: [0.5]
+  silver_momentum_lookback: [20]
+  silver_momentum_gate: [true]
+  gold_symbol: ["GLD"]
+  silver_symbol: ["SLV"]
+
+  # ===========================================================================
+  # REBALANCING (Fixed at v3.5b Golden)
+  # ===========================================================================
+  rebalance_threshold: [0.025]
+
+# Optional Constraints
+# --------------------
+max_combinations: 20
+checkpoint_interval: 5
+
+# Expected Output
+# ---------------
+# output/grid_search_Hierarchical_Adaptive_v5_1_YYYYMMDD_HHMMSS/
+# ├── summary_comparison.csv   # Metrics for all 9 runs
+# ├── run_config.csv          # Parameter mapping
+# ├── parameters.yaml         # Copy of this config
+# ├── README.txt             # Summary statistics
+# └── run_XXXX/              # Individual runs
+
+# Usage
+# -----
+# jutsu grid-search --config grid-configs/examples/grid_search_hierarchical_adaptive_v5_1.yaml
+#
+# After completion:
+# 1. Review summary_comparison.csv for top performers
+# 2. Analyze parameter sensitivity:
+#    - Which hedge_corr_threshold wins? (0.10, 0.20, or 0.30)
+#    - Which dxy_sma_period wins? (30, 50, or 70)
+# 3. Compare to v5.0 baseline (correlation-only vs correlation+DXY)
+# 4. Validate DXY filter effectiveness:
+#    - Does DXY filter improve 2022 performance? (dollar strength period)
+#    - Does DXY filter improve 2020-2021? (dollar weakness period)
+# 5. Check cell allocation changes:
+#    - Cell 1 (100% TQQQ): Better than 80/20 in bull markets?
+#    - Cell 2 (50/25/25): Better diversification in volatile bulls?
+
+# v5.1 SPECIFIC ANALYSIS:
+# -----------------------
+# DXY FILTER VALIDATION:
+# - [ ] DXY trend detection: Bull/Bear distribution reasonable?
+# - [ ] Paper vs Hard routing: Does DXY improve hedge selection?
+# - [ ] 2022 performance: DXY filter avoids bonds during dollar strength?
+# - [ ] 2020-2021: DXY filter favors gold during dollar weakness?
+#
+# PERFORMANCE COMPARISON (v5.1 vs v5.0):
+# - [ ] Sharpe ratio: v5.1 ≥ v5.0?
+# - [ ] Max drawdown: v5.1 ≤ v5.0?
+# - [ ] Crisis periods: v5.1 hedge selection improves protection?
+#
+# PARAMETER SENSITIVITY:
+# - [ ] hedge_corr_threshold: 0.10 (aggressive) vs 0.20 (balanced) vs 0.30 (conservative)
+# - [ ] dxy_sma_period: 30 (responsive) vs 50 (balanced) vs 70 (smooth)

@@ -1,3 +1,204 @@
+#### **Fix: Performance Equity Circular Calculation Bug** (2026-01-02)
+
+**Resolved equity calculation stuck at $10,000 for 4 trading days**
+
+**Problem**:
+- Performance snapshots from 2025-12-29 to 2026-01-02 showed equity always $10,000
+- Cash values were incorrect (derived from circular calculation)
+- Day % and Cumulative % were 0.00% despite market movements
+
+**Root Cause** (`scripts/daily_dry_run.py` lines 608-615):
+- When no trades occurred, cash was calculated as: `actual_cash = account_equity - positions_value`
+- Then equity was: `actual_equity = positions_value + actual_cash`
+- This created circular math: `positions_value + (account_equity - positions_value) = account_equity`
+- Since `account_equity` came from state (set to initial capital), equity was always $10,000
+
+**Fix Applied**:
+- When no trades occur, query previous snapshot from database for actual cash
+- Cash remains unchanged when no trades (correct behavior)
+- Equity = unchanged_cash + new_position_values (correct calculation)
+
+**Data Correction**:
+- Ran one-time script to fix corrupted snapshots (ids 106-109)
+- Used cash=$629.37 from last correct snapshot (id 105)
+- Recalculated positions_value from positions_json
+- Recalculated total_equity, daily_return, cumulative_return, drawdown
+
+**Before/After**:
+| id | date | wrong_equity | correct_equity | daily_return |
+|----|------|--------------|----------------|--------------|
+| 106 | 12/29 | $10,000 | $10,145.73 | -0.15% |
+| 107 | 12/30 | $10,000 | $10,075.73 | -0.69% |
+| 108 | 12/31 | $10,000 | $10,031.19 | -0.44% |
+| 109 | 01/02 | $10,000 | $9,950.88 | -0.80% |
+
+**Files Modified**:
+- `scripts/daily_dry_run.py` - Fixed cash calculation when no trades occur
+
+**Agent**: PERFORMANCE_AGENT | **Layer**: INFRASTRUCTURE
+
+---
+
+#### **Fix: SymbolSet Missing dxy_symbol Field** (2025-12-28)
+
+**Resolved grid-search/WFO config loading error for v5.1 strategies**
+
+**Problem**:
+- Error: `SymbolSet.__init__() got an unexpected keyword argument 'dxy_symbol'`
+- v5.1 YAML configs include `dxy_symbol: "UUP"` in symbol_sets
+- SymbolSet dataclass was missing the `dxy_symbol` field
+
+**Root Cause**:
+- SymbolSet in grid_search_runner.py had gold_symbol and silver_symbol (from v5.0 fix)
+- v5.1 added dxy_symbol for DXY filter but field was not added to SymbolSet dataclass
+
+**Fix Applied**:
+- Added `dxy_symbol: Optional[str] = None` to SymbolSet dataclass
+- Added dxy_symbol mapping in `_build_strategy_params()` for both grid_search_runner and wfo_runner
+- Added dxy_symbol to `RunConfig.to_dict()` for CSV export
+
+**Files Modified**:
+- `jutsu_engine/application/grid_search_runner.py` (SymbolSet + _build_strategy_params + RunConfig)
+- `jutsu_engine/application/wfo_runner.py` (_build_strategy_params)
+
+**Validation**:
+- v5.1 grid search config loads: ✅ (dxy_symbol: UUP)
+- v5.1 WFO config loads: ✅ (dxy_symbol: UUP)
+- v5.0 grid search backward compatible: ✅ (dxy_symbol: None)
+- v5.0 WFO backward compatible: ✅ (dxy_symbol: None)
+
+**Agent**: GRID_SEARCH_AGENT, WFO_RUNNER_AGENT | **Layer**: APPLICATION
+
+---
+
+#### **Feature: Hierarchical Adaptive v5.1 Strategy** (2025-12-28)
+
+**Implemented DXY-Filtered Commodity-Augmented Regime Strategy**
+
+**v5.1 Key Features**:
+- **DXY Filter for Hedge Routing**: Dual-filter hedge preference (correlation + DXY momentum)
+  - PAPER: Low QQQ/TLT correlation AND DXY > SMA (dollar strong)
+  - HARD: High correlation OR DXY < SMA (dollar weak)
+  - Addresses currency debasement scenarios by favoring gold when dollar weakens
+- **Extended Symbol Set**: Added UUP (Dollar Index ETF) as 9th symbol
+- **New Parameters**: `dxy_symbol="UUP"`, `dxy_sma_period=50`
+
+**v5.1 Cell Allocation Changes from v5.0**:
+- **Cell 1 (Bull/Low)**: 80% TQQQ + 20% QQQ → 100% TQQQ (more aggressive)
+- **Cell 2 (Bull/High)**: 50% TQQQ + 20% GLD + 30% Cash → 50% TQQQ + 25% GLD + 25% Cash
+- **Cell 9 (Vol-Crush)**: Explicit vol-crush override → 100% TQQQ
+
+**Files Created**:
+- `jutsu_engine/strategies/Hierarchical_Adaptive_v5_1.py` (622 lines)
+- `grid-configs/examples/grid_search_hierarchical_adaptive_v5_1.yaml` (9 combinations)
+- `grid-configs/examples/wfo_hierarchical_adaptive_v5_1.yaml` (3.0y window, 0.5y slide)
+- `tests/unit/strategies/test_hierarchical_adaptive_v5_1.py` (59 tests, all passing)
+
+**Grid Search Strategy**: FIX v3.5b golden params, OPTIMIZE v5.1 DXY params only
+- `hedge_corr_threshold`: [0.10, 0.20, 0.30]
+- `dxy_sma_period`: [30, 50, 70]
+- Total: 9 combinations
+
+**Agent**: STRATEGY_AGENT | **Layer**: CORE
+
+---
+
+#### **Fix: WFO Config Missing base_config Date Fields** (2025-12-27)
+
+**Resolved grid-search compatibility error for WFO configs**
+
+**Problem**:
+- Error: `Missing base_config keys: start_date, end_date`
+- WFO config had dates in `walk_forward` section but not in `base_config`
+- Grid-search loader requires dates in `base_config`
+
+**Root Cause**:
+- WFO configs use `walk_forward.total_start_date` and `walk_forward.total_end_date`
+- Grid-search configs use `base_config.start_date` and `base_config.end_date`
+- v5.0 WFO config only had dates in `walk_forward` section
+
+**Fix Applied**:
+- Added `start_date` and `end_date` to `base_config` section of WFO config
+- Dates match `walk_forward.total_start_date/total_end_date` for consistency
+
+**Files Modified**:
+- `grid-configs/examples/wfo_hierarchical_adaptive_v5_0.yaml`
+
+**Agent**: GRID_SEARCH_AGENT | **Layer**: APPLICATION
+
+---
+
+#### **Fix: SymbolSet Missing gold_symbol and silver_symbol Fields** (2025-12-27)
+
+**Resolved v5.0 config loading error for grid search and WFO**
+
+**Problem**:
+- Error: `SymbolSet.__init__() got an unexpected keyword argument 'gold_symbol'`
+- v5.0 YAML configs included `gold_symbol` and `silver_symbol` for Precious Metals Overlay
+- `SymbolSet` dataclass only supported symbols up to v3.5b (Treasury Overlay)
+
+**Root Cause**:
+- `SymbolSet` class in `grid_search_runner.py` missing v5.0 commodity symbol fields
+- `_build_strategy_params` functions didn't map gold/silver to strategy __init__
+
+**Fix Applied**:
+- Extended `SymbolSet` dataclass with `gold_symbol` and `silver_symbol` optional fields
+- Updated `_build_strategy_params` in both `grid_search_runner.py` and `wfo_runner.py`
+- Added Precious Metals Overlay symbol mapping section
+
+**Files Modified**:
+- `jutsu_engine/application/grid_search_runner.py` - SymbolSet class + _build_strategy_params
+- `jutsu_engine/application/wfo_runner.py` - _build_strategy_params
+
+**Validation**:
+- Config load tests pass for both grid search and WFO configs
+- _build_strategy_params correctly passes gold/silver to strategy
+
+**Agent**: GRID_SEARCH_AGENT, WFO_RUNNER_AGENT | **Layer**: APPLICATION
+
+---
+
+#### **Feature: Hierarchical Adaptive v5.0 Strategy** (2025-12-27)
+
+**Implemented Commodity-Augmented Regime Strategy with Precious Metals Overlay**
+
+**v5.0 Key Features**:
+- 9-cell allocation matrix (extended from v3.5b 6-cell)
+- Hedge Preference Signal: QQQ/TLT correlation routes between Paper (bonds) and Hard (commodities)
+- Precious Metals Overlay: GLD/SLV as alternative safe haven when bonds fail
+- Gold Momentum (G-Trend): SMA on GLD for commodity trend detection
+- Silver Relative Strength (S-Beta): ROC comparison for silver kicker
+
+**v3.5b Golden Parameters Preserved**:
+- All v3.5b golden parameters retained as defaults
+- Kalman: measurement_noise=3000, T_max=50
+- SMA: sma_fast=40, sma_slow=140
+- Trend: t_norm_bull_thresh=0.05, t_norm_bear_thresh=-0.3
+- Vol: upper_thresh_z=1.0, lower_thresh_z=0.2
+- Treasury: bond_sma_fast=20, bond_sma_slow=60, max_bond_weight=0.4
+
+**New v5.0 Parameters**:
+- hedge_corr_threshold=0.20, hedge_corr_lookback=60
+- commodity_ma_period=150, gold_weight_max=0.60
+- silver_vol_multiplier=0.5, silver_momentum_lookback=20
+- silver_momentum_gate=True
+
+**Files Created**:
+- `jutsu_engine/strategies/Hierarchical_Adaptive_v5_0.py` (~900 lines)
+- `grid-configs/examples/grid_search_hierarchical_adaptive_v5_0.yaml` (1458 combinations)
+- `grid-configs/examples/wfo_hierarchical_adaptive_v5_0.yaml` (~960 backtests)
+- `tests/unit/strategies/test_hierarchical_adaptive_v5_0.py` (~57 tests)
+
+**Usage**:
+```bash
+jutsu grid-search --config grid-configs/examples/grid_search_hierarchical_adaptive_v5_0.yaml
+jutsu wfo --config grid-configs/examples/wfo_hierarchical_adaptive_v5_0.yaml
+```
+
+**Agent**: STRATEGY_AGENT | **Layer**: CORE
+
+---
+
 #### **Fix: PostgreSQL Schema NOT NULL Constraints and Column Naming** (2025-12-27)
 
 **Resolved two schema errors preventing proper database inserts**

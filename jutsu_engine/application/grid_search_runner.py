@@ -219,6 +219,21 @@ def _build_strategy_params(strategy_class, symbol_set, optimization_params):
     if 'bear_bond_symbol' in param_names and bear_bond_sym:
         strategy_params['bear_bond_symbol'] = bear_bond_sym
 
+    # Get Precious Metals Overlay symbols (for Hierarchical_Adaptive_v5_0)
+    gold_sym = symbol_set.get('gold_symbol') if isinstance(symbol_set, dict) else symbol_set.gold_symbol
+    silver_sym = symbol_set.get('silver_symbol') if isinstance(symbol_set, dict) else symbol_set.silver_symbol
+
+    if 'gold_symbol' in param_names and gold_sym:
+        strategy_params['gold_symbol'] = gold_sym
+    if 'silver_symbol' in param_names and silver_sym:
+        strategy_params['silver_symbol'] = silver_sym
+
+    # Get DXY Filter symbol (for Hierarchical_Adaptive_v5_1)
+    dxy_sym = symbol_set.get('dxy_symbol') if isinstance(symbol_set, dict) else symbol_set.dxy_symbol
+
+    if 'dxy_symbol' in param_names and dxy_sym:
+        strategy_params['dxy_symbol'] = dxy_sym
+
     # Type introspection: Convert optimization params based on strategy's type hints
     try:
         type_hints = get_type_hints(strategy_class.__init__)
@@ -291,6 +306,12 @@ class SymbolSet:
                          Required for Hierarchical_Adaptive_v3_5b Treasury Overlay
         bear_bond_symbol: Optional leveraged bear bonds (e.g., TMV)
                          Required for Hierarchical_Adaptive_v3_5b Treasury Overlay
+        gold_symbol: Optional gold ETF (e.g., GLD)
+                    Required for Hierarchical_Adaptive_v5_0 Precious Metals Overlay
+        silver_symbol: Optional silver ETF (e.g., SLV)
+                      Required for Hierarchical_Adaptive_v5_0 Silver Momentum Kicker
+        dxy_symbol: Optional Dollar Index ETF (e.g., UUP)
+                   Required for Hierarchical_Adaptive_v5_1 DXY Filter
     """
     name: str
     signal_symbol: str
@@ -305,6 +326,9 @@ class SymbolSet:
     treasury_trend_symbol: Optional[str] = None
     bull_bond_symbol: Optional[str] = None
     bear_bond_symbol: Optional[str] = None
+    gold_symbol: Optional[str] = None
+    silver_symbol: Optional[str] = None
+    dxy_symbol: Optional[str] = None  # v5.1 DXY Filter
 
 
 @dataclass
@@ -381,6 +405,12 @@ class RunConfig:
             result['bull_bond_symbol'] = self.symbol_set.bull_bond_symbol
         if self.symbol_set.bear_bond_symbol is not None:
             result['bear_bond_symbol'] = self.symbol_set.bear_bond_symbol
+        if self.symbol_set.gold_symbol is not None:
+            result['gold_symbol'] = self.symbol_set.gold_symbol
+        if self.symbol_set.silver_symbol is not None:
+            result['silver_symbol'] = self.symbol_set.silver_symbol
+        if self.symbol_set.dxy_symbol is not None:
+            result['dxy_symbol'] = self.symbol_set.dxy_symbol
 
         return result
 

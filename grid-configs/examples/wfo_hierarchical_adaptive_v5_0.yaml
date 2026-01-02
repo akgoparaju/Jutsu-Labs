@@ -1,0 +1,369 @@
+# Walk-Forward Optimization for Hierarchical Adaptive v5.0
+# =========================================================
+# Validates robustness of v5.0 (Commodity-Augmented Regime Strategy) across time periods
+#
+# v5.0 Changes from v3.5b:
+# -----------------------
+# 1. 9-CELL ALLOCATION MATRIX (from 6-cell):
+#    - v3.5b: 3×2 grid (Trend × Vol = 6 cells)
+#    - v5.0: 3×3 grid (Trend × Vol × Hedge Preference = 9 cells)
+#    - Adds Hedge Preference dimension: Paper (bonds) vs Hard (commodities)
+#
+# 2. HEDGE PREFERENCE SIGNAL (NEW):
+#    - QQQ/TLT correlation filter determines Paper vs Hard hedge
+#    - When corr < threshold: Paper hedge (TMF/TMV work as safe haven)
+#    - When corr >= threshold: Hard hedge (GLD/SLV as inflation protection)
+#
+# 3. PRECIOUS METALS OVERLAY (NEW):
+#    - GLD: Primary commodity hedge
+#    - SLV: Silver momentum kicker (optional)
+#
+# 4. GOLD MOMENTUM (G-Trend) (NEW):
+#    - SMA on GLD for commodity trend detection
+#
+# 5. SILVER RELATIVE STRENGTH (S-Beta) (NEW):
+#    - ROC comparison: SLV vs GLD for silver allocation
+#
+# Walk-Forward Methodology:
+# -------------------------
+# - Total Period: 2010-02-01 to 2025-12-27 (~16 years)
+# - Window Size: 3.0 years (2.5y IS + 0.5y OOS)
+# - Slide: 0.5 years (6 months forward each iteration)
+# - Windows: ~30 total walk-forward windows
+# - Selection Metric: Sharpe Ratio (risk-adjusted returns)
+#
+# Process:
+# 1. In-Sample (IS): Optimize v5.0 parameters on 2.5y training data
+# 2. Out-of-Sample (OOS): Test winning params on next 0.5y validation data
+# 3. Slide forward 0.5y and repeat
+# 4. Aggregate OOS results to measure true predictive performance
+#
+# v5.0 WFO Parameter Set: Focused on Key Commodity Parameters (16-32 runs per window)
+# -----------------------------------------------------------------------------------
+# Fix ALL v3.5b golden parameters at proven values
+# Optimize ONLY key v5.0 parameters for robustness testing
+#
+# WFO Parameter Grid (2×2×2×2 = 16 to 32 runs per window):
+#   - hedge_corr_threshold: [0.15, 0.25] (correlation routing)
+#   - commodity_ma_period: [125, 175] (gold SMA)
+#   - gold_weight_max: [0.50, 0.70] (allocation sizing)
+#   - silver_momentum_gate: [true, false] (silver toggle)
+#
+# Total Backtests: ~30 windows × 16-32 combinations = 480-960 total backtests
+# Estimated Runtime: 1-2 hours
+
+# Strategy to optimize
+strategy: "Hierarchical_Adaptive_v5_0"
+
+# Symbol Sets
+# -----------
+# v5.0 requires 8 symbols
+symbol_sets:
+  - name: "QQQ_TQQQ_PSQ_Bonds_Commodities"
+    signal_symbol: "QQQ"                # Kalman + SMA + vol calculations
+    core_long_symbol: "QQQ"             # 1x base allocation
+    leveraged_long_symbol: "TQQQ"       # 3x leveraged overlay
+    inverse_hedge_symbol: "PSQ"         # -1x inverse (optional)
+    treasury_trend_symbol: "TLT"        # 20+ Year Treasury (bond trend signal)
+    bull_bond_symbol: "TMF"             # 3x Bull Bonds (deflation/safety)
+    bear_bond_symbol: "TMV"             # 3x Bear Bonds (inflation/rate shock)
+    gold_symbol: "GLD"                  # Gold ETF (Hard hedge primary)
+    silver_symbol: "SLV"                # Silver ETF (Hard hedge kicker)
+
+# Base Configuration
+# ------------------
+base_config:
+  # Date range - matches walk_forward total period
+  # Required for grid-search compatibility
+  start_date: "2010-02-01"
+  end_date: "2025-12-27"
+
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 100000  # $100,000 starting capital
+  commission: 0.0          # $0.00 per trade
+  slippage: 0.0005         # 0.05% per trade
+
+# Walk-Forward Configuration
+# --------------------------
+walk_forward:
+  # Total period to analyze
+  total_start_date: "2010-02-01"
+  total_end_date: "2025-12-27"
+
+  # Window sizing
+  window_size_years: 3.0      # Total window size (IS + OOS)
+  in_sample_years: 2.5        # Training period
+  out_of_sample_years: 0.5    # Validation period
+
+  # Iteration control
+  slide_years: 0.5            # Slide forward 6 months each iteration
+
+  # Selection criteria
+  selection_metric: "sharpe_ratio"  # Optimize for risk-adjusted returns
+
+  # Performance requirements (filters before OOS testing)
+  min_sharpe_ratio: 0.8       # Minimum Sharpe in IS period
+  max_drawdown: 0.35          # Maximum 35% drawdown in IS period
+
+# Parameters to Optimize
+# ----------------------
+# v5.0 Focused WFO: Test key commodity overlay parameters
+# All v3.5b golden parameters fixed for fast iteration
+#
+# Total combinations: 2×2×2×2×2 = 32 runs per window
+
+parameters:
+  # ===========================================================================
+  # KALMAN TREND PARAMETERS (FIXED at v3.5b Golden)
+  # ===========================================================================
+
+  # Measurement noise (Fixed at v3.5b golden)
+  measurement_noise: [3000.0]  # GOLDEN
+
+  # Process noise (Fixed)
+  process_noise_1: [0.01]      # GOLDEN
+  process_noise_2: [0.01]      # GOLDEN
+
+  # Smoothness (Fixed)
+  osc_smoothness: [10]         # GOLDEN
+  strength_smoothness: [15]    # GOLDEN
+
+  # Trend normalization max (Fixed)
+  T_max: [50.0]                # GOLDEN
+
+  # ===========================================================================
+  # SMA STRUCTURE PARAMETERS (FIXED at v3.5b Golden)
+  # ===========================================================================
+
+  # Fast SMA period (Fixed)
+  sma_fast: [40]               # GOLDEN
+
+  # Slow SMA period (Fixed)
+  sma_slow: [140]              # GOLDEN
+
+  # ===========================================================================
+  # TREND CLASSIFICATION THRESHOLDS (FIXED at v3.5b Golden)
+  # ===========================================================================
+  symmetric_volume_adjustment: [true]   # GOLDEN
+  double_smoothing: [false]             # GOLDEN
+
+  # Bull threshold (Fixed)
+  t_norm_bull_thresh: [0.05]   # GOLDEN
+
+  # Bear threshold (Fixed)
+  t_norm_bear_thresh: [-0.3]   # GOLDEN
+
+  # ===========================================================================
+  # VOLATILITY Z-SCORE PARAMETERS (FIXED at v3.5b Golden)
+  # ===========================================================================
+
+  # Realized volatility window (Fixed)
+  realized_vol_window: [21]    # GOLDEN
+
+  # Volatility baseline window (Fixed)
+  vol_baseline_window: [200]   # GOLDEN
+
+  # Upper hysteresis threshold (Fixed)
+  upper_thresh_z: [1.0]        # GOLDEN
+
+  # Lower hysteresis threshold (Fixed)
+  lower_thresh_z: [0.2]        # GOLDEN
+
+  # ===========================================================================
+  # VOL-CRUSH OVERRIDE PARAMETERS (FIXED at v3.5b Golden)
+  # ===========================================================================
+
+  # Vol-crush threshold (Fixed)
+  vol_crush_threshold: [-0.15] # GOLDEN
+
+  # Vol-crush lookback window (Fixed)
+  vol_crush_lookback: [5]      # GOLDEN
+
+  # ===========================================================================
+  # ALLOCATION PARAMETERS (FIXED at v3.5b Golden)
+  # ===========================================================================
+
+  # Leverage scalar (Fixed)
+  leverage_scalar: [1.0]       # GOLDEN
+
+  # ===========================================================================
+  # INSTRUMENT TOGGLES (FIXED at v3.5b Golden)
+  # ===========================================================================
+
+  # PSQ toggle (Fixed)
+  use_inverse_hedge: [false]   # GOLDEN
+
+  # PSQ maximum weight (Fixed)
+  w_PSQ_max: [0.5]             # GOLDEN
+
+  # ===========================================================================
+  # TREASURY OVERLAY PARAMETERS (FIXED at v3.5b Golden)
+  # ===========================================================================
+
+  # Treasury Overlay toggle (Fixed)
+  allow_treasury: [true]       # GOLDEN
+
+  # Bond SMA periods (Fixed)
+  bond_sma_fast: [20]          # GOLDEN
+  bond_sma_slow: [60]          # GOLDEN
+
+  # Maximum bond allocation (Fixed)
+  max_bond_weight: [0.4]       # GOLDEN
+
+  # Bond symbols (Fixed)
+  treasury_trend_symbol: ["TLT"]   # GOLDEN
+  bull_bond_symbol: ["TMF"]        # GOLDEN
+  bear_bond_symbol: ["TMV"]        # GOLDEN
+
+  # ===========================================================================
+  # REBALANCING (FIXED at v3.5b Golden)
+  # ===========================================================================
+
+  rebalance_threshold: [0.025] # GOLDEN
+
+  # ===========================================================================
+  # v5.0 HEDGE PREFERENCE PARAMETERS (WFO - 2×2 = 4 combinations)
+  # ===========================================================================
+  # Key parameters for correlation-based hedge routing
+
+  # HEDGE CORRELATION THRESHOLD (v5.0 WFO - 2 values)
+  # Test boundary values around spec default (0.20):
+  #   0.15: More aggressive Hard hedge activation
+  #   0.25: More conservative, prefers Paper hedge
+  hedge_corr_threshold: [0.15, 0.25]  # 2 values - WFO TEST
+
+  # HEDGE CORRELATION LOOKBACK (v5.0 WFO - 2 values)
+  # Test window size sensitivity:
+  #   50: Responsive (2.5 months)
+  #   70: Stable (3.5 months)
+  hedge_corr_lookback: [50, 70]  # 2 values - WFO TEST
+
+  # ===========================================================================
+  # v5.0 GOLD MOMENTUM PARAMETERS (WFO - 2 values)
+  # ===========================================================================
+
+  # COMMODITY MA PERIOD (v5.0 WFO - 2 values)
+  # Test gold trend sensitivity:
+  #   125: Responsive (6 months)
+  #   175: Stable (9 months)
+  commodity_ma_period: [125, 175]  # 2 values - WFO TEST
+
+  # ===========================================================================
+  # v5.0 ALLOCATION PARAMETERS (WFO - 2 values)
+  # ===========================================================================
+
+  # GOLD WEIGHT MAX (v5.0 WFO - 2 values)
+  # Test allocation sizing:
+  #   0.50: Moderate commodity exposure
+  #   0.70: Aggressive commodity exposure
+  gold_weight_max: [0.50, 0.70]  # 2 values - WFO TEST
+
+  # ===========================================================================
+  # v5.0 SILVER KICKER PARAMETERS (FIXED for WFO)
+  # ===========================================================================
+  # Fix silver parameters at spec defaults for WFO
+  # Grid search will test silver variations
+
+  # Silver vol multiplier (Fixed at spec default)
+  silver_vol_multiplier: [0.5]   # FIXED: Balanced
+
+  # Silver momentum lookback (Fixed at spec default)
+  silver_momentum_lookback: [20] # FIXED: 4-week ROC
+
+  # SILVER MOMENTUM GATE (v5.0 WFO - 2 values)
+  # Test silver toggle:
+  #   true: Enable silver kicker
+  #   false: GLD only, no silver
+  silver_momentum_gate: [true, false]  # 2 values - WFO TEST
+
+  # ===========================================================================
+  # COMMODITY SYMBOLS (FIXED)
+  # ===========================================================================
+
+  gold_symbol: ["GLD"]         # Fixed
+  silver_symbol: ["SLV"]       # Fixed
+
+# Expected Output
+# ---------------
+# output/wfo_Hierarchical_Adaptive_v5_0_YYYYMMDD_HHMMSS/
+# ├── wfo_summary.csv           # Overall WFO results across all windows
+# ├── parameter_stability.csv   # How often each parameter value wins
+# ├── oos_performance.csv       # Out-of-sample performance metrics
+# ├── is_vs_oos_comparison.csv  # IS vs OOS performance degradation
+# ├── parameters.yaml           # Copy of this config file
+# ├── README.txt               # Summary and analysis
+# │
+# ├── window_001/              # First window
+# │   ├── is_period/          # In-sample optimization results
+# │   │   ├── summary_comparison.csv  # All combinations tested
+# │   │   └── best_params.yaml        # Winning parameters
+# │   ├── oos_period/         # Out-of-sample validation
+# │   │   ├── portfolio_daily.csv
+# │   │   ├── trades.csv
+# │   │   └── summary.csv
+# │   └── window_summary.csv  # IS + OOS metrics
+# │
+# └── ... (more windows)
+
+# Usage
+# -----
+# jutsu wfo --config grid-configs/examples/wfo_hierarchical_adaptive_v5_0.yaml
+#
+# After completion:
+# 1. Review wfo_summary.csv for overall OOS performance
+# 2. Compare to v3.5b WFO results (same windows)
+# 3. Check parameter_stability.csv:
+#    - Does hedge_corr_threshold = 0.15 or 0.25 win more often?
+#    - Does commodity_ma_period = 125 or 175 win more often?
+#    - Does gold_weight_max = 0.50 or 0.70 win more often?
+#    - Is silver_momentum_gate = true better than false?
+# 4. Analyze is_vs_oos_comparison.csv for overfitting
+# 5. Review critical windows:
+#    - 2022 bear market: Hard hedge vs Paper hedge performance?
+#    - 2020 inflation: Commodity overlay effectiveness?
+#    - Normal markets: Does v5.0 match v3.5b performance?
+
+# v5.0 WFO ANALYSIS CHECKLIST:
+# ----------------------------
+# HEDGE PREFERENCE STABILITY:
+# - [ ] hedge_corr_threshold: 0.15 vs 0.25 - which wins more often?
+# - [ ] hedge_corr_lookback: 50 vs 70 - which is more stable?
+# - [ ] Paper vs Hard hedge distribution across windows?
+#
+# COMMODITY OVERLAY STABILITY:
+# - [ ] commodity_ma_period: 125 vs 175 - responsive vs stable?
+# - [ ] gold_weight_max: 0.50 vs 0.70 - optimal sizing?
+# - [ ] silver_momentum_gate: Does silver add value consistently?
+#
+# PERFORMANCE COMPARISON (v5.0 vs v3.5b):
+# - [ ] OOS max drawdown: v5.0 ≤ v3.5b? (commodities help in 2022?)
+# - [ ] OOS Sharpe ratio: v5.0 ≥ v3.5b? (diversification benefit?)
+# - [ ] Parameter stability: v5.0 params stable across windows?
+#
+# KEY WINDOW ANALYSIS:
+# - [ ] 2022 bear market windows: Hard hedge protection?
+# - [ ] 2020-2021 inflation: Commodity overlay effectiveness?
+# - [ ] Normal markets: v5.0 doesn't hurt baseline performance?
+#
+# DECISION CRITERIA:
+# ✅ PROCEED: Stable params, v5.0 ≥ v3.5b in crisis, comparable normal markets
+# ⚠️  REFINE: Unstable params or inconsistent performance
+# ❌ ROLLBACK: v5.0 < v3.5b, commodities don't add value
+
+# Walk-Forward Windows (Approximate)
+# ----------------------------------
+# ~30 total windows with 0.5y slide:
+#
+# Window 01: IS 2010-02 to 2012-08, OOS 2012-08 to 2013-02
+# Window 02: IS 2010-08 to 2013-02, OOS 2013-02 to 2013-08
+# ... (continue sliding forward 6 months)
+# Window ~30: IS 2023-02 to 2025-08, OOS 2025-08 to 2025-12
+#
+# Key Windows to Review (v5.0 Validation):
+# - Windows covering 2022 bear market: Hard hedge activation?
+# - Windows covering 2020-2021: Inflation regime detection?
+# - Early windows (2010-2015): Baseline performance validation
+# - Late windows (2023-2025): Current market adaptability

@@ -173,6 +173,21 @@ def _build_strategy_params(strategy_class, symbol_set, optimization_params):
     if 'bear_bond_symbol' in param_names and bear_bond_sym:
         strategy_params['bear_bond_symbol'] = bear_bond_sym
 
+    # Precious Metals Overlay symbols (v5.0)
+    gold_sym = symbol_set.get('gold_symbol') if isinstance(symbol_set, dict) else getattr(symbol_set, 'gold_symbol', None)
+    silver_sym = symbol_set.get('silver_symbol') if isinstance(symbol_set, dict) else getattr(symbol_set, 'silver_symbol', None)
+
+    if 'gold_symbol' in param_names and gold_sym:
+        strategy_params['gold_symbol'] = gold_sym
+    if 'silver_symbol' in param_names and silver_sym:
+        strategy_params['silver_symbol'] = silver_sym
+
+    # Get DXY Filter symbol (for Hierarchical_Adaptive_v5_1)
+    dxy_sym = symbol_set.get('dxy_symbol') if isinstance(symbol_set, dict) else getattr(symbol_set, 'dxy_symbol', None)
+
+    if 'dxy_symbol' in param_names and dxy_sym:
+        strategy_params['dxy_symbol'] = dxy_sym
+
     # Legacy VIX symbol
     if 'vix_symbol' in param_names and vix_sym:
         strategy_params['vix_symbol'] = vix_sym

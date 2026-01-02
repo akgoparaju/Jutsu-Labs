@@ -56,7 +56,8 @@ from jutsu_engine.live.position_rounder import PositionRounder
 from jutsu_engine.live.mode import TradingMode
 from jutsu_engine.live.executor_router import ExecutorRouter
 from jutsu_engine.live.data_freshness import DataFreshnessChecker, DataFreshnessError
-from jutsu_engine.data.models import Position, SystemState
+from jutsu_engine.data.models import Position, SystemState, PerformanceSnapshot
+from sqlalchemy import desc
 from jutsu_engine.utils.config import get_database_url, get_database_type, DATABASE_TYPE_SQLITE
 
 # Setup logging
@@ -610,9 +611,34 @@ def main(check_freshness: bool = False):
             # After trades, use the calculated cash remainder
             actual_cash = cash_amount
         else:
-            # No trades - calculate cash from equity minus position value
-            # Use stored equity from state, then recalculate
-            actual_cash = account_equity - positions_value
+            # No trades - cash remains UNCHANGED from previous day
+            # BUG FIX (2025-01-02): Query previous snapshot for actual cash instead of
+            # deriving from account_equity (which created circular calculation keeping equity at $10,000)
+            # Reopen database session for this query
+            db_url = get_database_url()
+            db_type = get_database_type()
+            if db_type == DATABASE_TYPE_SQLITE:
+                snap_engine = create_engine(db_url, connect_args={'check_same_thread': False})
+            else:
+                snap_engine = create_engine(db_url)
+            SnapSession = sessionmaker(bind=snap_engine)
+            snap_session = SnapSession()
+            
+            try:
+                previous_snapshot = snap_session.query(PerformanceSnapshot).filter(
+                    PerformanceSnapshot.mode == 'offline_mock'
+                ).order_by(desc(PerformanceSnapshot.timestamp)).first()
+                
+                if previous_snapshot and previous_snapshot.cash:
+                    actual_cash = Decimal(str(previous_snapshot.cash))
+                    logger.info(f"    Cash from previous snapshot (no trades): ${actual_cash:,.2f}")
+                else:
+                    # First run or no previous cash - estimate from initial capital
+                    actual_cash = initial_capital - positions_value
+                    logger.warning(f"    No previous cash found, estimated from initial capital: ${actual_cash:,.2f}")
+            finally:
+                snap_session.close()
+                snap_engine.dispose()
 
         # Actual equity = positions at current prices + cash
         actual_equity = positions_value + actual_cash

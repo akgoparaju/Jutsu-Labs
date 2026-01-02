@@ -1,0 +1,208 @@
+# Walk-Forward Optimization for Hierarchical Adaptive v5.1
+# =========================================================
+# Validates robustness of v5.1 (Commodity-Augmented with DXY Filter) across time periods
+#
+# v5.1 Changes from v5.0:
+# -----------------------
+# 1. DXY FILTER FOR HEDGE ROUTING:
+#    - v5.0: Correlation-only hedge preference
+#    - v5.1: Correlation + DXY momentum dual filter
+#    - Rule: PAPER if (corr < threshold AND DXY > SMA), else HARD
+#
+# 2. CELL ALLOCATION CHANGES:
+#    - C1: 80/20 → 100% TQQQ (aggressive bull/low)
+#    - C2: 50/20/30 → 50/25/25 (balanced hedge)
+#    - C9: Explicit vol-crush override cell (100% TQQQ)
+#
+# Walk-Forward Methodology:
+# -------------------------
+# - Total Period: 2010-02-01 to 2025-12-28 (15+ years, includes 2022-2024 DXY regime changes)
+# - Window Size: 3.0 years (2.5y IS + 0.5y OOS)
+# - Slide: 0.5 years (6 months forward each iteration)
+# - Selection Metric: Sharpe Ratio
+#
+# v5.1 WFO Parameter Set: FIX v3.5b golden, OPTIMIZE v5.1 DXY params (9 runs per window)
+# --------------------------------------------------------------------------------------
+# Fix ALL v3.5b golden parameters at validated values
+# Optimize ONLY v5.1 DXY parameters:
+#   - hedge_corr_threshold ∈ {0.10, 0.20, 0.30} (3 values)
+#   - dxy_sma_period ∈ {30, 50, 70} (3 values)
+#
+# Total combinations: 3 × 3 = 9 runs per window
+
+# Strategy to optimize
+strategy: "Hierarchical_Adaptive_v5_1"
+
+# Symbol Sets
+# -----------
+# v5.1 requires 9 symbols including UUP (DXY proxy)
+symbol_sets:
+  - name: "QQQ_TQQQ_PSQ_Bonds_Commodities_DXY"
+    signal_symbol: "QQQ"                # Kalman + SMA + vol calculations
+    core_long_symbol: "QQQ"             # 1x base allocation
+    leveraged_long_symbol: "TQQQ"       # 3x leveraged overlay
+    inverse_hedge_symbol: "PSQ"         # -1x inverse (optional)
+    treasury_trend_symbol: "TLT"        # 20+ Year Treasury (bond trend signal)
+    bull_bond_symbol: "TMF"             # 3x Bull Bonds (deflation/safety)
+    bear_bond_symbol: "TMV"             # 3x Bear Bonds (inflation/rate shock)
+    gold_symbol: "GLD"                  # Gold (Hard hedge)
+    silver_symbol: "SLV"                # Silver (Hard hedge)
+    dxy_symbol: "UUP"                   # Dollar Index ETF (DXY proxy) - NEW v5.1
+
+# Base Configuration
+# ------------------
+base_config:
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 100000  # $100,000 starting capital
+  commission: 0.0          # $0.00 per trade
+  slippage: 0.0005         # 0.05% per trade
+
+# Walk-Forward Configuration
+# --------------------------
+walk_forward:
+  # Total period to analyze (extended for DXY regime validation)
+  total_start_date: "2010-02-01"
+  total_end_date: "2025-12-28"
+
+  # Window sizing (same as v3.5b WFO)
+  window_size_years: 3.0      # Total window size (IS + OOS)
+  in_sample_years: 2.5        # Training period
+  out_of_sample_years: 0.5    # Validation period
+
+  # Iteration control
+  slide_years: 0.5            # Slide forward 6 months each iteration
+
+  # Selection criteria
+  selection_metric: "sharpe_ratio"
+
+  # Performance requirements (filters before OOS testing)
+  min_sharpe_ratio: -999     # No minimum filter
+  max_drawdown: 0.60         # Maximum 60% drawdown in IS period
+
+# Parameters to Optimize
+# ----------------------
+# v5.1 WFO: FIX v3.5b golden params, OPTIMIZE DXY filter params
+# Total combinations: 3 × 3 = 9 runs per window
+
+parameters:
+  # ===========================================================================
+  # KALMAN TREND PARAMETERS (FIXED - v3.5b Golden)
+  # ===========================================================================
+  measurement_noise: [3000]
+  process_noise_1: [0.01]
+  process_noise_2: [0.01]
+  osc_smoothness: [10]
+  strength_smoothness: [15]
+  T_max: [50.0]
+  symmetric_volume_adjustment: [true]
+  double_smoothing: [false]
+
+  # ===========================================================================
+  # SMA STRUCTURE PARAMETERS (FIXED - v3.5b Golden)
+  # ===========================================================================
+  sma_fast: [40]
+  sma_slow: [140]
+
+  # ===========================================================================
+  # TREND CLASSIFICATION THRESHOLDS (FIXED - v3.5b Golden)
+  # ===========================================================================
+  t_norm_bull_thresh: [0.05]
+  t_norm_bear_thresh: [-0.3]
+
+  # ===========================================================================
+  # VOLATILITY Z-SCORE PARAMETERS (FIXED - v3.5b Golden)
+  # ===========================================================================
+  realized_vol_window: [21]
+  vol_baseline_window: [200]
+  upper_thresh_z: [1.0]
+  lower_thresh_z: [0.2]
+
+  # ===========================================================================
+  # VOL-CRUSH OVERRIDE (FIXED - v3.5b Golden)
+  # ===========================================================================
+  vol_crush_threshold: [-0.15]
+  vol_crush_lookback: [5]
+
+  # ===========================================================================
+  # ALLOCATION PARAMETERS (FIXED)
+  # ===========================================================================
+  leverage_scalar: [1.0]
+
+  # ===========================================================================
+  # INSTRUMENT TOGGLES (FIXED)
+  # ===========================================================================
+  use_inverse_hedge: [true]
+  w_PSQ_max: [0.5]
+
+  # ===========================================================================
+  # TREASURY OVERLAY (FIXED - v3.5b Golden)
+  # ===========================================================================
+  allow_treasury: [true]
+  bond_sma_fast: [20]
+  bond_sma_slow: [60]
+  max_bond_weight: [0.4]
+  treasury_trend_symbol: ["TLT"]
+  bull_bond_symbol: ["TMF"]
+  bear_bond_symbol: ["TMV"]
+
+  # ===========================================================================
+  # HEDGE PREFERENCE SIGNAL (OPTIMIZE - v5.1)
+  # Controls correlation threshold for Paper vs Hard hedge routing
+  # ===========================================================================
+  hedge_corr_threshold: [0.10, 0.20, 0.30]  # 3 values - WFO TEST
+  hedge_corr_lookback: [60]
+
+  # ===========================================================================
+  # DXY FILTER PARAMETERS (OPTIMIZE - NEW v5.1)
+  # Controls Dollar Index momentum for Paper vs Hard routing
+  # ===========================================================================
+  dxy_symbol: ["UUP"]
+  dxy_sma_period: [30, 50, 70]  # 3 values - WFO TEST
+
+  # ===========================================================================
+  # COMMODITY/PRECIOUS METALS OVERLAY (FIXED - v5.0 defaults)
+  # ===========================================================================
+  commodity_ma_period: [150]
+  gold_weight_max: [0.60]
+  silver_vol_multiplier: [0.5]
+  silver_momentum_lookback: [20]
+  silver_momentum_gate: [true]
+
+  # ===========================================================================
+  # REBALANCING CONTROL (FIXED - v3.5b Golden)
+  # ===========================================================================
+  rebalance_threshold: [0.025]
+
+  # ===========================================================================
+  # SYMBOL CONFIGURATION (FIXED)
+  # ===========================================================================
+  signal_symbol: ["QQQ"]
+  core_long_symbol: ["QQQ"]
+  leveraged_long_symbol: ["TQQQ"]
+  inverse_hedge_symbol: ["PSQ"]
+  gold_symbol: ["GLD"]
+  silver_symbol: ["SLV"]
+
+# Usage
+# -----
+# jutsu wfo --config grid-configs/examples/wfo_hierarchical_adaptive_v5_1.yaml
+#
+# Expected: ~30 windows × 9 combinations = ~270 total backtests
+
+# Analysis Checklist
+# -------------------
+# After WFO completes:
+#
+# DXY FILTER VALIDATION:
+# - [ ] Does hedge_corr_threshold show stability across windows?
+# - [ ] Does dxy_sma_period show preference (30/50/70)?
+# - [ ] DXY filter improves hedge timing during 2022-2024?
+# - [ ] Combined filter (corr + DXY) better than correlation-only?
+#
+# v5.1 vs v5.0 COMPARISON:
+# - [ ] v5.1 better crisis protection during dollar strength events?
+# - [ ] v5.1 maintains performance during dollar weakness?
+# - [ ] DXY filter adds value vs noise?

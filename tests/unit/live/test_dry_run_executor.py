@@ -230,7 +230,8 @@ class TestDryRunExecutor:
     def test_execute_dry_run_complete_workflow(self, executor):
         """Test complete dry-run workflow end-to-end."""
         current = {'TQQQ': 100}
-        target = {'TQQQ': 150, 'TMF': 50}
+        # TMF needs 100 shares to reach 5% threshold ($50 × 100 = $5K = 5% of $100K)
+        target = {'TQQQ': 150, 'TMF': 100}
         prices = {'TQQQ': Decimal('100.00'), 'TMF': Decimal('50.00')}
         equity = Decimal('100000')
 
@@ -248,10 +249,10 @@ class TestDryRunExecutor:
 
         tmf_order = next(o for o in orders if o['symbol'] == 'TMF')
         assert tmf_order['action'] == 'BUY'
-        assert tmf_order['qty'] == 50
+        assert tmf_order['qty'] == 100  # 100 shares to reach 5% threshold
 
         # Verify final diffs
-        assert final_diffs == {'TQQQ': 50, 'TMF': 50}
+        assert final_diffs == {'TQQQ': 50, 'TMF': 100}
 
     def test_execute_dry_run_no_action_needed(self, executor):
         """Test dry-run returns empty when no changes needed."""

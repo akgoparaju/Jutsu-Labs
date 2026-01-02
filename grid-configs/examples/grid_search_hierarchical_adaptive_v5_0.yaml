@@ -1,0 +1,421 @@
+# Grid Search Configuration for Hierarchical Adaptive v5.0
+# =========================================================
+# Grid Search: ~1458 runs (v5.0 Commodity-Augmented Regime Strategy)
+# Validates v5.0 Precious Metals Overlay and Hedge Preference Signal
+#
+# v5.0 Changes from v3.5b:
+# -----------------------
+# 1. 9-CELL ALLOCATION MATRIX (from 6-cell):
+#    - v3.5b: 3×2 grid (Trend × Vol = 6 cells)
+#    - v5.0: 3×3 grid (Trend × Vol × Hedge Preference = 9 cells)
+#    - Adds Hedge Preference dimension: Paper (bonds) vs Hard (commodities)
+#
+# 2. HEDGE PREFERENCE SIGNAL (NEW):
+#    - QQQ/TLT correlation filter determines Paper vs Hard hedge
+#    - When corr < threshold: Paper hedge (TMF/TMV work as safe haven)
+#    - When corr >= threshold: Hard hedge (GLD/SLV as inflation protection)
+#    - Addresses bond/equity correlation breakdown in inflationary regimes
+#
+# 3. PRECIOUS METALS OVERLAY (NEW):
+#    - GLD: Primary commodity hedge (replaces bonds in Hard hedge mode)
+#    - SLV: Silver momentum kicker (leveraged gold exposure when SLV outperforms)
+#    - Provides alternative safe haven when bonds fail (2022 scenario)
+#
+# 4. GOLD MOMENTUM (G-Trend) (NEW):
+#    - SMA on GLD for commodity trend detection
+#    - When GLD > GLD_SMA: Full commodity allocation
+#    - When GLD < GLD_SMA: Reduced commodity allocation
+#
+# 5. SILVER RELATIVE STRENGTH (S-Beta) (NEW):
+#    - ROC comparison: SLV vs GLD
+#    - When SLV ROC > GLD ROC: Silver kicker added
+#    - Optional gate to disable silver momentum
+#
+# 6. INSTRUMENT CHANGES:
+#    - v3.5b: QQQ/TQQQ/PSQ + TLT/TMF/TMV (6 instruments)
+#    - v5.0: QQQ/TQQQ/PSQ + TLT/TMF/TMV + GLD/SLV (8 instruments)
+#
+# Strategy Overview (v5.0 9-Cell Matrix):
+# ---------------------------------------
+# Extended from v3.5b 6-cell to include Hedge Preference routing:
+#
+# | Cell | Trend     | Vol  | Hedge   | Allocation                    |
+# |------|-----------|------|---------|-------------------------------|
+# | 1    | Bull      | Low  | Any     | 60% TQQQ + 40% QQQ            |
+# | 2    | Bull      | High | Any     | 100% QQQ                      |
+# | 3    | Sideways  | Low  | Any     | 20% TQQQ + 80% QQQ            |
+# | 4    | Sideways  | High | Paper   | TMF/TMV per bond SMA          |
+# | 4    | Sideways  | High | Hard    | GLD/SLV per commodity signals |
+# | 5    | Bear      | Low  | Any     | 50% QQQ + 50% Cash/Hedge      |
+# | 6    | Bear      | High | Paper   | TMF/TMV per bond SMA          |
+# | 6    | Bear      | High | Hard    | GLD/SLV per commodity signals |
+#
+# Grid Search Strategy:
+# ---------------------
+# Phase 1: v5.0 New Parameters Optimization
+# - Fix ALL v3.5b golden parameters (proven values)
+# - Optimize ONLY v5.0 new parameters (hedge preference + commodity)
+#
+# v5.0 New Parameters (OPTIMIZE - 3×3×3×3×3×3×2 = 1458 combinations):
+# 1. Hedge Preference Signal:
+#    - hedge_corr_threshold: [0.10, 0.20, 0.30] (correlation routing threshold)
+#    - hedge_corr_lookback: [40, 60, 80] (correlation window)
+#
+# 2. Gold Momentum:
+#    - commodity_ma_period: [100, 150, 200] (GLD SMA period)
+#
+# 3. Allocation Weights:
+#    - gold_weight_max: [0.40, 0.60, 0.80] (max GLD allocation)
+#
+# 4. Silver Kicker:
+#    - silver_vol_multiplier: [0.3, 0.5, 0.7] (SLV leverage factor)
+#    - silver_momentum_lookback: [10, 20, 30] (SLV/GLD ROC period)
+#    - silver_momentum_gate: [true, false] (enable/disable silver)
+#
+# v3.5b Golden Parameters (FIXED):
+# - Kalman: measurement_noise=3000, process_noise=0.01, T_max=50
+# - SMA: sma_fast=40, sma_slow=140
+# - Trend: t_norm_bull_thresh=0.05, t_norm_bear_thresh=-0.3
+# - Vol: realized_vol_window=21, vol_baseline_window=200
+# - Z-score: upper_thresh_z=1.0, lower_thresh_z=0.2
+# - Vol-crush: vol_crush_threshold=-0.15, vol_crush_lookback=5
+# - Treasury: bond_sma_fast=20, bond_sma_slow=60, max_bond_weight=0.4
+# - Rebalancing: rebalance_threshold=0.025
+#
+# Total Combinations: 3×3×3×3×3×3×2 = 1458 runs
+# Estimated Runtime: 4-6 hours
+
+# Strategy to optimize
+strategy: "Hierarchical_Adaptive_v5_0"
+
+# Symbol Sets
+# -----------
+# v5.0 requires 8 symbols:
+# - QQQ/TQQQ/PSQ for equity allocation
+# - TLT/TMF/TMV for bond overlay (Paper hedge)
+# - GLD/SLV for commodity overlay (Hard hedge)
+symbol_sets:
+  - name: "QQQ_TQQQ_PSQ_Bonds_Commodities"
+    signal_symbol: "QQQ"                # Kalman + SMA + vol calculations
+    core_long_symbol: "QQQ"             # 1x base allocation
+    leveraged_long_symbol: "TQQQ"       # 3x leveraged overlay
+    inverse_hedge_symbol: "PSQ"         # -1x inverse (optional)
+    treasury_trend_symbol: "TLT"        # 20+ Year Treasury (bond trend signal)
+    bull_bond_symbol: "TMF"             # 3x Bull Bonds (deflation/safety)
+    bear_bond_symbol: "TMV"             # 3x Bear Bonds (inflation/rate shock)
+    gold_symbol: "GLD"                  # Gold ETF (Hard hedge primary)
+    silver_symbol: "SLV"                # Silver ETF (Hard hedge kicker)
+
+# Base Configuration
+# ------------------
+# Fixed settings applied to ALL backtests
+base_config:
+  # Date range - Full history (2010-2024)
+  # Includes: Financial crisis recovery, bull market, COVID crash, 2022 bear, recovery
+  # Note: GLD/SLV have data from 2006, so 2010 start ensures full warmup
+  start_date: "2010-01-01"
+  end_date: "2025-12-27"
+
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 10000   # $10,000 starting capital
+  commission: 0.0          # $0.00 per trade
+  slippage: 0.0005         # 0.05% per trade
+
+# Parameters to Optimize
+# ----------------------
+# Grid Search: v5.0 New Parameters (Commodity Overlay + Hedge Preference)
+# Fix ALL v3.5b golden parameters, optimize ONLY v5.0 additions
+#
+# Total combinations: 3×3×3×3×3×3×2 = 1458 runs
+
+parameters:
+  # ===========================================================================
+  # KALMAN TREND PARAMETERS (FIXED at v3.5b Golden)
+  # ===========================================================================
+  # Controls T_norm calculation (Fast Signal)
+
+  # Measurement noise (Fixed at v3.5b golden)
+  measurement_noise: [3000.0]  # GOLDEN: Proven value from v3.5b
+
+  # Process noise (Fixed at golden)
+  process_noise_1: [0.01]      # GOLDEN
+  process_noise_2: [0.01]      # GOLDEN
+
+  # Smoothness (Fixed at golden)
+  osc_smoothness: [10]         # GOLDEN
+  strength_smoothness: [15]    # GOLDEN
+
+  # Trend normalization max (Fixed at golden)
+  T_max: [50.0]                # GOLDEN
+
+  # ===========================================================================
+  # SMA STRUCTURE PARAMETERS (FIXED at v3.5b Golden)
+  # ===========================================================================
+  # Controls Slow Signal (Structural Filter)
+
+  # Fast SMA period (Fixed at golden)
+  sma_fast: [40]               # GOLDEN: 40-day fast trend
+
+  # Slow SMA period (Fixed at golden)
+  sma_slow: [140]              # GOLDEN: 140-day slow structure
+
+  # ===========================================================================
+  # TREND CLASSIFICATION THRESHOLDS (FIXED at v3.5b Golden)
+  # ===========================================================================
+  symmetric_volume_adjustment: [true]   # GOLDEN
+  double_smoothing: [false]             # GOLDEN
+
+  # Bull threshold (Fixed at golden)
+  t_norm_bull_thresh: [0.05]   # GOLDEN
+
+  # Bear threshold (Fixed at golden)
+  t_norm_bear_thresh: [-0.3]   # GOLDEN
+
+  # ===========================================================================
+  # VOLATILITY Z-SCORE PARAMETERS (FIXED at v3.5b Golden)
+  # ===========================================================================
+  # Controls High/Low volatility regime classification
+
+  # Realized volatility window (Fixed at golden)
+  realized_vol_window: [21]    # GOLDEN
+
+  # Volatility baseline window (Fixed at golden)
+  vol_baseline_window: [200]   # GOLDEN
+
+  # Upper hysteresis threshold (Fixed at golden)
+  upper_thresh_z: [1.0]        # GOLDEN
+
+  # Lower hysteresis threshold (Fixed at golden)
+  lower_thresh_z: [0.2]        # GOLDEN
+
+  # ===========================================================================
+  # VOL-CRUSH OVERRIDE PARAMETERS (FIXED at v3.5b Golden)
+  # ===========================================================================
+
+  # Vol-crush threshold (Fixed at golden)
+  vol_crush_threshold: [-0.15] # GOLDEN
+
+  # Vol-crush lookback window (Fixed at golden)
+  vol_crush_lookback: [5]      # GOLDEN
+
+  # ===========================================================================
+  # ALLOCATION PARAMETERS (FIXED at v3.5b Golden)
+  # ===========================================================================
+
+  # Leverage scalar (Fixed at golden)
+  leverage_scalar: [1.0]       # GOLDEN
+
+  # ===========================================================================
+  # INSTRUMENT TOGGLES (FIXED at v3.5b Golden)
+  # ===========================================================================
+
+  # PSQ toggle (Fixed at golden)
+  use_inverse_hedge: [false]   # GOLDEN
+
+  # PSQ maximum weight (Fixed at golden)
+  w_PSQ_max: [0.5]             # GOLDEN
+
+  # ===========================================================================
+  # TREASURY OVERLAY PARAMETERS (FIXED at v3.5b Golden)
+  # ===========================================================================
+  # Paper hedge mode (bonds)
+
+  # Treasury Overlay toggle (Fixed at golden)
+  allow_treasury: [true]       # GOLDEN
+
+  # Bond SMA periods (Fixed at golden)
+  bond_sma_fast: [20]          # GOLDEN
+  bond_sma_slow: [60]          # GOLDEN
+
+  # Maximum bond allocation (Fixed at golden)
+  max_bond_weight: [0.4]       # GOLDEN
+
+  # Bond symbols (Fixed)
+  treasury_trend_symbol: ["TLT"]   # GOLDEN
+  bull_bond_symbol: ["TMF"]        # GOLDEN
+  bear_bond_symbol: ["TMV"]        # GOLDEN
+
+  # ===========================================================================
+  # REBALANCING (FIXED at v3.5b Golden)
+  # ===========================================================================
+
+  rebalance_threshold: [0.025] # GOLDEN: 2.5% drift triggers rebalance
+
+  # ===========================================================================
+  # NEW v5.0 PARAMETERS - HEDGE PREFERENCE SIGNAL (OPTIMIZE)
+  # ===========================================================================
+  # Determines Paper (bonds) vs Hard (commodities) hedge routing
+  # Based on QQQ/TLT rolling correlation
+
+  # HEDGE CORRELATION THRESHOLD (v5.0 - 3 values)
+  # When QQQ/TLT correlation >= threshold → Hard hedge (commodities)
+  # When QQQ/TLT correlation < threshold → Paper hedge (bonds)
+  # Lower threshold = more frequent Hard hedge activation
+  # Recommended range based on historical QQQ/TLT correlation analysis:
+  #   0.10: Aggressive (more commodity exposure)
+  #   0.20: Balanced (spec default)
+  #   0.30: Conservative (more bond exposure)
+  hedge_corr_threshold: [0.10, 0.20, 0.30]  # 3 values - OPTIMIZE
+
+  # HEDGE CORRELATION LOOKBACK (v5.0 - 3 values)
+  # Rolling window for QQQ/TLT correlation calculation
+  # Shorter = more responsive to correlation regime changes
+  # Longer = more stable but slower adaptation
+  # Recommended range:
+  #   40: Responsive (2 months)
+  #   60: Balanced (3 months, spec default)
+  #   80: Stable (4 months)
+  hedge_corr_lookback: [40, 60, 80]  # 3 values - OPTIMIZE
+
+  # ===========================================================================
+  # NEW v5.0 PARAMETERS - GOLD MOMENTUM (G-Trend) (OPTIMIZE)
+  # ===========================================================================
+  # SMA on GLD for commodity trend detection
+
+  # COMMODITY MA PERIOD (v5.0 - 3 values)
+  # SMA period for GLD trend detection
+  # When GLD > GLD_SMA: Full commodity allocation (bullish gold)
+  # When GLD < GLD_SMA: Reduced commodity allocation (bearish gold)
+  # Recommended range:
+  #   100: Responsive (5 months)
+  #   150: Balanced (7.5 months, spec default)
+  #   200: Stable (10 months, matches equity slow SMA)
+  commodity_ma_period: [100, 150, 200]  # 3 values - OPTIMIZE
+
+  # ===========================================================================
+  # NEW v5.0 PARAMETERS - ALLOCATION WEIGHTS (OPTIMIZE)
+  # ===========================================================================
+  # Maximum gold allocation in Hard hedge mode
+
+  # GOLD WEIGHT MAX (v5.0 - 3 values)
+  # Maximum portfolio weight for GLD in Hard hedge mode
+  # Higher = more aggressive commodity exposure
+  # Lower = more conservative, smaller Hard hedge allocation
+  # Recommended range:
+  #   0.40: Conservative (40% max)
+  #   0.60: Balanced (60% max, spec default)
+  #   0.80: Aggressive (80% max)
+  gold_weight_max: [0.40, 0.60, 0.80]  # 3 values - OPTIMIZE
+
+  # ===========================================================================
+  # NEW v5.0 PARAMETERS - SILVER MOMENTUM KICKER (OPTIMIZE)
+  # ===========================================================================
+  # SLV relative strength vs GLD for leveraged commodity exposure
+
+  # SILVER VOL MULTIPLIER (v5.0 - 3 values)
+  # Scaling factor for SLV allocation when silver outperforms gold
+  # Higher = more aggressive silver exposure (more volatile)
+  # Lower = conservative silver allocation
+  # Recommended range:
+  #   0.3: Conservative (30% of gold weight)
+  #   0.5: Balanced (50% of gold weight, spec default)
+  #   0.7: Aggressive (70% of gold weight)
+  silver_vol_multiplier: [0.3, 0.5, 0.7]  # 3 values - OPTIMIZE
+
+  # SILVER MOMENTUM LOOKBACK (v5.0 - 3 values)
+  # ROC period for SLV vs GLD comparison
+  # Shorter = more responsive to silver momentum changes
+  # Longer = more stable but slower adaptation
+  # Recommended range:
+  #   10: Responsive (2 weeks)
+  #   20: Balanced (4 weeks, spec default)
+  #   30: Stable (6 weeks)
+  silver_momentum_lookback: [10, 20, 30]  # 3 values - OPTIMIZE
+
+  # SILVER MOMENTUM GATE (v5.0 - 2 values)
+  # Toggle to enable/disable silver momentum kicker
+  # true: SLV allocation based on relative strength
+  # false: GLD only, no silver exposure
+  # Useful for testing commodity performance with/without silver volatility
+  silver_momentum_gate: [true, false]  # 2 values - OPTIMIZE
+
+  # ===========================================================================
+  # NEW v5.0 PARAMETERS - COMMODITY SYMBOLS (FIXED)
+  # ===========================================================================
+
+  gold_symbol: ["GLD"]         # Fixed: Gold ETF
+  silver_symbol: ["SLV"]       # Fixed: Silver ETF
+
+# Optional Constraints
+# --------------------
+
+# Maximum total combinations to run
+# Current combinations: 3×3×3×3×3×3×2 = 1458
+max_combinations: 1500
+
+# Checkpoint interval (save progress every N runs)
+checkpoint_interval: 100
+
+# Expected Output
+# ---------------
+# output/grid_search_Hierarchical_Adaptive_v5_0_YYYYMMDD_HHMMSS/
+# ├── summary_comparison.csv   # Metrics for all 1458 runs
+# ├── run_config.csv          # Parameter mapping
+# ├── parameters.yaml         # Copy of this config
+# ├── README.txt             # Summary statistics
+# └── run_XXXX/              # Individual runs
+#     ├── portfolio_daily.csv
+#     ├── trades.csv
+#     └── summary.csv
+
+# Usage
+# -----
+# jutsu grid-search --config grid-configs/examples/grid_search_hierarchical_adaptive_v5_0.yaml
+#
+# After completion:
+# 1. Review summary_comparison.csv for top performers
+# 2. Analyze v5.0 parameter sensitivity:
+#    - Which hedge_corr_threshold wins? (0.10/0.20/0.30)
+#    - Which hedge_corr_lookback wins? (40/60/80)
+#    - Which commodity_ma_period wins? (100/150/200)
+#    - Which gold_weight_max wins? (0.40/0.60/0.80)
+#    - Which silver_vol_multiplier wins? (0.3/0.5/0.7)
+#    - Which silver_momentum_lookback wins? (10/20/30)
+#    - Is silver_momentum_gate=true better than false?
+# 3. Compare to v3.5b baseline (bonds-only vs commodity-augmented)
+# 4. Validate Hedge Preference Signal:
+#    - Paper/Hard hedge distribution (matches inflation regimes?)
+#    - Correlation threshold sensitivity
+#    - 2022 bear market: Did Hard hedge outperform Paper hedge?
+# 5. Review commodity overlay effectiveness:
+#    - GLD performance in inflationary periods
+#    - SLV kicker: Did it add value or just volatility?
+#    - Gold momentum (G-Trend) timing accuracy
+# 6. Key period analysis:
+#    - 2022 bear market: Bonds failed, did commodities protect?
+#    - 2020-2021 inflation: Gold performance vs bonds?
+#    - Normal markets: Does commodity overlay add or reduce returns?
+
+# v5.0 SPECIFIC ANALYSIS:
+# -----------------------
+# HEDGE PREFERENCE VALIDATION:
+# - [ ] Paper/Hard hedge distribution reasonable?
+# - [ ] Correlation threshold captures regime changes?
+# - [ ] 2022: Hard hedge active during bond/equity correlation spike?
+# - [ ] Normal periods: Paper hedge used for traditional safety?
+#
+# COMMODITY OVERLAY VALIDATION:
+# - [ ] Gold momentum (G-Trend) timing accuracy?
+# - [ ] Silver kicker adds value vs GLD-only?
+# - [ ] Commodity allocation sizing appropriate?
+# - [ ] Hard hedge protects during inflation?
+#
+# PERFORMANCE COMPARISON (v5.0 vs v3.5b):
+# - [ ] Max drawdown: v5.0 ≤ v3.5b? (commodities reduce DD in 2022?)
+# - [ ] Sharpe ratio: v5.0 ≥ v3.5b? (diversification benefit?)
+# - [ ] Calmar ratio: v5.0 ≥ v3.5b? (better risk-adjusted returns?)
+# - [ ] 2022 bear market: v5.0 significant improvement?
+#
+# PARAMETER SENSITIVITY ANALYSIS:
+# - [ ] hedge_corr_threshold: 0.10 (aggressive) vs 0.20 (balanced) vs 0.30 (conservative)
+# - [ ] commodity_ma_period: 100 (responsive) vs 150 (balanced) vs 200 (stable)
+# - [ ] gold_weight_max: 0.40 (conservative) vs 0.60 (balanced) vs 0.80 (aggressive)
+# - [ ] silver_momentum_gate: Does silver add value or just volatility?
+#
+# DECISION CRITERIA:
+# ✅ SUCCESS: v5.0 improves 2022 performance, ≤ v3.5b drawdown, ≥ v3.5b Sharpe
+# ⚠️  INVESTIGATE: Mixed results, commodity overlay inconsistent
+# ❌ ROLLBACK: v5.0 worse than v3.5b, commodities don't add value
