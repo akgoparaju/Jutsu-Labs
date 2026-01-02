@@ -1,3 +1,70 @@
+#### **Fix: Scheduler Jobs Frequently Missed** (2026-01-02)
+
+**Resolved APScheduler jobs being skipped due to strict misfire grace time**
+
+**Problem**:
+- Scheduled jobs (Trading, Market Close Refresh, Hourly Refresh) weren't executing
+- Scheduler state showed `last_run=2025-12-16` (2+ weeks ago) despite being enabled
+- Log entries: "Run time of job was missed by 0:00:28" (just 28 seconds late!)
+
+**Root Cause** (`jutsu_engine/api/scheduler.py`):
+- APScheduler's default `misfire_grace_time` is 1 second (extremely strict)
+- Any event loop delay (network I/O, database queries, container load) > 1 second
+  caused jobs to be marked as "missed"
+- With `coalesce=True`, missed jobs are skipped entirely
+- Evidence from logs:
+  - "Market Close Data Refresh" missed by 28 seconds → skipped
+  - "Hourly Price Refresh" missed by 2:26 → skipped
+
+**Fix Applied**:
+- Added `job_defaults` to AsyncIOScheduler configuration:
+  ```python
+  job_defaults={
+      'misfire_grace_time': 300,  # 5 minutes (was 1 second default)
+      'coalesce': True,
+      'max_instances': 1,
+  }
+  ```
+- Jobs can now be up to 5 minutes late and still execute
+- Prevents jobs from being skipped due to minor event loop delays
+
+**Files Modified**:
+- `jutsu_engine/api/scheduler.py` - Added misfire_grace_time in start() method
+
+**Agent**: API_AGENT | **Layer**: SCHEDULER
+
+---
+
+#### **Feature: Passkey Extended Sessions** (2026-01-02)
+
+**Passkey-authenticated logins now get 7-hour sessions (vs 15-minute default)**
+
+**Background**:
+- Users were getting logged out during active trading sessions
+- Passkeys provide hardware-bound security (biometric/security key)
+- Extended sessions are safe because passkeys can't be stolen like passwords
+
+**Implementation**:
+- New env var: `PASSKEY_TOKEN_EXPIRE_MINUTES=420` (7 hours default)
+- `auth_method` claim added to JWT tokens ("password" or "passkey")
+- Token refresh preserves `auth_method` - passkey sessions stay extended
+- Per-device by design (each passkey is hardware-bound)
+
+**Session Behavior**:
+| Auth Method | Access Token Duration | Refresh Preserves |
+|-------------|----------------------|-------------------|
+| Password    | 15 minutes           | 15 minutes        |
+| Passkey     | 7 hours (420 min)    | 7 hours           |
+
+**Files Modified**:
+- `jutsu_engine/api/dependencies.py` - Added `auth_method` parameter to token creation
+- `jutsu_engine/api/routes/passkey.py` - Pass `auth_method="passkey"` when creating tokens
+- `jutsu_engine/api/routes/auth.py` - Preserve `auth_method` on token refresh
+
+**Agent**: API_AGENT | **Layer**: ENTRY_POINTS
+
+---
+
 #### **Fix: Performance Equity Circular Calculation Bug** (2026-01-02)
 
 **Resolved equity calculation stuck at $10,000 for 4 trading days**

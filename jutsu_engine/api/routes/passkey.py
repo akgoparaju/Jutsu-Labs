@@ -36,6 +36,7 @@ from jutsu_engine.api.dependencies import (
     create_access_token,
     create_refresh_token,
     ACCESS_TOKEN_EXPIRE_MINUTES,
+    PASSKEY_TOKEN_EXPIRE_MINUTES,
     REFRESH_TOKEN_EXPIRE_DAYS,
 )
 from jutsu_engine.utils.security_logger import security_logger, get_client_ip
@@ -618,13 +619,14 @@ async def authenticate_passkey(
         passkey.last_used_at = datetime.now(timezone.utc)
         db.commit()
 
-        # Create tokens
+        # Create tokens with extended session for passkey authentication
+        # Passkey auth gets 7-hour tokens (hardware-bound security allows this safely)
         token_data = {"sub": user.username}
-        access_token = create_access_token(data=token_data)
-        refresh_token = create_refresh_token(data=token_data)
+        access_token = create_access_token(data=token_data, auth_method="passkey")
+        refresh_token = create_refresh_token(data=token_data, auth_method="passkey")
 
-        # Calculate expiration times
-        access_expires_in = ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        # Calculate expiration times (passkey sessions get extended duration)
+        access_expires_in = PASSKEY_TOKEN_EXPIRE_MINUTES * 60
         refresh_expires_in = REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60
 
         # Log successful authentication

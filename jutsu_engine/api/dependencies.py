@@ -254,6 +254,10 @@ def check_security_configuration() -> None:
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv('ACCESS_TOKEN_EXPIRE_MINUTES', '15'))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv('REFRESH_TOKEN_EXPIRE_DAYS', '7'))
 
+# Passkey-authenticated sessions: extended duration (7 hours = 420 minutes)
+# Passkeys provide hardware-bound security, allowing longer sessions safely
+PASSKEY_TOKEN_EXPIRE_MINUTES = int(os.getenv('PASSKEY_TOKEN_EXPIRE_MINUTES', '420'))
+
 # Legacy compatibility - used when refresh tokens not enabled
 ACCESS_TOKEN_EXPIRE_DAYS = int(os.getenv('ACCESS_TOKEN_EXPIRE_DAYS', '7'))
 
@@ -294,7 +298,8 @@ def get_password_hash(password: str) -> str:
 def create_access_token(
     data: dict,
     expires_delta: Optional[timedelta] = None,
-    use_short_expiry: bool = True
+    use_short_expiry: bool = True,
+    auth_method: str = "password"
 ) -> str:
     """
     Create a JWT access token.
@@ -304,6 +309,8 @@ def create_access_token(
         expires_delta: Custom token expiry time
         use_short_expiry: If True (default), use short ACCESS_TOKEN_EXPIRE_MINUTES.
                          If False, use legacy ACCESS_TOKEN_EXPIRE_DAYS.
+        auth_method: Authentication method used ("password" or "passkey").
+                    Passkey auth gets extended session (PASSKEY_TOKEN_EXPIRE_MINUTES).
 
     Returns:
         Encoded JWT token string
@@ -318,18 +325,31 @@ def create_access_token(
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
     elif use_short_expiry:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        # Passkey-authenticated sessions get extended duration (7 hours)
+        if auth_method == "passkey":
+            expire = datetime.now(timezone.utc) + timedelta(minutes=PASSKEY_TOKEN_EXPIRE_MINUTES)
+        else:
+            expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     else:
         expire = datetime.now(timezone.utc) + timedelta(days=ACCESS_TOKEN_EXPIRE_DAYS)
 
     # Add JWT ID for token revocation/blacklisting
     jti = str(uuid.uuid4())
-    to_encode.update({"exp": expire, "type": "access", "jti": jti})
+    to_encode.update({
+        "exp": expire,
+        "type": "access",
+        "jti": jti,
+        "auth_method": auth_method  # Track authentication method for audit
+    })
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
 
-def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+def create_refresh_token(
+    data: dict,
+    expires_delta: Optional[timedelta] = None,
+    auth_method: str = "password"
+) -> str:
     """
     Create a JWT refresh token with longer expiration.
 
@@ -339,6 +359,8 @@ def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None) 
     Args:
         data: Token payload (e.g., {"sub": username})
         expires_delta: Custom expiry (default: REFRESH_TOKEN_EXPIRE_DAYS)
+        auth_method: Authentication method used ("password" or "passkey").
+                    Stored in token to preserve session type on refresh.
 
     Returns:
         Encoded JWT refresh token string
@@ -357,7 +379,12 @@ def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None) 
 
     # Add JWT ID for token revocation/blacklisting
     jti = str(uuid.uuid4())
-    to_encode.update({"exp": expire, "type": "refresh", "jti": jti})
+    to_encode.update({
+        "exp": expire,
+        "type": "refresh",
+        "jti": jti,
+        "auth_method": auth_method  # Preserve auth method for session continuity
+    })
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 

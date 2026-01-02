@@ -425,9 +425,19 @@ class SchedulerService:
             logger.info("Scheduler already running")
             return
 
+        # Configure scheduler with reasonable misfire grace time
+        # Default of 1 second is too strict - jobs get marked as "missed"
+        # if event loop is delayed by network I/O, database queries, etc.
+        # 300 seconds (5 minutes) allows for temporary delays while still
+        # catching truly missed executions.
         self._scheduler = AsyncIOScheduler(
             jobstores={'default': MemoryJobStore()},
             timezone=EASTERN,
+            job_defaults={
+                'misfire_grace_time': 300,  # 5 minutes grace period
+                'coalesce': True,           # Combine multiple missed runs into one
+                'max_instances': 1,         # Only one instance at a time
+            },
         )
 
         # Add job if scheduler is enabled

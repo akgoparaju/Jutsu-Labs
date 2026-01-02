@@ -35,6 +35,7 @@ from jutsu_engine.api.dependencies import (
     decode_access_token,
     JWT_AVAILABLE,
     ACCESS_TOKEN_EXPIRE_MINUTES,
+    PASSKEY_TOKEN_EXPIRE_MINUTES,
     REFRESH_TOKEN_EXPIRE_DAYS,
 )
 from jutsu_engine.utils.security_logger import security_logger, get_client_ip
@@ -833,9 +834,17 @@ async def refresh_token(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Create new access token only (don't rotate refresh token)
-    new_access_token = create_access_token(data={"sub": username})
-    access_expires_in = ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    # Preserve auth_method from refresh token (passkey sessions stay extended)
+    auth_method = payload.get("auth_method", "password")
+
+    # Create new access token with same auth_method (preserves session type)
+    new_access_token = create_access_token(data={"sub": username}, auth_method=auth_method)
+
+    # Calculate expiration based on auth method
+    if auth_method == "passkey":
+        access_expires_in = PASSKEY_TOKEN_EXPIRE_MINUTES * 60
+    else:
+        access_expires_in = ACCESS_TOKEN_EXPIRE_MINUTES * 60
 
     # Log token refresh
     security_logger.log_token_refreshed(
@@ -843,7 +852,7 @@ async def refresh_token(
         ip_address=client_ip
     )
 
-    logger.info(f"Token refreshed for user '{username}'")
+    logger.info(f"Token refreshed for user '{username}' (auth_method={auth_method})")
 
     return Token(
         access_token=new_access_token,
