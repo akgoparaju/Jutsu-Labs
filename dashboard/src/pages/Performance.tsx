@@ -35,9 +35,12 @@ function Performance() {
     }).then(res => res.data),
   })
 
-  // Initialize chart
+  // Initialize chart - re-run when isLoading changes (container becomes available)
   useEffect(() => {
     if (!chartContainerRef.current) return
+
+    // Don't create chart if it already exists
+    if (chartRef.current) return
 
     chartRef.current = createChart(chartContainerRef.current, {
       layout: {
@@ -83,9 +86,14 @@ function Performance() {
 
     return () => {
       window.removeEventListener('resize', handleResize)
-      chartRef.current?.remove()
+      if (chartRef.current) {
+        chartRef.current.remove()
+        chartRef.current = null
+        seriesRef.current = null
+        baselineSeriesRef.current = null
+      }
     }
-  }, [])
+  }, [isLoading])
 
   // Update chart data
   useEffect(() => {
