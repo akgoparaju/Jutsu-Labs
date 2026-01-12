@@ -5,7 +5,7 @@ import { createChart, IChartApi, ISeriesApi, LineData } from 'lightweight-charts
 
 function Performance() {
   const [mode, setMode] = useState('')
-  const [days, setDays] = useState(30)
+  const [days, setDays] = useState(90)
 
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
