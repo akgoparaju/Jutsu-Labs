@@ -47,7 +47,8 @@ async def get_performance(
     db: Session = Depends(get_db),
     engine_state: EngineState = Depends(get_engine_state),
     mode: Optional[str] = Query(None, description="Filter by mode"),
-    days: int = Query(30, ge=1, le=365, description="Days of history"),
+    days: int = Query(90, ge=0, description="Days of history (0 for all data)"),
+    start_date: Optional[str] = Query(None, description="Start date (ISO format) for custom range"),
     _auth: bool = Depends(verify_credentials),
 ) -> PerformanceResponse:
     """
@@ -68,14 +69,28 @@ async def get_performance(
 
         # Calculate date range
         end_date = datetime.now(timezone.utc)
-        start_date = end_date - timedelta(days=days)
+        filter_start_date = None
+        
+        if start_date:
+            # Custom start date provided (for YTD or custom range)
+            try:
+                filter_start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                if filter_start_date.tzinfo is None:
+                    filter_start_date = filter_start_date.replace(tzinfo=timezone.utc)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid start_date format. Use ISO format.")
+        elif days > 0:
+            # Days-based filtering
+            filter_start_date = end_date - timedelta(days=days)
+        # If days=0 and no start_date, filter_start_date remains None (ALL data)
 
         # Get historical snapshots
+        history_filters = [PerformanceSnapshot.mode == effective_mode]
+        if filter_start_date:
+            history_filters.append(PerformanceSnapshot.timestamp >= filter_start_date)
+        
         history_query = db.query(PerformanceSnapshot).filter(
-            and_(
-                PerformanceSnapshot.mode == effective_mode,
-                PerformanceSnapshot.timestamp >= start_date,
-            )
+            and_(*history_filters)
         ).order_by(PerformanceSnapshot.timestamp)
 
         history = history_query.all()
@@ -286,7 +301,8 @@ async def get_equity_curve(
     db: Session = Depends(get_db),
     engine_state: EngineState = Depends(get_engine_state),
     mode: Optional[str] = Query(None, description="Filter by mode"),
-    days: int = Query(90, ge=1, le=365, description="Days of history"),
+    days: int = Query(90, ge=0, description="Days of history (0 for all data)"),
+    start_date: Optional[str] = Query(None, description="Start date (ISO format) for custom range"),
     _auth: bool = Depends(verify_credentials),
 ) -> dict:
     """
@@ -298,7 +314,25 @@ async def get_equity_curve(
         effective_mode = mode or engine_state.mode
 
         end_date = datetime.now(timezone.utc)
-        start_date = end_date - timedelta(days=days)
+        filter_start_date = None
+        
+        if start_date:
+            # Custom start date provided (for YTD or custom range)
+            try:
+                filter_start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                if filter_start_date.tzinfo is None:
+                    filter_start_date = filter_start_date.replace(tzinfo=timezone.utc)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid start_date format. Use ISO format.")
+        elif days > 0:
+            # Days-based filtering
+            filter_start_date = end_date - timedelta(days=days)
+        # If days=0 and no start_date, filter_start_date remains None (ALL data)
+
+        # Build query filters
+        query_filters = [PerformanceSnapshot.mode == effective_mode]
+        if filter_start_date:
+            query_filters.append(PerformanceSnapshot.timestamp >= filter_start_date)
 
         snapshots = db.query(
             PerformanceSnapshot.timestamp,
@@ -308,10 +342,7 @@ async def get_equity_curve(
             PerformanceSnapshot.baseline_value,
             PerformanceSnapshot.baseline_return,
         ).filter(
-            and_(
-                PerformanceSnapshot.mode == effective_mode,
-                PerformanceSnapshot.timestamp >= start_date,
-            )
+            and_(*query_filters)
         ).order_by(PerformanceSnapshot.timestamp).all()
 
         # Format for charting - deduplicate by date (keep latest per day)
@@ -334,7 +365,7 @@ async def get_equity_curve(
 
         return {
             "mode": effective_mode,
-            "start_date": start_date.isoformat(),
+            "start_date": filter_start_date.isoformat() if filter_start_date else None,
             "end_date": end_date.isoformat(),
             "data_points": len(data),
             "data": data,

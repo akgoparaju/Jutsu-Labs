@@ -266,9 +266,9 @@ export const tradesApi = {
 }
 
 export const performanceApi = {
-  getPerformance: (params?: { mode?: string; days?: number }) =>
+  getPerformance: (params?: { mode?: string; days?: number; start_date?: string }) =>
     api.get<PerformanceResponse>('/performance', { params }),
-  getEquityCurve: (params?: { mode?: string; days?: number }) =>
+  getEquityCurve: (params?: { mode?: string; days?: number; start_date?: string }) =>
     api.get('/performance/equity-curve', { params }),
   getDrawdown: (params?: { mode?: string }) =>
     api.get('/performance/drawdown', { params }),

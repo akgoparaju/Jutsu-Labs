@@ -1,11 +1,79 @@
 import { useQuery } from '@tanstack/react-query'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { performanceApi } from '../api/client'
-import { createChart, IChartApi, ISeriesApi, LineData } from 'lightweight-charts'
+import { createChart, IChartApi, ISeriesApi, LineData, TickMarkType } from 'lightweight-charts'
+
+// Time range options
+type TimeRange = '30d' | '90d' | 'ytd' | '1y' | 'all' | 'custom'
+
+interface TimeRangeParams {
+  days: number
+  start_date?: string
+}
+
+function getTimeRangeParams(timeRange: TimeRange, customStartDate?: string, _customEndDate?: string): TimeRangeParams {
+  const now = new Date()
+  
+  switch (timeRange) {
+    case '30d':
+      return { days: 30 }
+    case '90d':
+      return { days: 90 }
+    case 'ytd': {
+      // Year to date: from Jan 1 of current year
+      const jan1 = new Date(now.getFullYear(), 0, 1)
+      return { days: 0, start_date: jan1.toISOString().split('T')[0] }
+    }
+    case '1y':
+      return { days: 365 }
+    case 'all':
+      return { days: 0 }
+    case 'custom':
+      if (customStartDate) {
+        return { days: 0, start_date: customStartDate }
+      }
+      return { days: 90 }
+    default:
+      return { days: 90 }
+  }
+}
+
+function getTimeRangeLabel(timeRange: TimeRange): string {
+  switch (timeRange) {
+    case '30d': return '30-Day'
+    case '90d': return '90-Day'
+    case 'ytd': return 'YTD'
+    case '1y': return '1-Year'
+    case 'all': return 'All-Time'
+    case 'custom': return 'Custom'
+    default: return ''
+  }
+}
+
+/**
+ * Calculate period return from cumulative returns at start and end of period.
+ * Formula: ((1 + endCum/100) / (1 + startCum/100) - 1) * 100
+ * This gives the actual return over the selected period, not all-time.
+ */
+function calculatePeriodReturn(endCumReturn: number, startCumReturn: number): number {
+  const startGrowth = 1 + startCumReturn / 100
+  const endGrowth = 1 + endCumReturn / 100
+  if (startGrowth === 0) return 0 // Guard against division by zero
+  return (endGrowth / startGrowth - 1) * 100
+}
 
 function Performance() {
   const [mode, setMode] = useState('')
-  const [days, setDays] = useState(90)
+  const [timeRange, setTimeRange] = useState<TimeRange>('90d')
+  const [showCustomModal, setShowCustomModal] = useState(false)
+  const [customStartDate, setCustomStartDate] = useState('')
+  const [customEndDate, setCustomEndDate] = useState('')
+
+  // Compute query params from time range
+  const queryParams = useMemo(() => 
+    getTimeRangeParams(timeRange, customStartDate, customEndDate),
+    [timeRange, customStartDate, customEndDate]
+  )
 
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -13,18 +81,20 @@ function Performance() {
   const baselineSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
 
   const { data: performance, isLoading } = useQuery({
-    queryKey: ['performance', mode, days],
+    queryKey: ['performance', mode, timeRange, queryParams],
     queryFn: () => performanceApi.getPerformance({
       mode: mode || undefined,
-      days,
+      days: queryParams.days,
+      start_date: queryParams.start_date,
     }).then(res => res.data),
   })
 
   const { data: equityCurve } = useQuery({
-    queryKey: ['equityCurve', mode, days],
+    queryKey: ['equityCurve', mode, timeRange, queryParams],
     queryFn: () => performanceApi.getEquityCurve({
       mode: mode || undefined,
-      days,
+      days: queryParams.days,
+      start_date: queryParams.start_date,
     }).then(res => res.data),
   })
 
@@ -34,6 +104,43 @@ function Performance() {
       mode: mode || undefined,
     }).then(res => res.data),
   })
+
+  // Calculate period-specific returns (for non-"all" time ranges)
+  const periodMetrics = useMemo(() => {
+    if (!performance?.history || performance.history.length === 0) {
+      return { periodReturn: 0, periodBaselineReturn: 0, periodAlpha: 0 }
+    }
+
+    const firstSnapshot = performance.history[0]
+    const lastSnapshot = performance.history[performance.history.length - 1]
+
+    // For "all" time range, use raw cumulative returns (no normalization)
+    if (timeRange === 'all') {
+      const cumReturn = lastSnapshot.cumulative_return ?? 0
+      const baselineReturn = lastSnapshot.baseline_return ?? 0
+      return {
+        periodReturn: cumReturn,
+        periodBaselineReturn: baselineReturn,
+        periodAlpha: cumReturn - baselineReturn
+      }
+    }
+
+    // For other ranges, calculate period-specific returns
+    const periodReturn = calculatePeriodReturn(
+      lastSnapshot.cumulative_return ?? 0,
+      firstSnapshot.cumulative_return ?? 0
+    )
+    const periodBaselineReturn = calculatePeriodReturn(
+      lastSnapshot.baseline_return ?? 0,
+      firstSnapshot.baseline_return ?? 0
+    )
+
+    return {
+      periodReturn,
+      periodBaselineReturn,
+      periodAlpha: periodReturn - periodBaselineReturn
+    }
+  }, [performance?.history, timeRange])
 
   // Initialize chart - re-run when isLoading changes (container becomes available)
   useEffect(() => {
@@ -56,6 +163,47 @@ function Performance() {
       timeScale: {
         timeVisible: true,
         secondsVisible: false,
+        tickMarkFormatter: (time: string | number, tickMarkType: TickMarkType) => {
+          // Convert time to Date object
+          const date = typeof time === 'string'
+            ? new Date(time)
+            : new Date(time * 1000)
+
+          const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+          const day = date.getDate()
+          const month = months[date.getMonth()]
+          const year = date.getFullYear()
+
+          // Format based on tick mark type
+          switch (tickMarkType) {
+            case TickMarkType.Year:
+              return year.toString()
+            case TickMarkType.Month:
+              return month
+            case TickMarkType.DayOfMonth:
+              return `${day} ${month}`
+            default:
+              return `${day} ${month}`
+          }
+        },
+      },
+      rightPriceScale: {
+        borderColor: '#334155',
+      },
+      crosshair: {
+        mode: 1, // Normal crosshair mode
+        vertLine: {
+          labelBackgroundColor: '#475569',
+        },
+        horzLine: {
+          labelBackgroundColor: '#475569',
+        },
+      },
+      localization: {
+        priceFormatter: (price: number) => {
+          const sign = price >= 0 ? '+' : ''
+          return `${sign}${price.toFixed(2)}%`
+        },
       },
     })
 
@@ -64,6 +212,13 @@ function Performance() {
       color: '#3b82f6',
       lineWidth: 2,
       title: 'Portfolio',
+      priceFormat: {
+        type: 'custom',
+        formatter: (price: number) => {
+          const sign = price >= 0 ? '+' : ''
+          return `${sign}${price.toFixed(2)}%`
+        },
+      },
     })
 
     // QQQ baseline line (orange/amber)
@@ -72,6 +227,13 @@ function Performance() {
       lineWidth: 2,
       lineStyle: 2, // Dashed line
       title: 'QQQ Baseline',
+      priceFormat: {
+        type: 'custom',
+        formatter: (price: number) => {
+          const sign = price >= 0 ? '+' : ''
+          return `${sign}${price.toFixed(2)}%`
+        },
+      },
     })
 
     const handleResize = () => {
@@ -95,30 +257,90 @@ function Performance() {
     }
   }, [isLoading])
 
-  // Update chart data
+  // Update chart data and formatters based on time range
   useEffect(() => {
-    if (!seriesRef.current || !equityCurve?.data) return
+    if (!chartRef.current || !seriesRef.current || !equityCurve?.data || equityCurve.data.length === 0) return
 
-    // Portfolio equity data
-    const chartData: LineData[] = equityCurve.data.map((point: { time: string; value: number }) => ({
-      time: point.time as string,
-      value: point.value,
-    }))
-    seriesRef.current.setData(chartData)
+    const firstPoint = equityCurve.data[0]
+    const firstValue = firstPoint?.value ?? 1
+    const firstBaseline = firstPoint?.baseline_value ?? 1
+    const isAllTime = timeRange === 'all'
 
-    // QQQ baseline data (if available)
+    // Define formatters based on time range
+    // For "all" time range: show dollar amounts
+    // For other ranges: show percentage
+    const priceFormatter = isAllTime
+      ? (price: number) => `$${price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+      : (price: number) => {
+          const sign = price >= 0 ? '+' : ''
+          return `${sign}${price.toFixed(2)}%`
+        }
+
+    // Apply formatters BEFORE setting data
+    chartRef.current.applyOptions({
+      localization: {
+        priceFormatter,
+      },
+    })
+
+    seriesRef.current.applyOptions({
+      priceFormat: {
+        type: 'custom',
+        formatter: priceFormatter,
+      },
+    })
+
     if (baselineSeriesRef.current) {
-      const baselineData: LineData[] = equityCurve.data
-        .filter((point: { time: string; baseline_value?: number }) => point.baseline_value != null)
-        .map((point: { time: string; baseline_value: number }) => ({
-          time: point.time as string,
-          value: point.baseline_value,
-        }))
-      baselineSeriesRef.current.setData(baselineData)
+      baselineSeriesRef.current.applyOptions({
+        priceFormat: {
+          type: 'custom',
+          formatter: priceFormatter,
+        },
+      })
+    }
+
+    // For "all" time range, show raw equity values (no normalization)
+    // For other ranges, normalize to percentage return from start of period
+    if (isAllTime) {
+      // Raw equity values (no normalization)
+      const chartData: LineData[] = equityCurve.data.map((point: { time: string; value: number }) => ({
+        time: point.time as string,
+        value: point.value,
+      }))
+      seriesRef.current.setData(chartData)
+
+      // QQQ baseline data (raw values)
+      if (baselineSeriesRef.current) {
+        const baselineData: LineData[] = equityCurve.data
+          .filter((point: { time: string; baseline_value?: number }) => point.baseline_value != null)
+          .map((point: { time: string; baseline_value: number }) => ({
+            time: point.time as string,
+            value: point.baseline_value,
+          }))
+        baselineSeriesRef.current.setData(baselineData)
+      }
+    } else {
+      // Normalized to percentage return from start of period (0% at start)
+      const chartData: LineData[] = equityCurve.data.map((point: { time: string; value: number }) => ({
+        time: point.time as string,
+        value: firstValue > 0 ? (point.value / firstValue - 1) * 100 : 0,
+      }))
+      seriesRef.current.setData(chartData)
+
+      // QQQ baseline data (normalized)
+      if (baselineSeriesRef.current) {
+        const baselineData: LineData[] = equityCurve.data
+          .filter((point: { time: string; baseline_value?: number }) => point.baseline_value != null)
+          .map((point: { time: string; baseline_value: number }) => ({
+            time: point.time as string,
+            value: firstBaseline > 0 ? (point.baseline_value / firstBaseline - 1) * 100 : 0,
+          }))
+        baselineSeriesRef.current.setData(baselineData)
+      }
     }
 
     chartRef.current?.timeScale().fitContent()
-  }, [equityCurve])
+  }, [equityCurve, timeRange])
 
   if (isLoading) {
     return (
@@ -145,14 +367,22 @@ function Performance() {
           </select>
 
           <select
-            value={days}
-            onChange={(e) => setDays(Number(e.target.value))}
+            value={timeRange}
+            onChange={(e) => {
+              const value = e.target.value as TimeRange
+              if (value === 'custom') {
+                setShowCustomModal(true)
+              }
+              setTimeRange(value)
+            }}
             className="px-3 py-2 bg-slate-700 rounded-lg border border-slate-600"
           >
-            <option value={7}>Last 7 Days</option>
-            <option value={30}>Last 30 Days</option>
-            <option value={90}>Last 90 Days</option>
-            <option value={365}>Last Year</option>
+            <option value="30d">Last 30 Days</option>
+            <option value="90d">Last 90 Days</option>
+            <option value="ytd">Year to Date</option>
+            <option value="1y">Last Year</option>
+            <option value="all">All Time</option>
+            <option value="custom">Custom Range...</option>
           </select>
         </div>
       </div>
@@ -168,11 +398,11 @@ function Performance() {
           </div>
 
           <div className="bg-slate-800 rounded-lg p-4 border border-slate-700">
-            <div className="text-sm text-gray-400 mb-1">Cumulative Return</div>
+            <div className="text-sm text-gray-400 mb-1">{getTimeRangeLabel(timeRange)} Return</div>
             <div className={`text-2xl font-bold ${
-              (performance.current.cumulative_return ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
+              periodMetrics.periodReturn >= 0 ? 'text-green-400' : 'text-red-400'
             }`}>
-              {(performance.current.cumulative_return ?? 0).toFixed(2)}%
+              {periodMetrics.periodReturn >= 0 ? '+' : ''}{periodMetrics.periodReturn.toFixed(2)}%
             </div>
           </div>
 
@@ -275,7 +505,16 @@ function Performance() {
       {/* Equity Curve Chart */}
       <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold">Equity Curve</h3>
+          <div>
+            <h3 className="text-lg font-semibold">
+              {timeRange === 'all' ? 'Equity Curve' : `${getTimeRangeLabel(timeRange)} Performance`}
+            </h3>
+            <p className="text-sm text-gray-400">
+              {timeRange === 'all'
+                ? 'Absolute equity values over time'
+                : 'Percentage return from start of period (both start at 0%)'}
+            </p>
+          </div>
           <div className="flex items-center gap-4 text-sm">
             <div className="flex items-center gap-2">
               <div className="w-4 h-0.5 bg-blue-500"></div>
@@ -489,6 +728,62 @@ function Performance() {
         </div>
         )
       })()}
+
+      {/* Custom Date Range Modal */}
+      {showCustomModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-slate-800 rounded-lg p-6 border border-slate-700 w-full max-w-md">
+            <h3 className="text-lg font-semibold mb-4">Select Custom Date Range</h3>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Start Date</label>
+                <input
+                  type="date"
+                  value={customStartDate}
+                  onChange={(e) => setCustomStartDate(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-700 rounded-lg border border-slate-600"
+                />
+              </div>
+              
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">End Date (optional)</label>
+                <input
+                  type="date"
+                  value={customEndDate}
+                  onChange={(e) => setCustomEndDate(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-700 rounded-lg border border-slate-600"
+                  placeholder="Leave empty for today"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => {
+                  setShowCustomModal(false)
+                  // Reset to 90d if no date selected
+                  if (!customStartDate) {
+                    setTimeRange('90d')
+                  }
+                }}
+                className="flex-1 px-4 py-2 bg-slate-600 hover:bg-slate-500 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setShowCustomModal(false)
+                }}
+                disabled={!customStartDate}
+                className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
+              >
+                Apply
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

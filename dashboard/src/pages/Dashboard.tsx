@@ -1,10 +1,58 @@
 import { useStatus, useRegime, useIndicators, useStartEngine, useStopEngine, useSwitchMode } from '../hooks/useStatus'
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExecuteTradeModal } from '../components/ExecuteTradeModal'
 import { SchedulerControl } from '../components/SchedulerControl'
 import { SchwabTokenBanner } from '../components/SchwabTokenBanner'
 import { performanceApi } from '../api/client'
+
+// Time range types for dashboard
+type DashboardTimeRange = '90d' | 'ytd' | '1y' | 'all'
+
+interface TimeRangeParams {
+  days: number
+  start_date?: string
+}
+
+function getTimeRangeParams(timeRange: DashboardTimeRange): TimeRangeParams {
+  const now = new Date()
+
+  switch (timeRange) {
+    case '90d':
+      return { days: 90 }
+    case 'ytd': {
+      const jan1 = new Date(now.getFullYear(), 0, 1)
+      return { days: 0, start_date: jan1.toISOString().split('T')[0] }
+    }
+    case '1y':
+      return { days: 365 }
+    case 'all':
+      return { days: 0 }
+    default:
+      return { days: 90 }
+  }
+}
+
+function getTimeRangeLabel(timeRange: DashboardTimeRange): string {
+  switch (timeRange) {
+    case '90d': return '90-Day'
+    case 'ytd': return 'YTD'
+    case '1y': return '1-Year'
+    case 'all': return 'All-Time'
+    default: return ''
+  }
+}
+
+/**
+ * Calculate period return from cumulative returns at start and end of period.
+ * Formula: ((1 + endCum/100) / (1 + startCum/100) - 1) * 100
+ */
+function calculatePeriodReturn(endCumReturn: number, startCumReturn: number): number {
+  const startGrowth = 1 + startCumReturn / 100
+  const endGrowth = 1 + endCumReturn / 100
+  if (startGrowth === 0) return 0
+  return (endGrowth / startGrowth - 1) * 100
+}
 
 function Dashboard() {
   const { data: status, isLoading: statusLoading } = useStatus()
@@ -15,18 +63,62 @@ function Dashboard() {
   const switchMode = useSwitchMode()
   const queryClient = useQueryClient()
 
+  // Time range state for portfolio metrics
+  const [timeRange, setTimeRange] = useState<DashboardTimeRange>('90d')
+
+  // Calculate query params based on time range
+  const queryParams = useMemo(() => getTimeRangeParams(timeRange), [timeRange])
+
   // Fetch performance data for baseline values
   const { data: performanceData } = useQuery({
-    queryKey: ['performance', '', 30],
-    queryFn: () => performanceApi.getPerformance({ days: 30 }).then(res => res.data),
+    queryKey: ['performance', '', queryParams.days, queryParams.start_date],
+    queryFn: () => performanceApi.getPerformance({
+      days: queryParams.days,
+      start_date: queryParams.start_date
+    }).then(res => res.data),
     refetchInterval: 30000, // Refresh every 30 seconds
   })
 
   // Get latest baseline from most recent snapshot
   const latestSnapshot = performanceData?.history?.[performanceData.history.length - 1]
   const baselineValue = latestSnapshot?.baseline_value
-  const baselineReturn = latestSnapshot?.baseline_return
-  const portfolioReturn = latestSnapshot?.cumulative_return
+
+  // Calculate period-specific returns
+  const periodMetrics = useMemo(() => {
+    if (!performanceData?.history || performanceData.history.length === 0) {
+      return { periodReturn: 0, periodBaselineReturn: 0, periodAlpha: 0 }
+    }
+
+    const firstSnapshot = performanceData.history[0]
+    const lastSnapshot = performanceData.history[performanceData.history.length - 1]
+
+    // For "all" time range, use raw cumulative returns (no normalization)
+    if (timeRange === 'all') {
+      const cumReturn = lastSnapshot.cumulative_return ?? 0
+      const baseReturn = lastSnapshot.baseline_return ?? 0
+      return {
+        periodReturn: cumReturn,
+        periodBaselineReturn: baseReturn,
+        periodAlpha: cumReturn - baseReturn
+      }
+    }
+
+    // For other ranges, calculate period-specific returns
+    const periodReturn = calculatePeriodReturn(
+      lastSnapshot.cumulative_return ?? 0,
+      firstSnapshot.cumulative_return ?? 0
+    )
+    const periodBaselineReturn = calculatePeriodReturn(
+      lastSnapshot.baseline_return ?? 0,
+      firstSnapshot.baseline_return ?? 0
+    )
+
+    return {
+      periodReturn,
+      periodBaselineReturn,
+      periodAlpha: periodReturn - periodBaselineReturn
+    }
+  }, [performanceData?.history, timeRange])
 
   const [confirmLive, setConfirmLive] = useState(false)
   const [showTradeModal, setShowTradeModal] = useState(false)
@@ -222,61 +314,90 @@ function Dashboard() {
       {/* Portfolio Overview */}
       {status?.portfolio && (
         <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
-          <h3 className="text-lg font-semibold mb-4">Portfolio</h3>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold">Portfolio</h3>
 
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
-            <div className="bg-slate-700/50 rounded-lg p-4">
-              <div className="text-sm text-gray-400 mb-1">Total Equity</div>
-              <div className="text-2xl font-bold text-green-400">
-                ${status.portfolio.total_equity?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) ?? '0'}
-              </div>
+            {/* Time Range Segmented Buttons */}
+            <div className="flex bg-slate-700/50 rounded-lg p-1">
+              {(['90d', 'ytd', '1y', 'all'] as DashboardTimeRange[]).map((range) => (
+                <button
+                  key={range}
+                  onClick={() => setTimeRange(range)}
+                  className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all ${
+                    timeRange === range
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'text-gray-400 hover:text-white hover:bg-slate-600/50'
+                  }`}
+                >
+                  {range === '90d' ? '90D' : range === 'ytd' ? 'YTD' : range === '1y' ? '1Y' : 'All'}
+                </button>
+              ))}
             </div>
+          </div>
 
-            <div className="bg-slate-700/50 rounded-lg p-4">
-              <div className="text-sm text-gray-400 mb-1">P&L</div>
-              <div className={`text-2xl font-bold ${(portfolioReturn ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                {portfolioReturn != null ? `${portfolioReturn >= 0 ? '+' : ''}${portfolioReturn.toFixed(2)}%` : 'N/A'}
+          {/* Row 1: Account Balances */}
+          <div className="mb-4">
+            <div className="text-xs text-gray-500 uppercase tracking-wider mb-2">Account Balances</div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="bg-slate-700/50 rounded-lg p-4">
+                <div className="text-sm text-gray-400 mb-1">Total Equity</div>
+                <div className="text-2xl font-bold text-green-400">
+                  ${status.portfolio.total_equity?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) ?? '0'}
+                </div>
               </div>
-            </div>
 
-            <div className="bg-slate-700/50 rounded-lg p-4 border border-amber-600/30">
-              <div className="text-sm text-amber-400 mb-1">QQQ Baseline</div>
-              <div className="text-2xl font-bold text-amber-400">
-                ${baselineValue?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) ?? 'N/A'}
+              <div className="bg-slate-700/50 rounded-lg p-4 border border-amber-600/30">
+                <div className="text-sm text-amber-400 mb-1">QQQ Baseline</div>
+                <div className="text-2xl font-bold text-amber-400">
+                  ${baselineValue?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) ?? 'N/A'}
+                </div>
               </div>
-              {baselineReturn != null && (
-                <div className="text-xs text-amber-500 mt-1">
-                  {baselineReturn >= 0 ? '+' : ''}{baselineReturn.toFixed(2)}%
+
+              {status.portfolio.cash !== undefined && (
+                <div className="bg-slate-700/50 rounded-lg p-4">
+                  <div className="text-sm text-gray-400 mb-1">Cash</div>
+                  <div className="text-2xl font-bold">
+                    ${status.portfolio.cash?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                  </div>
+                </div>
+              )}
+
+              {status.portfolio.positions_value !== undefined && (
+                <div className="bg-slate-700/50 rounded-lg p-4">
+                  <div className="text-sm text-gray-400 mb-1">Positions Value</div>
+                  <div className="text-2xl font-bold">
+                    ${status.portfolio.positions_value?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                  </div>
                 </div>
               )}
             </div>
+          </div>
 
-            <div className="bg-slate-700/50 rounded-lg p-4">
-              <div className="text-sm text-gray-400 mb-1">Alpha</div>
-              <div className={`text-2xl font-bold ${((portfolioReturn ?? 0) - (baselineReturn ?? 0)) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                {portfolioReturn != null && baselineReturn != null
-                  ? `${(portfolioReturn - baselineReturn) >= 0 ? '+' : ''}${(portfolioReturn - baselineReturn).toFixed(2)}%`
-                  : 'N/A'}
+          {/* Row 2: Period Returns */}
+          <div className="mb-6">
+            <div className="text-xs text-gray-500 uppercase tracking-wider mb-2">{getTimeRangeLabel(timeRange)} Returns</div>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="bg-slate-700/50 rounded-lg p-4">
+                <div className="text-sm text-gray-400 mb-1">Portfolio</div>
+                <div className={`text-2xl font-bold ${periodMetrics.periodReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {periodMetrics.periodReturn >= 0 ? '+' : ''}{periodMetrics.periodReturn.toFixed(2)}%
+                </div>
+              </div>
+
+              <div className="bg-slate-700/50 rounded-lg p-4 border border-amber-600/30">
+                <div className="text-sm text-amber-400 mb-1">QQQ Baseline</div>
+                <div className={`text-2xl font-bold ${periodMetrics.periodBaselineReturn >= 0 ? 'text-amber-400' : 'text-amber-600'}`}>
+                  {periodMetrics.periodBaselineReturn >= 0 ? '+' : ''}{periodMetrics.periodBaselineReturn.toFixed(2)}%
+                </div>
+              </div>
+
+              <div className="bg-slate-700/50 rounded-lg p-4">
+                <div className="text-sm text-gray-400 mb-1">Alpha</div>
+                <div className={`text-2xl font-bold ${periodMetrics.periodAlpha >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {periodMetrics.periodAlpha >= 0 ? '+' : ''}{periodMetrics.periodAlpha.toFixed(2)}%
+                </div>
               </div>
             </div>
-
-            {status.portfolio.cash !== undefined && (
-              <div className="bg-slate-700/50 rounded-lg p-4">
-                <div className="text-sm text-gray-400 mb-1">Cash</div>
-                <div className="text-xl font-bold">
-                  ${status.portfolio.cash?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
-                </div>
-              </div>
-            )}
-
-            {status.portfolio.positions_value !== undefined && (
-              <div className="bg-slate-700/50 rounded-lg p-4">
-                <div className="text-sm text-gray-400 mb-1">Positions Value</div>
-                <div className="text-xl font-bold">
-                  ${status.portfolio.positions_value?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
-                </div>
-              </div>
-            )}
           </div>
 
           {/* Positions Table */}
