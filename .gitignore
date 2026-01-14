@@ -101,3 +101,4 @@ state/state.json
 state/scheduler_state.json
 state/*.db
 state/*.sqlite
+claudedocs/
