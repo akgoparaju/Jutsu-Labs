@@ -166,6 +166,9 @@ function Dashboard() {
   const [confirmLive, setConfirmLive] = useState(false)
   const [showTradeModal, setShowTradeModal] = useState(false)
 
+  // Extract currentCell for use in Target Allocation (extracted from Decision Tree IIFE)
+  const currentCell = indicators?.indicators?.find(i => i.name === 'current_cell')?.value
+
   const handleTradeSuccess = () => {
     // Refresh status and trades data after successful trade
     queryClient.invalidateQueries({ queryKey: ['status'] })
@@ -226,7 +229,7 @@ function Dashboard() {
         onSuccess={handleTradeSuccess}
       />
 
-      {/* Control Panel - Admin Only */}
+      {/* 1. Engine Control - Admin Only */}
       {hasPermission('engine:control') && (
         <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
           <h3 className="text-lg font-semibold mb-4">Engine Control</h3>
@@ -315,54 +318,11 @@ function Dashboard() {
         </div>
       )}
 
-      {/* Regime Display */}
-      <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
-        <h3 className="text-lg font-semibold mb-4">Current Regime</h3>
-
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="bg-slate-700/50 rounded-lg p-4">
-            <div className="text-sm text-gray-400 mb-1">Strategy Cell</div>
-            <div className="text-2xl font-bold text-blue-400">
-              {regime?.cell ?? status?.regime?.cell ?? 'N/A'}
-            </div>
-          </div>
-
-          <div className="bg-slate-700/50 rounded-lg p-4">
-            <div className="text-sm text-gray-400 mb-1">Trend State</div>
-            <div className={`text-2xl font-bold ${
-              (regime?.trend_state || status?.regime?.trend_state) === 'BULLISH' ? 'text-green-400' :
-              (regime?.trend_state || status?.regime?.trend_state) === 'BEARISH' ? 'text-red-400' :
-              'text-yellow-400'
-            }`}>
-              {regime?.trend_state ?? status?.regime?.trend_state ?? 'N/A'}
-            </div>
-          </div>
-
-          <div className="bg-slate-700/50 rounded-lg p-4">
-            <div className="text-sm text-gray-400 mb-1">Volatility State</div>
-            <div className={`text-2xl font-bold ${
-              (regime?.vol_state || status?.regime?.vol_state) === 'LOW' ? 'text-green-400' :
-              (regime?.vol_state || status?.regime?.vol_state) === 'HIGH' ? 'text-red-400' :
-              'text-yellow-400'
-            }`}>
-              {regime?.vol_state ?? status?.regime?.vol_state ?? 'N/A'}
-            </div>
-          </div>
-
-          <div className="bg-slate-700/50 rounded-lg p-4">
-            <div className="text-sm text-gray-400 mb-1">Z-Score</div>
-            <div className="text-2xl font-bold text-purple-400">
-              {(regime?.z_score ?? status?.regime?.z_score)?.toFixed(2) ?? 'N/A'}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Portfolio Overview */}
+      {/* 2. Portfolio Returns - with time range filter */}
       {status?.portfolio && (
         <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold">Portfolio</h3>
+            <h3 className="text-lg font-semibold">Portfolio Returns</h3>
 
             {/* Time Range Segmented Buttons */}
             <div className="flex bg-slate-700/50 rounded-lg p-1">
@@ -382,83 +342,85 @@ function Dashboard() {
             </div>
           </div>
 
-          {/* Row 1: Account Balances */}
-          <div className="mb-4">
-            <div className="text-xs text-gray-500 uppercase tracking-wider mb-2">Account Balances</div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <div className="bg-slate-700/50 rounded-lg p-4">
-                <div className="text-sm text-gray-400 mb-1">Total Equity</div>
-                <div className="text-2xl font-bold text-green-400">
-                  ${status.portfolio.total_equity?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) ?? '0'}
-                </div>
+          {/* Period Returns */}
+          <div className="text-xs text-gray-500 uppercase tracking-wider mb-2">{getTimeRangeLabel(timeRange)} Returns</div>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <div className="bg-slate-700/50 rounded-lg p-4">
+              <div className="text-sm text-gray-400 mb-1">Portfolio</div>
+              <div className={`text-2xl font-bold ${periodMetrics.periodReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {periodMetrics.periodReturn >= 0 ? '+' : ''}{periodMetrics.periodReturn.toFixed(2)}%
               </div>
+            </div>
 
-              <div className="bg-slate-700/50 rounded-lg p-4 border border-amber-600/30">
-                <div className="text-sm text-amber-400 mb-1">QQQ Baseline</div>
-                <div className="text-2xl font-bold text-amber-400">
-                  ${baselineValue?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) ?? 'N/A'}
-                </div>
+            <div className="bg-slate-700/50 rounded-lg p-4">
+              <div className="text-sm text-gray-400 mb-1">Portfolio CAGR</div>
+              <div className={`text-2xl font-bold ${periodMetrics.annualizedReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {periodMetrics.annualizedReturn >= 0 ? '+' : ''}{periodMetrics.annualizedReturn.toFixed(2)}%
               </div>
+            </div>
 
-              {status.portfolio.cash !== undefined && (
-                <div className="bg-slate-700/50 rounded-lg p-4">
-                  <div className="text-sm text-gray-400 mb-1">Cash</div>
-                  <div className="text-2xl font-bold">
-                    ${status.portfolio.cash?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
-                  </div>
-                </div>
-              )}
+            <div className="bg-slate-700/50 rounded-lg p-4 border border-amber-600/30">
+              <div className="text-sm text-amber-400 mb-1">QQQ Baseline</div>
+              <div className={`text-2xl font-bold ${periodMetrics.periodBaselineReturn >= 0 ? 'text-amber-400' : 'text-amber-600'}`}>
+                {periodMetrics.periodBaselineReturn >= 0 ? '+' : ''}{periodMetrics.periodBaselineReturn.toFixed(2)}%
+              </div>
+            </div>
 
-              {status.portfolio.positions_value !== undefined && (
-                <div className="bg-slate-700/50 rounded-lg p-4">
-                  <div className="text-sm text-gray-400 mb-1">Positions Value</div>
-                  <div className="text-2xl font-bold">
-                    ${status.portfolio.positions_value?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
-                  </div>
-                </div>
-              )}
+            <div className="bg-slate-700/50 rounded-lg p-4 border border-amber-600/30">
+              <div className="text-sm text-amber-400 mb-1">Baseline CAGR</div>
+              <div className={`text-2xl font-bold ${periodMetrics.baselineAnnualizedReturn >= 0 ? 'text-amber-400' : 'text-amber-600'}`}>
+                {periodMetrics.baselineAnnualizedReturn >= 0 ? '+' : ''}{periodMetrics.baselineAnnualizedReturn.toFixed(2)}%
+              </div>
+            </div>
+
+            <div className="bg-slate-700/50 rounded-lg p-4">
+              <div className="text-sm text-gray-400 mb-1">Alpha</div>
+              <div className={`text-2xl font-bold ${periodMetrics.periodAlpha >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {periodMetrics.periodAlpha >= 0 ? '+' : ''}{periodMetrics.periodAlpha.toFixed(2)}%
+              </div>
             </div>
           </div>
+        </div>
+      )}
 
-          {/* Row 2: Period Returns */}
-          <div className="mb-6">
-            <div className="text-xs text-gray-500 uppercase tracking-wider mb-2">{getTimeRangeLabel(timeRange)} Returns</div>
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-              <div className="bg-slate-700/50 rounded-lg p-4">
-                <div className="text-sm text-gray-400 mb-1">Portfolio</div>
-                <div className={`text-2xl font-bold ${periodMetrics.periodReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {periodMetrics.periodReturn >= 0 ? '+' : ''}{periodMetrics.periodReturn.toFixed(2)}%
-                </div>
-              </div>
+      {/* 3. Portfolio Snapshot - current values only */}
+      {status?.portfolio && (
+        <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
+          <h3 className="text-lg font-semibold mb-4">Portfolio Snapshot</h3>
 
-              <div className="bg-slate-700/50 rounded-lg p-4">
-                <div className="text-sm text-gray-400 mb-1">Portfolio CAGR</div>
-                <div className={`text-2xl font-bold ${periodMetrics.annualizedReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {periodMetrics.annualizedReturn >= 0 ? '+' : ''}{periodMetrics.annualizedReturn.toFixed(2)}%
-                </div>
-              </div>
-
-              <div className="bg-slate-700/50 rounded-lg p-4 border border-amber-600/30">
-                <div className="text-sm text-amber-400 mb-1">QQQ Baseline</div>
-                <div className={`text-2xl font-bold ${periodMetrics.periodBaselineReturn >= 0 ? 'text-amber-400' : 'text-amber-600'}`}>
-                  {periodMetrics.periodBaselineReturn >= 0 ? '+' : ''}{periodMetrics.periodBaselineReturn.toFixed(2)}%
-                </div>
-              </div>
-
-              <div className="bg-slate-700/50 rounded-lg p-4 border border-amber-600/30">
-                <div className="text-sm text-amber-400 mb-1">Baseline CAGR</div>
-                <div className={`text-2xl font-bold ${periodMetrics.baselineAnnualizedReturn >= 0 ? 'text-amber-400' : 'text-amber-600'}`}>
-                  {periodMetrics.baselineAnnualizedReturn >= 0 ? '+' : ''}{periodMetrics.baselineAnnualizedReturn.toFixed(2)}%
-                </div>
-              </div>
-
-              <div className="bg-slate-700/50 rounded-lg p-4">
-                <div className="text-sm text-gray-400 mb-1">Alpha</div>
-                <div className={`text-2xl font-bold ${periodMetrics.periodAlpha >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {periodMetrics.periodAlpha >= 0 ? '+' : ''}{periodMetrics.periodAlpha.toFixed(2)}%
-                </div>
+          {/* Account Balances */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+            <div className="bg-slate-700/50 rounded-lg p-4">
+              <div className="text-sm text-gray-400 mb-1">Total Equity</div>
+              <div className="text-2xl font-bold text-green-400">
+                ${status.portfolio.total_equity?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) ?? '0'}
               </div>
             </div>
+
+            <div className="bg-slate-700/50 rounded-lg p-4 border border-amber-600/30">
+              <div className="text-sm text-amber-400 mb-1">QQQ Baseline</div>
+              <div className="text-2xl font-bold text-amber-400">
+                ${baselineValue?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) ?? 'N/A'}
+              </div>
+            </div>
+
+            {status.portfolio.cash !== undefined && (
+              <div className="bg-slate-700/50 rounded-lg p-4">
+                <div className="text-sm text-gray-400 mb-1">Cash</div>
+                <div className="text-2xl font-bold">
+                  ${status.portfolio.cash?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                </div>
+              </div>
+            )}
+
+            {status.portfolio.positions_value !== undefined && (
+              <div className="bg-slate-700/50 rounded-lg p-4">
+                <div className="text-sm text-gray-400 mb-1">Positions Value</div>
+                <div className="text-2xl font-bold">
+                  ${status.portfolio.positions_value?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Positions Table */}
@@ -507,13 +469,48 @@ function Dashboard() {
         </div>
       )}
 
-      {/* Decision Tree */}
+      {/* 4. Current Regime - Z-Score removed */}
+      <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
+        <h3 className="text-lg font-semibold mb-4">Current Regime</h3>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="bg-slate-700/50 rounded-lg p-4">
+            <div className="text-sm text-gray-400 mb-1">Strategy Cell</div>
+            <div className="text-2xl font-bold text-blue-400">
+              {regime?.cell ?? status?.regime?.cell ?? 'N/A'}
+            </div>
+          </div>
+
+          <div className="bg-slate-700/50 rounded-lg p-4">
+            <div className="text-sm text-gray-400 mb-1">Trend State</div>
+            <div className={`text-2xl font-bold ${
+              (regime?.trend_state || status?.regime?.trend_state) === 'BULLISH' ? 'text-green-400' :
+              (regime?.trend_state || status?.regime?.trend_state) === 'BEARISH' ? 'text-red-400' :
+              'text-yellow-400'
+            }`}>
+              {regime?.trend_state ?? status?.regime?.trend_state ?? 'N/A'}
+            </div>
+          </div>
+
+          <div className="bg-slate-700/50 rounded-lg p-4">
+            <div className="text-sm text-gray-400 mb-1">Volatility State</div>
+            <div className={`text-2xl font-bold ${
+              (regime?.vol_state || status?.regime?.vol_state) === 'LOW' ? 'text-green-400' :
+              (regime?.vol_state || status?.regime?.vol_state) === 'HIGH' ? 'text-red-400' :
+              'text-yellow-400'
+            }`}>
+              {regime?.vol_state ?? status?.regime?.vol_state ?? 'N/A'}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 5. Decision Tree - Target Allocation extracted */}
       {indicators?.indicators && indicators.indicators.length > 0 && (() => {
         // Helper function to extract indicator by name
         const getIndicator = (name: string) =>
           indicators.indicators?.find(i => i.name === name);
 
-        const currentCell = getIndicator('current_cell')?.value;
         const tNorm = getIndicator('t_norm')?.value;
         const zScore = getIndicator('z_score')?.value;
         const trendState = getIndicator('trend_state')?.signal;
@@ -667,50 +664,50 @@ function Dashboard() {
                   </div>
                 </div>
               )}
-
-              {/* Target Allocation Box */}
-              {indicators.target_allocation && (
-                <div className="bg-slate-700/50 rounded-lg p-4">
-                  <h4 className="text-md font-semibold mb-3 text-green-400">
-                    TARGET ALLOCATION {currentCell ? `(Cell ${currentCell})` : ''}
-                  </h4>
-                  <div className="space-y-3">
-                    {Object.entries(indicators.target_allocation).map(([symbol, pct]) => {
-                      const percentage = typeof pct === 'number' ? pct : 0;
-                      const barWidth = `${percentage}%`;
-
-                      return (
-                        <div key={symbol}>
-                          <div className="flex justify-between text-sm mb-1">
-                            <span className="text-gray-400">{symbol}:</span>
-                            <span className="font-bold">{percentage.toFixed(0)}%</span>
-                          </div>
-                          <div className="w-full bg-slate-600 rounded-full h-2">
-                            <div
-                              className={`h-2 rounded-full ${
-                                percentage > 0
-                                  ? symbol.includes('TQQQ') || symbol.includes('QQQ') ? 'bg-green-500'
-                                  : symbol.includes('PSQ') ? 'bg-red-500'
-                                  : symbol.includes('TMF') ? 'bg-blue-500'
-                                  : symbol.includes('TMV') ? 'bg-yellow-500'
-                                  : 'bg-gray-500'
-                                  : 'bg-transparent'
-                              }`}
-                              style={{ width: barWidth }}
-                            />
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
             </div>
           </div>
         );
       })()}
 
-      {/* Execution Timing - Admin Only */}
+      {/* 6. Target Allocation - extracted as separate block */}
+      {indicators?.target_allocation && (
+        <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
+          <h3 className="text-lg font-semibold mb-4 text-green-400">
+            Target Allocation {currentCell ? `(Cell ${currentCell})` : ''}
+          </h3>
+          <div className="space-y-3">
+            {Object.entries(indicators.target_allocation).map(([symbol, pct]) => {
+              const percentage = typeof pct === 'number' ? pct : 0;
+              const barWidth = `${percentage}%`;
+
+              return (
+                <div key={symbol}>
+                  <div className="flex justify-between text-sm mb-1">
+                    <span className="text-gray-400">{symbol}:</span>
+                    <span className="font-bold">{percentage.toFixed(0)}%</span>
+                  </div>
+                  <div className="w-full bg-slate-600 rounded-full h-2">
+                    <div
+                      className={`h-2 rounded-full ${
+                        percentage > 0
+                          ? symbol.includes('TQQQ') || symbol.includes('QQQ') ? 'bg-green-500'
+                          : symbol.includes('PSQ') ? 'bg-red-500'
+                          : symbol.includes('TMF') ? 'bg-blue-500'
+                          : symbol.includes('TMV') ? 'bg-yellow-500'
+                          : 'bg-gray-500'
+                          : 'bg-transparent'
+                      }`}
+                      style={{ width: barWidth }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* 7. Execution Schedule - Admin Only */}
       {hasPermission('scheduler:control') && (status?.last_execution || status?.next_execution) && (
         <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
           <h3 className="text-lg font-semibold mb-4">Execution Schedule</h3>
@@ -745,7 +742,7 @@ function Dashboard() {
         </div>
       )}
 
-      {/* Scheduler Control - Admin Only */}
+      {/* 8. Scheduler Control - Admin Only */}
       {hasPermission('scheduler:control') && <SchedulerControl />}
     </div>
   )

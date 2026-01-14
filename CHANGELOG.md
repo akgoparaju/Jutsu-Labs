@@ -1,3 +1,26 @@
+#### **UI Enhancement: Dashboard Layout Reorganization** (2026-01-14)
+
+**Reorganized dashboard blocks for improved UX and clearer data separation**
+
+**Changes**:
+1. **Split Portfolio block** into two separate sections:
+   - **Portfolio Returns**: Time-filtered returns (90D/YTD/1Y/All) with Portfolio %, CAGR, Baseline %, Baseline CAGR, Alpha
+   - **Portfolio Snapshot**: Current account values (Equity, Baseline, Cash, Positions Value) + Positions table
+
+2. **Removed Z-Score from Current Regime** block (changed from 4-column to 3-column grid)
+   - Z-Score still visible in Decision Tree's Volatility Classification section
+
+3. **Extracted Target Allocation** as standalone block (previously nested inside Decision Tree)
+
+4. **Reordered blocks** to:
+   Engine Control → Portfolio Returns → Portfolio Snapshot → Current Regime → Decision Tree → Target Allocation → Execution Schedule → Scheduler Control
+
+**File Modified**: `dashboard/src/pages/Dashboard.tsx`
+
+**Agent**: DASHBOARD_FRONTEND_AGENT | **Layer**: Infrastructure
+
+---
+
 #### **Enhancement: Hide Token Expiry Warnings from Viewers** (2026-01-14)
 
 **Schwab token expiration warnings now visible only to admins**
