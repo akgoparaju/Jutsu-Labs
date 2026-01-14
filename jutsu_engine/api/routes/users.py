@@ -100,13 +100,32 @@ class UpdateUserRequest(BaseModel):
     """Request to update user details (admin only)."""
     role: Optional[str] = None
     is_active: Optional[bool] = None
-    
+
     @field_validator('role')
     @classmethod
     def validate_role(cls, v):
         if v is not None and v not in ["admin", "viewer"]:
             raise ValueError("Role must be 'admin' or 'viewer'")
         return v
+
+
+class InvitationInfo(BaseModel):
+    """Invitation information for admin listing."""
+    id: int
+    email: Optional[str] = None
+    role: str
+    token: str
+    expires_at: str
+    created_at: str
+    accepted: bool
+    accepted_at: Optional[str] = None
+    invited_by_username: str
+
+
+class InvitationsListResponse(BaseModel):
+    """Response for list invitations endpoint."""
+    invitations: List[InvitationInfo]
+    total: int
 
 
 # ==============================================================================
@@ -188,7 +207,7 @@ async def create_invitation(
         host = request.headers.get('Host', 'localhost')
         origin = f"{scheme}://{host}"
     
-    invite_url = f"{origin}/accept-invite/{token}"
+    invite_url = f"{origin}/accept-invitation?token={token}"
     
     # Log security event
     logger.info(
@@ -202,6 +221,88 @@ async def create_invitation(
         expires_at=invitation.expires_at.isoformat(),
         role=invitation.role
     )
+
+
+@router.get("/invitations", response_model=InvitationsListResponse)
+async def list_invitations(
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    List all invitations (admin only).
+
+    Returns all invitations with their status, including:
+    - Pending (not yet accepted, not expired)
+    - Accepted (used to create account)
+    - Expired (not accepted within 48 hours)
+    """
+    invitations = db.query(UserInvitation).order_by(
+        UserInvitation.created_at.desc()
+    ).all()
+
+    invitation_list = []
+    for inv in invitations:
+        # Get the username of who created this invitation
+        invited_by = "system"
+        if inv.created_by:
+            creator = db.query(User).filter(User.id == inv.created_by).first()
+            if creator:
+                invited_by = creator.username
+
+        invitation_list.append(InvitationInfo(
+            id=inv.id,
+            email=inv.email,
+            role=inv.role,
+            token=inv.token,
+            expires_at=inv.expires_at.isoformat(),
+            created_at=inv.created_at.isoformat() if inv.created_at else "",
+            accepted=inv.accepted_at is not None,
+            accepted_at=inv.accepted_at.isoformat() if inv.accepted_at else None,
+            invited_by_username=invited_by,
+        ))
+
+    return InvitationsListResponse(
+        invitations=invitation_list,
+        total=len(invitation_list)
+    )
+
+
+@router.delete("/invitations/{invitation_id}")
+async def revoke_invitation(
+    invitation_id: int,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Revoke (delete) an invitation (admin only).
+
+    Can only revoke invitations that haven't been accepted yet.
+    """
+    invitation = db.query(UserInvitation).filter(
+        UserInvitation.id == invitation_id
+    ).first()
+
+    if not invitation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Invitation not found"
+        )
+
+    if invitation.accepted_at:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot revoke an invitation that has already been accepted"
+        )
+
+    db.delete(invitation)
+    db.commit()
+
+    logger.info(
+        f"Invitation {invitation_id} revoked by "
+        f"{current_user.username if current_user else 'system'}"
+    )
+
+    return {"message": "Invitation revoked successfully"}
 
 
 @router.get("/{user_id}", response_model=UserResponse)

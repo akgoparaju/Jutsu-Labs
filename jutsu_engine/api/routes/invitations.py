@@ -177,6 +177,7 @@ async def accept_invitation(
         email=email,
         role=invitation.role,
         is_active=True,
+        created_at=datetime.now(timezone.utc),  # Explicit for PostgreSQL compatibility
     )
     db.add(new_user)
     db.flush()  # Get the user ID

@@ -1,6 +1,7 @@
 import { Routes, Route } from 'react-router-dom'
 import { AuthProvider } from './contexts/AuthContext'
 import ProtectedRoute from './components/ProtectedRoute'
+import RequirePermission from './components/RequirePermission'
 import Layout from './components/Layout'
 import Login from './pages/Login'
 import AcceptInvitation from './pages/AcceptInvitation'
@@ -26,7 +27,11 @@ function App() {
             <Route path="decision-tree" element={<DecisionTree />} />
             <Route path="trades" element={<Trades />} />
             <Route path="performance" element={<Performance />} />
-            <Route path="config" element={<Config />} />
+            <Route path="config" element={
+              <RequirePermission permission="config:write" redirectTo="/">
+                <Config />
+              </RequirePermission>
+            } />
             <Route path="settings" element={<Settings />} />
           </Route>
         </Route>

@@ -31,9 +31,9 @@ function UserManagement() {
   const createInvitation = useMutation({
     mutationFn: (data: { email: string; role: string }) =>
       usersApi.createInvitation(data),
-    onSuccess: (response) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['invitations'] })
-      setSuccess(`Invitation sent to ${response.data.email}`)
+      setSuccess(`Invitation created successfully! Copy the link from the Invitations tab.`)
       setShowInviteForm(false)
       setInviteEmail('')
       setInviteRole('viewer')

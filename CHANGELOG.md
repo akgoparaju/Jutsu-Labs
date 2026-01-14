@@ -1,3 +1,42 @@
+#### **Feature: Multi-User Access Control - Phase 3** (2026-01-13)
+
+**Implemented viewer permission restrictions and production URL fixes**
+
+**Changes**:
+
+**Frontend (Dashboard)**:
+- Updated `Layout.tsx`:
+  - Added `hasPermission` to useAuth hook destructuring
+  - Configuration tab now conditionally rendered based on `config:write` permission
+  - Viewers no longer see Configuration tab in sidebar
+
+- Created `RequirePermission.tsx` component:
+  - Reusable route protection component based on permissions
+  - Redirects users without required permission to specified route
+  - Shows loading state while checking permissions
+
+- Updated `App.tsx`:
+  - Wrapped `/config` route with `RequirePermission` component
+  - Viewers accessing `/config` directly are redirected to dashboard
+
+**Backend (API)**:
+- Fixed invitation URL format in `users.py`:
+  - Changed from `/accept-invite/{token}` (path param) to `/accept-invitation?token={token}` (query param)
+  - Now matches frontend AcceptInvitation route expectation
+  - Works correctly with Cloudflare tunnel in production
+
+**Files Created**:
+- `dashboard/src/components/RequirePermission.tsx` - Permission-based route protection
+
+**Files Modified**:
+- `dashboard/src/components/Layout.tsx` - Conditional Configuration tab
+- `dashboard/src/App.tsx` - Protected config route
+- `jutsu_engine/api/routes/users.py` - Fixed invite URL format
+
+**Agent**: Claude Code | **Layer**: UI + API
+
+---
+
 #### **Feature: Multi-User Access Control - Phase 2** (2026-01-13)
 
 **Implemented Dashboard UI with role-based conditional rendering and user management interface**

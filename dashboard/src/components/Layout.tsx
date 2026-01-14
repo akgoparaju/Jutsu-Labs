@@ -50,7 +50,7 @@ function formatDateTime(isoString: string | null | undefined): string {
 function Layout() {
   const { data: status, isLoading } = useStatus()
   const { isConnected: wsConnected } = useLiveUpdates()
-  const { user, isAuthRequired, logout } = useAuth()
+  const { user, isAuthRequired, logout, hasPermission } = useAuth()
   const navigate = useNavigate()
 
   const handleLogout = () => {
@@ -194,19 +194,22 @@ function Layout() {
               Trade History
             </NavLink>
 
-            <NavLink
-              to="/config"
-              className={({ isActive }) =>
-                `flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
-                  isActive
-                    ? 'bg-blue-600 text-white'
-                    : 'text-gray-300 hover:bg-slate-700'
-                }`
-              }
-            >
-              <Settings className="w-5 h-5" />
-              Configuration
-            </NavLink>
+            {/* Configuration tab - only visible to admins */}
+            {hasPermission('config:write') && (
+              <NavLink
+                to="/config"
+                className={({ isActive }) =>
+                  `flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
+                    isActive
+                      ? 'bg-blue-600 text-white'
+                      : 'text-gray-300 hover:bg-slate-700'
+                  }`
+                }
+              >
+                <Settings className="w-5 h-5" />
+                Configuration
+              </NavLink>
+            )}
 
             <NavLink
               to="/settings"
