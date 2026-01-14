@@ -29,6 +29,7 @@ from jutsu_engine.api.schemas import (
 from jutsu_engine.api.dependencies import (
     get_db,
     verify_credentials,
+    require_permission,
     get_engine_state,
     load_config,
 )
@@ -475,7 +476,7 @@ async def get_trade_stats(
 async def execute_trade(
     request: ExecuteTradeRequest,
     db: Session = Depends(get_db),
-    _auth: bool = Depends(verify_credentials),
+    _auth = Depends(require_permission("trades:execute")),
 ) -> ExecuteTradeResponse:
     """
     Execute a trade manually from Jutsu Trader dashboard.

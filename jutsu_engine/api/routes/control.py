@@ -31,6 +31,7 @@ from jutsu_engine.api.schemas import (
 from jutsu_engine.api.dependencies import (
     get_engine_state,
     verify_credentials,
+    require_permission,
     EngineState,
 )
 from jutsu_engine.api.scheduler import get_scheduler_service, EXECUTION_TIME_MAP
@@ -53,7 +54,7 @@ router = APIRouter(prefix="/api/control", tags=["control"])
 async def start_engine(
     action: ControlAction,
     engine_state: EngineState = Depends(get_engine_state),
-    _auth: bool = Depends(verify_credentials),
+    _auth = Depends(require_permission("engine:control")),
 ) -> ControlResponse:
     """
     Start the trading engine.
@@ -127,7 +128,7 @@ async def start_engine(
 async def stop_engine(
     action: ControlAction,
     engine_state: EngineState = Depends(get_engine_state),
-    _auth: bool = Depends(verify_credentials),
+    _auth = Depends(require_permission("engine:control")),
 ) -> ControlResponse:
     """
     Stop the trading engine.
@@ -182,7 +183,7 @@ async def stop_engine(
 async def restart_engine(
     action: ControlAction,
     engine_state: EngineState = Depends(get_engine_state),
-    _auth: bool = Depends(verify_credentials),
+    _auth = Depends(require_permission("engine:control")),
 ) -> ControlResponse:
     """
     Restart the trading engine.
@@ -275,7 +276,7 @@ async def get_state(
 async def switch_mode(
     action: ControlAction,
     engine_state: EngineState = Depends(get_engine_state),
-    _auth: bool = Depends(verify_credentials),
+    _auth = Depends(require_permission("engine:control")),
 ) -> ControlResponse:
     """
     Switch trading mode.
@@ -375,7 +376,7 @@ async def get_scheduler_status(
 )
 async def enable_scheduler(
     request: Optional[SchedulerEnableRequest] = None,
-    _auth: bool = Depends(verify_credentials),
+    _auth = Depends(require_permission("scheduler:control")),
 ) -> SchedulerStatus:
     """
     Enable scheduled execution.
@@ -419,7 +420,7 @@ async def enable_scheduler(
     description="Disable automatic scheduled trading execution."
 )
 async def disable_scheduler(
-    _auth: bool = Depends(verify_credentials),
+    _auth = Depends(require_permission("scheduler:control")),
 ) -> SchedulerStatus:
     """
     Disable scheduled execution.
@@ -448,7 +449,7 @@ async def disable_scheduler(
     description="Manually trigger trading execution immediately, bypassing the schedule."
 )
 async def trigger_scheduler(
-    _auth: bool = Depends(verify_credentials),
+    _auth = Depends(require_permission("scheduler:control")),
 ) -> SchedulerTriggerResponse:
     """
     Manually trigger execution NOW.
@@ -491,7 +492,7 @@ async def trigger_scheduler(
 )
 async def update_scheduler(
     request: SchedulerUpdateRequest,
-    _auth: bool = Depends(verify_credentials),
+    _auth = Depends(require_permission("scheduler:control")),
 ) -> SchedulerStatus:
     """
     Update scheduler settings.
@@ -586,7 +587,7 @@ async def check_data_staleness(
 )
 async def trigger_data_refresh(
     sync_data: bool = True,
-    _auth: bool = Depends(verify_credentials),
+    _auth = Depends(require_permission("scheduler:control")),
 ) -> DataRefreshResponse:
     """
     Manually trigger a data refresh.

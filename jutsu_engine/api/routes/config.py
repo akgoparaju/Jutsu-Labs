@@ -26,6 +26,7 @@ from jutsu_engine.api.dependencies import (
     load_config,
     reset_strategy_runner,
     verify_credentials,
+    require_permission,
 )
 from jutsu_engine.data.models import ConfigOverride, ConfigHistory
 
@@ -178,7 +179,7 @@ async def update_configuration(
     update: ConfigUpdate,
     db: Session = Depends(get_db),
     config: dict = Depends(get_config),
-    _auth: bool = Depends(verify_credentials),
+    _auth = Depends(require_permission("config:write")),
 ) -> ConfigUpdateResponse:
     """
     Update a configuration parameter.
@@ -312,7 +313,7 @@ async def reset_parameter(
     parameter_name: str,
     db: Session = Depends(get_db),
     config: dict = Depends(get_config),
-    _auth: bool = Depends(verify_credentials),
+    _auth = Depends(require_permission("config:write")),
 ) -> ConfigUpdateResponse:
     """
     Reset a parameter to its default value from config file.

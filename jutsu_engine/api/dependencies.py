@@ -523,6 +523,128 @@ async def require_auth(
     return user
 
 
+# =============================================================================
+# Role-Based Access Control (RBAC) - Permission System
+# =============================================================================
+
+# Permission mapping by role
+# Admin has "*" wildcard which grants all permissions
+# Viewer has read-only access plus self-management capabilities
+ROLE_PERMISSIONS: dict[str, set[str]] = {
+    "admin": {"*"},  # Wildcard = all permissions
+    
+    "viewer": {
+        # Read operations (dashboard data)
+        "dashboard:read",
+        "performance:read",
+        "trades:read",
+        "config:read",
+        "indicators:read",
+        "regime:read",
+        "status:read",
+        
+        # Self-management (own account)
+        "self:password",
+        "self:2fa",
+        "self:passkey",
+    },
+    
+    # Future: Investor role
+    # "investor": {
+    #     *ROLE_PERMISSIONS["viewer"],  # All viewer permissions
+    #     "portfolio:read",
+    #     "portfolio:execute",
+    # }
+}
+
+
+def has_permission(user: Optional["User"], permission: str) -> bool:
+    """
+    Check if a user has a specific permission.
+    
+    Args:
+        user: User object or None (if auth disabled)
+        permission: Permission string (e.g., "engine:control")
+    
+    Returns:
+        True if user has permission, False otherwise
+        
+    Note:
+        If user is None (auth disabled), returns True for backward compatibility.
+    """
+    if user is None:
+        return True  # Auth disabled - allow all (development mode)
+    
+    role_perms = ROLE_PERMISSIONS.get(user.role, set())
+    return "*" in role_perms or permission in role_perms
+
+
+def require_permission(permission: str):
+    """
+    Dependency factory that requires a specific permission.
+    
+    Usage:
+        @router.post("/execute")
+        async def execute_trade(
+            current_user = Depends(require_permission("trades:execute")),
+            ...
+        ):
+    
+    Args:
+        permission: Required permission string
+        
+    Returns:
+        FastAPI dependency function
+        
+    Raises:
+        HTTPException(403): If user lacks the required permission
+    """
+    async def check_permission(
+        current_user: Optional["User"] = Depends(get_current_user),
+    ) -> Optional["User"]:
+        if current_user is None:
+            # Auth disabled - allow access (development mode)
+            return current_user
+        
+        if not has_permission(current_user, permission):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Permission denied. Required: {permission}"
+            )
+        return current_user
+    
+    return check_permission
+
+
+async def require_admin(
+    current_user: Optional["User"] = Depends(get_current_user),
+) -> Optional["User"]:
+    """
+    Dependency that requires admin role.
+    
+    Use this for admin-only endpoints like user management.
+    
+    Args:
+        current_user: Current authenticated user
+        
+    Returns:
+        User object if admin, or None if auth disabled
+        
+    Raises:
+        HTTPException(403): If user is not an admin
+    """
+    if current_user is None:
+        # Auth disabled - allow access (development mode)
+        return current_user
+    
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
+        )
+    return current_user
+
+
 async def verify_credentials(
     request: Request,
     credentials: Optional[HTTPBasicCredentials] = Depends(security),

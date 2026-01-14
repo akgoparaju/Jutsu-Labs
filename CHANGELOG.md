@@ -1,3 +1,65 @@
+#### **Feature: Multi-User Access Control - Phase 1** (2026-01-13)
+
+**Implemented role-based access control (RBAC) system with invitation-based onboarding**
+
+**Changes**:
+
+**Backend (API)**:
+- Added `UserRole` enum with `admin` and `viewer` roles
+- Replaced `is_admin` boolean column with `role` string column (backward-compatible)
+- Added `UserInvitation` model for invitation-based user registration
+- Created permission system with `ROLE_PERMISSIONS` mapping:
+  - `admin`: Full access (`*` wildcard)
+  - `viewer`: Read-only + self-management (`dashboard:read`, `performance:read`, etc.)
+- Protected sensitive endpoints with permission decorators:
+  - `trades:execute` - Execute trades
+  - `engine:control` - Start/stop/restart engine, switch modes
+  - `scheduler:control` - Enable/disable scheduler, trigger jobs
+  - `config:write` - Update configuration parameters
+  - `users:manage` - User management (admin-only)
+
+**New API Routes**:
+- `GET /api/users` - List all users (admin-only)
+- `POST /api/users/invite` - Create invitation link (admin-only)
+- `GET /api/users/{id}` - Get user details (admin-only)
+- `PUT /api/users/{id}` - Update user (admin-only)
+- `DELETE /api/users/{id}` - Delete user (admin-only)
+- `PUT /api/users/me/password` - Change own password
+- `GET /api/invitations/{token}` - Validate invitation (public)
+- `POST /api/invitations/{token}/accept` - Accept invitation (public)
+
+**Updated API Routes**:
+- `GET /api/auth/me` - Now includes `role` field in response
+
+**Database Migration**:
+- `c8e9f1234567_add_user_roles_and_invitations.py` - Migrates `is_admin` to `role`, creates `user_invitations` table
+
+**Files Created**:
+- `jutsu_engine/api/routes/users.py` - User management endpoints
+- `jutsu_engine/api/routes/invitations.py` - Invitation acceptance endpoints
+- `alembic/versions/20260113_0001_add_user_roles_and_invitations.py` - Migration
+
+**Files Modified**:
+- `jutsu_engine/data/models.py` - Added UserRole enum, UserInvitation model, role column
+- `jutsu_engine/api/dependencies.py` - Added permission system
+- `jutsu_engine/api/routes/trades.py` - Protected execute endpoint
+- `jutsu_engine/api/routes/control.py` - Protected engine/scheduler endpoints
+- `jutsu_engine/api/routes/config.py` - Protected write endpoints
+- `jutsu_engine/api/routes/auth.py` - Added role to UserInfo schema
+- `jutsu_engine/api/routes/__init__.py` - Exported new routers
+- `jutsu_engine/api/main.py` - Registered new routers
+
+**Security Design**:
+- Invitation tokens: 64-character secure random (secrets.token_urlsafe)
+- 48-hour expiration for invitations
+- Admin-only user management
+- Backward-compatible `is_admin` property for existing code
+- 20 user maximum limit enforced at invitation creation
+
+**Agent**: MULTI_USER_ORCHESTRATOR | **Layer**: API
+
+---
+
 #### **Feature: Baseline CAGR in Dashboard** (2026-01-14)
 
 **Added QQQ Baseline CAGR metric to Dashboard Portfolio section**

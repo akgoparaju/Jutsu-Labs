@@ -28,6 +28,24 @@ import enum
 Base = declarative_base()
 
 
+class UserRole(str, enum.Enum):
+    """
+    User roles for role-based access control.
+    
+    Roles:
+        ADMIN: Full access to all features including user management,
+               engine control, scheduler, and trade execution
+        VIEWER: Read-only access to dashboard data, can manage own
+                password, 2FA, and passkeys
+    
+    Future:
+        INVESTOR: Viewer + portfolio management (when needed)
+    """
+    ADMIN = "admin"
+    VIEWER = "viewer"
+    # INVESTOR = "investor"  # Future: for real money tracking
+
+
 class MarketData(Base):
     """
     Historical OHLCV market data.
@@ -445,7 +463,15 @@ class User(Base):
 
     # Account state
     is_active = Column(Boolean, default=True)  # Can disable without deleting
-    is_admin = Column(Boolean, default=True)  # Admin flag (all users admin for now)
+    
+    # Role-based access control (replaces is_admin boolean)
+    # Default to "viewer" for new users - admin sets initial admin via migration
+    role = Column(String(20), default="viewer", nullable=False, index=True)
+    
+    @property
+    def is_admin(self) -> bool:
+        """Backward compatibility property. Check if user has admin role."""
+        return self.role == "admin"
 
     # Account lockout (brute force protection) - OWASP ASVS V2.2.1, V2.2.2, CWE-307
     failed_login_count = Column(Integer, default=0)  # Consecutive failed login attempts
@@ -549,3 +575,52 @@ class BlacklistedToken(Base):
 
     def __repr__(self):
         return f"<BlacklistedToken(jti={self.jti}, type={self.token_type})>"
+
+
+class UserInvitation(Base):
+    """
+    Invitation for new user registration.
+    
+    Allows admin to generate secure invitation links for new users.
+    New users set their own password and username via the invitation link.
+    
+    Design decisions:
+    - Single-use tokens (marked as accepted after use)
+    - 48-hour expiry for security
+    - Role assigned at invitation creation
+    - Email optional (just a hint for the invitation)
+    - Token is cryptographically random (32 bytes urlsafe)
+    
+    Security features:
+    - Tokens expire after 48 hours (configurable)
+    - Single-use only (accepted_at tracking)
+    - Audit trail (created_by, accepted_by)
+    - Secure random token generation
+    
+    Indexes:
+        - token for fast invitation lookup during acceptance
+    """
+    __tablename__ = 'user_invitations'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    
+    # Invitation details
+    email = Column(String(255), nullable=True)  # Optional email hint
+    token = Column(String(64), unique=True, nullable=False, index=True)
+    role = Column(String(20), default="viewer", nullable=False)
+    
+    # Tracking
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    
+    # Usage
+    accepted_at = Column(DateTime(timezone=True), nullable=True)
+    accepted_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    
+    # Relationships
+    creator = relationship("User", foreign_keys=[created_by], backref="created_invitations")
+
+    def __repr__(self):
+        status = "used" if self.accepted_at else "pending"
+        return f"<UserInvitation(role={self.role}, status={status}, expires={self.expires_at})>"

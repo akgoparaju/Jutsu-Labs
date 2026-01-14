@@ -48,6 +48,8 @@ from jutsu_engine.api.routes import (
     performance_router,
     control_router,
     indicators_router,
+    users_router,
+    invitations_router,
 )
 
 # ==============================================================================
@@ -401,6 +403,8 @@ def create_app(
     app.include_router(performance_router)
     app.include_router(control_router)
     app.include_router(indicators_router)
+    app.include_router(users_router)  # User management (admin-only)
+    app.include_router(invitations_router)  # Invitation acceptance (public)
 
     # WebSocket endpoint for live updates
     @app.websocket("/ws")

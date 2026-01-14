@@ -6,9 +6,14 @@ SQLite (development) and PostgreSQL (production).
 """
 from logging.config import fileConfig
 import os
+from urllib.parse import quote_plus
+from dotenv import load_dotenv
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
 from alembic import context
+
+# Load environment variables from .env file
+load_dotenv(override=True)
 
 # Import database models for autogenerate support
 from jutsu_engine.data.models import Base
@@ -44,7 +49,7 @@ def get_url_from_env():
     elif db_type == 'postgresql':
         # PostgreSQL for production
         user = os.getenv('POSTGRES_USER', 'jutsu')
-        password = os.getenv('POSTGRES_PASSWORD', '')
+        password = quote_plus(os.getenv('POSTGRES_PASSWORD', ''))
         host = os.getenv('POSTGRES_HOST', 'localhost')
         port = os.getenv('POSTGRES_PORT', '5432')
         database = os.getenv('POSTGRES_DATABASE', 'jutsu_labs')

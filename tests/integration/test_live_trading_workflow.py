@@ -83,7 +83,7 @@ def mock_schwab_client():
     return client
 
 
-class TestLiveTrading WorkflowIntegration:
+class TestLiveTradingWorkflowIntegration:
     """Integration test suite for complete Phase 0 & 1 workflow."""
 
     def test_phase_0_hello_world(self, mock_schwab_client):

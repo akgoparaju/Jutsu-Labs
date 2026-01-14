@@ -12,6 +12,8 @@ Contains all FastAPI route modules:
 - performance: Performance metrics
 - control: Engine start/stop control
 - indicators: Current indicator values
+- users: User management (admin-only)
+- invitations: Invitation acceptance (public)
 """
 
 from jutsu_engine.api.routes.auth import router as auth_router
@@ -24,6 +26,8 @@ from jutsu_engine.api.routes.trades import router as trades_router
 from jutsu_engine.api.routes.performance import router as performance_router
 from jutsu_engine.api.routes.control import router as control_router
 from jutsu_engine.api.routes.indicators import router as indicators_router
+from jutsu_engine.api.routes.users import router as users_router
+from jutsu_engine.api.routes.invitations import router as invitations_router
 
 __all__ = [
     'auth_router',
@@ -36,4 +40,6 @@ __all__ = [
     'performance_router',
     'control_router',
     'indicators_router',
+    'users_router',
+    'invitations_router',
 ]

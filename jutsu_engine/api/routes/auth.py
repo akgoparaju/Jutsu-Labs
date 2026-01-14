@@ -102,6 +102,7 @@ class UserInfo(BaseModel):
     username: str
     email: Optional[str] = None
     is_admin: bool = False
+    role: str = "viewer"
     last_login: Optional[str] = None
 
 
@@ -655,6 +656,7 @@ async def get_current_user_info(
         return UserInfo(
             username="anonymous",
             is_admin=True,
+            role="admin",
             email=None,
             last_login=None
         )
@@ -663,6 +665,7 @@ async def get_current_user_info(
         username=current_user.username,
         email=current_user.email,
         is_admin=current_user.is_admin,
+        role=current_user.role,
         last_login=current_user.last_login.isoformat() if current_user.last_login else None
     )
 
