@@ -1,3 +1,20 @@
+#### **Enhancement: Hide Token Expiry Warnings from Viewers** (2026-01-14)
+
+**Schwab token expiration warnings now visible only to admins**
+
+**Problem**: The `SchwabTokenBanner` component showed token expiration warnings to all users, including viewers who have no ability to re-authenticate or manage tokens.
+
+**Solution**: Added `hasPermission('config:write')` check to conditionally render the `SchwabTokenBanner` component. Since viewers don't have `config:write` permission, they no longer see token expiration warnings.
+
+**Change Made**:
+- `dashboard/src/pages/Dashboard.tsx` - Wrapped `SchwabTokenBanner` with permission check
+
+**Permission Used**: `config:write` (existing permission, used for Configuration tab access)
+
+**Agent**: DASHBOARD_FRONTEND_AGENT | **Layer**: Infrastructure
+
+---
+
 #### **Bug Fix: Daily Return Calculation in Performance Table** (2026-01-14)
 
 **Fixed incorrect "Day %" values in Daily Performance table**

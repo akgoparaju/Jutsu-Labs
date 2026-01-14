@@ -216,8 +216,8 @@ function Dashboard() {
         )}
       </div>
 
-      {/* Schwab Token Status Banner - Shows warnings when token is expiring */}
-      <SchwabTokenBanner hideWhenHealthy={true} />
+      {/* Schwab Token Status Banner - Admin Only (viewers don't need to see token warnings) */}
+      {hasPermission('config:write') && <SchwabTokenBanner hideWhenHealthy={true} />}
 
       {/* Execute Trade Modal */}
       <ExecuteTradeModal
