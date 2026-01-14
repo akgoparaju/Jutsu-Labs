@@ -62,6 +62,35 @@ function calculatePeriodReturn(endCumReturn: number, startCumReturn: number): nu
   return (endGrowth / startGrowth - 1) * 100
 }
 
+/**
+ * Calculate annualized return (CAGR) from period return and calendar days.
+ * Standard CAGR Formula: ((1 + periodReturn)^(365/calendarDays) - 1) * 100
+ */
+function calculateAnnualizedReturn(periodReturnPct: number, calendarDays: number): number {
+  if (calendarDays <= 0) return 0
+  const periodReturn = periodReturnPct / 100 // Convert to decimal
+  // Handle negative returns properly
+  const base = 1 + periodReturn
+  if (base <= 0) return -100 // Total loss scenario
+  const annualized = Math.pow(base, 365 / calendarDays) - 1
+  return annualized * 100 // Convert back to percentage
+}
+
+/**
+ * Calculate calendar days between first and last snapshot in history.
+ */
+function calculateCalendarDays(history: Array<{ timestamp?: string }>): number {
+  if (!history || history.length < 2) return history?.length || 0
+  const firstDate = history[0].timestamp?.slice(0, 10)
+  const lastDate = history[history.length - 1].timestamp?.slice(0, 10)
+  if (!firstDate || !lastDate) return 0
+  const start = new Date(firstDate)
+  const end = new Date(lastDate)
+  const diffMs = end.getTime() - start.getTime()
+  // Add 1 to include both start and end dates
+  return Math.floor(diffMs / (1000 * 60 * 60 * 24)) + 1
+}
+
 function Performance() {
   const [mode, setMode] = useState('')
   const [timeRange, setTimeRange] = useState<TimeRange>('90d')
@@ -99,29 +128,36 @@ function Performance() {
   })
 
   const { data: regimeBreakdown } = useQuery({
-    queryKey: ['regimeBreakdown', mode],
+    queryKey: ['regimeBreakdown', mode, timeRange, queryParams],
     queryFn: () => performanceApi.getRegimeBreakdown({
       mode: mode || undefined,
+      days: queryParams.days,
+      start_date: queryParams.start_date,
     }).then(res => res.data),
   })
 
   // Calculate period-specific returns (for non-"all" time ranges)
   const periodMetrics = useMemo(() => {
     if (!performance?.history || performance.history.length === 0) {
-      return { periodReturn: 0, periodBaselineReturn: 0, periodAlpha: 0 }
+      return { periodReturn: 0, periodBaselineReturn: 0, periodAlpha: 0, annualizedReturn: 0, calendarDays: 0 }
     }
 
     const firstSnapshot = performance.history[0]
     const lastSnapshot = performance.history[performance.history.length - 1]
+    // Calculate calendar days for CAGR (standard uses 365 days/year)
+    const calendarDays = calculateCalendarDays(performance.history)
 
     // For "all" time range, use raw cumulative returns (no normalization)
     if (timeRange === 'all') {
       const cumReturn = lastSnapshot.cumulative_return ?? 0
       const baselineReturn = lastSnapshot.baseline_return ?? 0
+      const annualizedReturn = calculateAnnualizedReturn(cumReturn, calendarDays)
       return {
         periodReturn: cumReturn,
         periodBaselineReturn: baselineReturn,
-        periodAlpha: cumReturn - baselineReturn
+        periodAlpha: cumReturn - baselineReturn,
+        annualizedReturn,
+        calendarDays
       }
     }
 
@@ -134,11 +170,14 @@ function Performance() {
       lastSnapshot.baseline_return ?? 0,
       firstSnapshot.baseline_return ?? 0
     )
+    const annualizedReturn = calculateAnnualizedReturn(periodReturn, calendarDays)
 
     return {
       periodReturn,
       periodBaselineReturn,
-      periodAlpha: periodReturn - periodBaselineReturn
+      periodAlpha: periodReturn - periodBaselineReturn,
+      annualizedReturn,
+      calendarDays
     }
   }, [performance?.history, timeRange])
 
@@ -389,7 +428,7 @@ function Performance() {
 
       {/* Key Metrics */}
       {performance?.current && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
           <div className="bg-slate-800 rounded-lg p-4 border border-slate-700">
             <div className="text-sm text-gray-400 mb-1">Total Equity</div>
             <div className="text-2xl font-bold text-green-400">
@@ -403,6 +442,15 @@ function Performance() {
               periodMetrics.periodReturn >= 0 ? 'text-green-400' : 'text-red-400'
             }`}>
               {periodMetrics.periodReturn >= 0 ? '+' : ''}{periodMetrics.periodReturn.toFixed(2)}%
+            </div>
+          </div>
+
+          <div className="bg-slate-800 rounded-lg p-4 border border-slate-700">
+            <div className="text-sm text-gray-400 mb-1">Annualized</div>
+            <div className={`text-2xl font-bold ${
+              periodMetrics.annualizedReturn >= 0 ? 'text-green-400' : 'text-red-400'
+            }`}>
+              {periodMetrics.annualizedReturn >= 0 ? '+' : ''}{periodMetrics.annualizedReturn.toFixed(2)}%
             </div>
           </div>
 
@@ -530,74 +578,85 @@ function Performance() {
       </div>
 
       {/* Regime Performance Breakdown */}
-      {regimeBreakdown && (
-        <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
-          <h3 className="text-lg font-semibold mb-4">Performance by Regime</h3>
+      {regimeBreakdown && (() => {
+        // Calculate total days across all regimes for % of time
+        const totalDays = regimeBreakdown.regimes?.reduce((sum: number, r: { days?: number }) => sum + (r.days ?? 0), 0) ?? 1
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead className="text-sm text-gray-400 border-b border-slate-700">
-                <tr>
-                  <th className="pb-3">Cell</th>
-                  <th className="pb-3">Trend</th>
-                  <th className="pb-3">Volatility</th>
-                  <th className="pb-3">Trades</th>
-                  <th className="pb-3">Win Rate</th>
-                  <th className="pb-3">Avg Return</th>
-                  <th className="pb-3">Total Return</th>
-                </tr>
-              </thead>
-              <tbody>
-                {regimeBreakdown.regimes?.map((regime: {
-                  cell: number
-                  trend_state: string
-                  vol_state: string
-                  trade_count: number
-                  win_rate: number
-                  avg_return: number
-                  total_return: number
-                }) => (
-                  <tr key={regime.cell} className="border-b border-slate-700/50">
-                    <td className="py-3">
-                      <span className="px-2 py-1 bg-slate-700 rounded font-mono">
-                        {regime.cell}
-                      </span>
-                    </td>
-                    <td className={`py-3 ${
-                      regime.trend_state === 'BULLISH' ? 'text-green-400' :
-                      regime.trend_state === 'BEARISH' ? 'text-red-400' : 'text-yellow-400'
-                    }`}>
-                      {regime.trend_state}
-                    </td>
-                    <td className={`py-3 ${
-                      regime.vol_state === 'LOW' ? 'text-green-400' :
-                      regime.vol_state === 'HIGH' ? 'text-red-400' : 'text-yellow-400'
-                    }`}>
-                      {regime.vol_state}
-                    </td>
-                    <td className="py-3">{regime.trade_count}</td>
-                    <td className={`py-3 ${
-                      regime.win_rate >= 0.5 ? 'text-green-400' : 'text-red-400'
-                    }`}>
-                      {(regime.win_rate * 100).toFixed(1)}%
-                    </td>
-                    <td className={`py-3 ${
-                      regime.avg_return >= 0 ? 'text-green-400' : 'text-red-400'
-                    }`}>
-                      {regime.avg_return.toFixed(2)}%
-                    </td>
-                    <td className={`py-3 ${
-                      regime.total_return >= 0 ? 'text-green-400' : 'text-red-400'
-                    }`}>
-                      {regime.total_return.toFixed(2)}%
-                    </td>
+        return (
+          <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
+            <h3 className="text-lg font-semibold mb-4">Performance by Regime</h3>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead className="text-sm text-gray-400 border-b border-slate-700">
+                  <tr>
+                    <th className="pb-3">Cell</th>
+                    <th className="pb-3">Trend</th>
+                    <th className="pb-3">Volatility</th>
+                    <th className="pb-3">Return %</th>
+                    <th className="pb-3">Annualized</th>
+                    <th className="pb-3">Days</th>
+                    <th className="pb-3">% of Time</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {regimeBreakdown.regimes?.map((regime: {
+                    cell: number
+                    trend_state: string
+                    vol_state: string
+                    total_return: number
+                    days?: number
+                  }) => {
+                    const tradingDays = regime.days ?? 0
+                    const pctOfTime = totalDays > 0 ? (tradingDays / totalDays) * 100 : 0
+                    // Convert trading days to calendar days for CAGR (252 trading days ≈ 365 calendar days)
+                    const calendarDays = Math.round(tradingDays * (365 / 252))
+                    const annualizedReturn = calculateAnnualizedReturn(regime.total_return, calendarDays)
+
+                    return (
+                      <tr key={regime.cell} className="border-b border-slate-700/50">
+                        <td className="py-3">
+                          <span className="px-2 py-1 bg-slate-700 rounded font-mono">
+                            {regime.cell}
+                          </span>
+                        </td>
+                        <td className={`py-3 ${
+                          regime.trend_state === 'BULLISH' ? 'text-green-400' :
+                          regime.trend_state === 'BEARISH' ? 'text-red-400' : 'text-yellow-400'
+                        }`}>
+                          {regime.trend_state}
+                        </td>
+                        <td className={`py-3 ${
+                          regime.vol_state === 'LOW' ? 'text-green-400' :
+                          regime.vol_state === 'HIGH' ? 'text-red-400' : 'text-yellow-400'
+                        }`}>
+                          {regime.vol_state}
+                        </td>
+                        <td className={`py-3 ${
+                          regime.total_return >= 0 ? 'text-green-400' : 'text-red-400'
+                        }`}>
+                          {regime.total_return >= 0 ? '+' : ''}{regime.total_return.toFixed(2)}%
+                        </td>
+                        <td className={`py-3 ${
+                          annualizedReturn >= 0 ? 'text-green-400' : 'text-red-400'
+                        }`}>
+                          {annualizedReturn >= 0 ? '+' : ''}{annualizedReturn.toFixed(2)}%
+                        </td>
+                        <td className="py-3 text-gray-300">
+                          {tradingDays}
+                        </td>
+                        <td className="py-3 text-gray-300">
+                          {pctOfTime.toFixed(1)}%
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/* Performance History */}
       {performance?.history && performance.history.length > 0 && (() => {

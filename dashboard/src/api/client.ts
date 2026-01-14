@@ -272,7 +272,7 @@ export const performanceApi = {
     api.get('/performance/equity-curve', { params }),
   getDrawdown: (params?: { mode?: string }) =>
     api.get('/performance/drawdown', { params }),
-  getRegimeBreakdown: (params?: { mode?: string }) =>
+  getRegimeBreakdown: (params?: { mode?: string; days?: number; start_date?: string }) =>
     api.get('/performance/regime-breakdown', { params }),
 }
 

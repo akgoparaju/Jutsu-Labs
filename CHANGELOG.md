@@ -1,3 +1,127 @@
+#### **Feature: Baseline CAGR in Dashboard** (2026-01-14)
+
+**Added QQQ Baseline CAGR metric to Dashboard Portfolio section**
+
+**Changes**:
+- Renamed "Annualized" to "Portfolio CAGR" for clarity
+- Added new "Baseline CAGR" metric (QQQ annualized return)
+- Reordered columns: Portfolio | Portfolio CAGR | QQQ Baseline | Baseline CAGR | Alpha
+- Changed grid from 4-column to 5-column layout
+- Both CAGR metrics use amber styling for baseline, green/red for portfolio
+
+**Implementation**:
+- Added `baselineAnnualizedReturn` calculation to `periodMetrics` useMemo
+- Uses same `calculateAnnualizedReturn(periodBaselineReturn, calendarDays)` formula
+- Standard CAGR formula: `((1 + return)^(365/calendarDays) - 1) × 100`
+
+**Files Modified**:
+- `dashboard/src/pages/Dashboard.tsx` - Added baseline CAGR calculation and UI
+
+**Agent**: DASHBOARD_FRONTEND_AGENT | **Layer**: UI
+
+---
+
+#### **Fix: CAGR Calculation Using Calendar Days** (2026-01-13)
+
+**Fixed annualized return (CAGR) calculation to use standard calendar days formula**
+
+**Problem**:
+- CAGR was showing 4.94% instead of ~32.71% for a 3.23% return in 41 calendar days
+- Two issues: (1) Using array length instead of unique dates (2) Using 252 trading days instead of 365 calendar days
+- Standard CAGR formula uses calendar days and 365-day year, not trading days
+
+**Solution**:
+- Changed formula from `((1 + return)^(252/tradingDays) - 1)` to `((1 + return)^(365/calendarDays) - 1)`
+- Added `calculateCalendarDays()` function to compute actual calendar days between first and last snapshot
+- For regime-level CAGR, convert trading days to calendar days using ratio (365/252)
+
+**Files Modified**:
+- `dashboard/src/pages/Dashboard.tsx` - Fixed CAGR to use calendar days with 365-day year
+- `dashboard/src/pages/Performance.tsx` - Fixed CAGR to use calendar days with 365-day year
+
+**Agent**: DASHBOARD_FRONTEND_AGENT | **Layer**: UI
+
+---
+
+#### **Fix: Performance by Regime Days Count Bug** (2026-01-13)
+
+**Fixed regime breakdown to count unique dates instead of database rows**
+
+**Problem**:
+- Performance by Regime table showed inflated "Days" counts (e.g., 147 days instead of 27)
+- Root cause: Multiple snapshots per day in database (up to 13 records per day)
+- Query used `COUNT(id)` which counts rows, not unique calendar dates
+
+**Solution**:
+- Changed `cell_stats` query to use `COUNT(DISTINCT DATE(timestamp))` instead of `COUNT(id)`
+- Changed `win_stats` query to also count unique winning dates
+- Now correctly reports actual trading days (e.g., 26 days in Cell 3 instead of 147)
+
+**Files Modified**:
+- `jutsu_engine/api/routes/performance.py` - Fixed days count to use DISTINCT DATE
+
+**Agent**: DASHBOARD_BACKEND_AGENT | **Layer**: API
+
+---
+
+#### **Fix: Performance by Regime Time Range Filtering** (2026-01-13)
+
+**Fixed regime breakdown to respect selected time range**
+
+**Problem**:
+- Performance by Regime table showed ALL-TIME data regardless of time range selection
+- Example: Selecting "90 Days" still showed 147 days for a regime (all historical data)
+
+**Solution**:
+- Added `days` and `start_date` query parameters to `/api/performance/regime-breakdown` endpoint
+- Updated frontend to pass time range parameters to regime breakdown API
+- All queries (cell_stats, regime_info, win_stats) now apply date filtering
+
+**Files Modified**:
+- `jutsu_engine/api/routes/performance.py` - Added time range filtering to regime-breakdown endpoint
+- `dashboard/src/api/client.ts` - Added `days` and `start_date` params to getRegimeBreakdown
+- `dashboard/src/pages/Performance.tsx` - Updated regime query to pass time range params
+
+**Agent**: DASHBOARD_FRONTEND_AGENT + API_AGENT | **Layer**: UI + API
+
+---
+
+#### **Feature: Annualized Return Metrics in Dashboard** (2026-01-13)
+
+**Added annualized return (CAGR) metrics to Dashboard and Performance tabs**
+
+**Changes**:
+
+1. **Dashboard Portfolio Section (Row 2)**:
+   - Added 4th box "Annualized" showing portfolio's CAGR
+   - Changed grid from 3-column to 4-column layout (responsive)
+   - Annualized return calculated from period return and trading days
+
+2. **Performance Tab Key Metrics**:
+   - Added 5th metric box "Annualized" after Period Return
+   - Changed grid from 4-column to 5-column layout
+   - Shows CAGR for the selected time period
+
+3. **Performance by Regime Table Redesign**:
+   - New columns: Cell | Trend | Volatility | Return % | Annualized | Days | % of Time
+   - Removed: Trades, Win Rate, Avg Return columns
+   - "Days" shows trading days spent in each regime
+   - "% of Time" shows proportion of total trading time in regime
+   - Annualized return calculated per-regime using CAGR formula
+
+**CAGR Formula**:
+```
+Annualized = ((1 + periodReturn)^(252/tradingDays) - 1) × 100
+```
+
+**Files Modified**:
+- `dashboard/src/pages/Dashboard.tsx` - Added `calculateAnnualizedReturn()`, updated periodMetrics, added Annualized box
+- `dashboard/src/pages/Performance.tsx` - Added `calculateAnnualizedReturn()`, updated periodMetrics, added 5th metric, redesigned regime table
+
+**Agent**: DASHBOARD_FRONTEND_AGENT | **Layer**: UI
+
+---
+
 #### **Fix: Schwab Re-Auth Modal with Callback URL Input** (2026-01-02)
 
 **Fixed re-authentication flow to properly capture callback URL**

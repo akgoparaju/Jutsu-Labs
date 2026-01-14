@@ -475,46 +475,81 @@ async def get_regime_breakdown(
     db: Session = Depends(get_db),
     engine_state: EngineState = Depends(get_engine_state),
     mode: Optional[str] = Query(None, description="Filter by mode"),
+    days: int = Query(0, ge=0, description="Days of history (0 for all data)"),
+    start_date: Optional[str] = Query(None, description="Start date (ISO format) for custom range"),
     _auth: bool = Depends(verify_credentials),
 ) -> dict:
     """
     Get performance broken down by strategy regime (cell).
 
     Returns average return, total return, trade count, and win rate for each cell.
+    Supports time range filtering via days or start_date parameters.
     """
     try:
+        logger.info(f"Regime breakdown request: mode={mode}, days={days}, start_date={start_date}")
         effective_mode = mode or engine_state.mode
+
+        # Calculate date range (same logic as get_performance)
+        end_date = datetime.now(timezone.utc)
+        filter_start_date = None
+
+        if start_date:
+            # Custom start date provided (for YTD or custom range)
+            try:
+                filter_start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                if filter_start_date.tzinfo is None:
+                    filter_start_date = filter_start_date.replace(tzinfo=timezone.utc)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid start_date format. Use ISO format.")
+        elif days > 0:
+            # Days-based filtering
+            filter_start_date = end_date - timedelta(days=days)
+        # If days=0 and no start_date, filter_start_date remains None (ALL data)
+
+        logger.info(f"Regime breakdown: filter_start_date={filter_start_date}, end_date={end_date}")
+
+        # Build base filter conditions
+        base_filters = [
+            PerformanceSnapshot.mode == effective_mode,
+            PerformanceSnapshot.strategy_cell.isnot(None)
+        ]
+        if filter_start_date:
+            base_filters.append(PerformanceSnapshot.timestamp >= filter_start_date)
 
         # Get return stats by cell with trend_state and vol_state
         # Use a subquery to get the most common trend/vol state per cell
+        # IMPORTANT: Count unique dates, not rows (there can be multiple snapshots per day)
         cell_stats = db.query(
             PerformanceSnapshot.strategy_cell,
-            func.count(PerformanceSnapshot.id).label('days'),
+            func.count(func.distinct(func.date(PerformanceSnapshot.timestamp))).label('days'),
             func.avg(PerformanceSnapshot.daily_return).label('avg_return'),
             func.sum(PerformanceSnapshot.daily_return).label('total_return'),
         ).filter(
-            and_(
-                PerformanceSnapshot.mode == effective_mode,
-                PerformanceSnapshot.strategy_cell.isnot(None)
-            )
+            and_(*base_filters)
         ).group_by(
             PerformanceSnapshot.strategy_cell
         ).all()
 
+        logger.info(f"Regime breakdown: found {len(cell_stats)} cells, total_days={sum(s.days or 0 for s in cell_stats)}")
+
         # Get trend_state and vol_state for each cell (most common value)
         cell_regime_info = {}
         for cell in set(s.strategy_cell for s in cell_stats):
-            # Get the most common trend/vol state for this cell
+            # Get the most common trend/vol state for this cell (with date filter)
+            cell_filter = [
+                PerformanceSnapshot.mode == effective_mode,
+                PerformanceSnapshot.strategy_cell == cell,
+                PerformanceSnapshot.trend_state.isnot(None),
+                PerformanceSnapshot.vol_state.isnot(None)
+            ]
+            if filter_start_date:
+                cell_filter.append(PerformanceSnapshot.timestamp >= filter_start_date)
+
             regime_sample = db.query(
                 PerformanceSnapshot.trend_state,
                 PerformanceSnapshot.vol_state
             ).filter(
-                and_(
-                    PerformanceSnapshot.mode == effective_mode,
-                    PerformanceSnapshot.strategy_cell == cell,
-                    PerformanceSnapshot.trend_state.isnot(None),
-                    PerformanceSnapshot.vol_state.isnot(None)
-                )
+                and_(*cell_filter)
             ).first()
             if regime_sample:
                 cell_regime_info[cell] = {
@@ -541,15 +576,20 @@ async def get_regime_breakdown(
 
         # Calculate win rate per cell based on daily returns
         # A day is "winning" if daily_return > 0
+        win_filters = [
+            PerformanceSnapshot.mode == effective_mode,
+            PerformanceSnapshot.strategy_cell.isnot(None),
+            PerformanceSnapshot.daily_return > 0
+        ]
+        if filter_start_date:
+            win_filters.append(PerformanceSnapshot.timestamp >= filter_start_date)
+
+        # Count unique winning dates (not rows) for accurate win rate
         win_stats = db.query(
             PerformanceSnapshot.strategy_cell,
-            func.count(PerformanceSnapshot.id).label('winning_days'),
+            func.count(func.distinct(func.date(PerformanceSnapshot.timestamp))).label('winning_days'),
         ).filter(
-            and_(
-                PerformanceSnapshot.mode == effective_mode,
-                PerformanceSnapshot.strategy_cell.isnot(None),
-                PerformanceSnapshot.daily_return > 0
-            )
+            and_(*win_filters)
         ).group_by(
             PerformanceSnapshot.strategy_cell
         ).all()

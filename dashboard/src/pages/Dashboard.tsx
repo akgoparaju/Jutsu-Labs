@@ -54,6 +54,35 @@ function calculatePeriodReturn(endCumReturn: number, startCumReturn: number): nu
   return (endGrowth / startGrowth - 1) * 100
 }
 
+/**
+ * Calculate annualized return (CAGR) from period return and calendar days.
+ * Standard CAGR Formula: ((1 + periodReturn)^(365/calendarDays) - 1) * 100
+ */
+function calculateAnnualizedReturn(periodReturnPct: number, calendarDays: number): number {
+  if (calendarDays <= 0) return 0
+  const periodReturn = periodReturnPct / 100 // Convert to decimal
+  // Handle negative returns properly
+  const base = 1 + periodReturn
+  if (base <= 0) return -100 // Total loss scenario
+  const annualized = Math.pow(base, 365 / calendarDays) - 1
+  return annualized * 100 // Convert back to percentage
+}
+
+/**
+ * Calculate calendar days between first and last snapshot in history.
+ */
+function calculateCalendarDays(history: Array<{ timestamp?: string }>): number {
+  if (!history || history.length < 2) return history?.length || 0
+  const firstDate = history[0].timestamp?.slice(0, 10)
+  const lastDate = history[history.length - 1].timestamp?.slice(0, 10)
+  if (!firstDate || !lastDate) return 0
+  const start = new Date(firstDate)
+  const end = new Date(lastDate)
+  const diffMs = end.getTime() - start.getTime()
+  // Add 1 to include both start and end dates
+  return Math.floor(diffMs / (1000 * 60 * 60 * 24)) + 1
+}
+
 function Dashboard() {
   const { data: status, isLoading: statusLoading } = useStatus()
   const { data: regime } = useRegime()
@@ -86,20 +115,27 @@ function Dashboard() {
   // Calculate period-specific returns
   const periodMetrics = useMemo(() => {
     if (!performanceData?.history || performanceData.history.length === 0) {
-      return { periodReturn: 0, periodBaselineReturn: 0, periodAlpha: 0 }
+      return { periodReturn: 0, periodBaselineReturn: 0, periodAlpha: 0, annualizedReturn: 0, baselineAnnualizedReturn: 0, calendarDays: 0 }
     }
 
     const firstSnapshot = performanceData.history[0]
     const lastSnapshot = performanceData.history[performanceData.history.length - 1]
+    // Calculate calendar days for CAGR (standard uses 365 days/year)
+    const calendarDays = calculateCalendarDays(performanceData.history)
 
     // For "all" time range, use raw cumulative returns (no normalization)
     if (timeRange === 'all') {
       const cumReturn = lastSnapshot.cumulative_return ?? 0
       const baseReturn = lastSnapshot.baseline_return ?? 0
+      const annualizedReturn = calculateAnnualizedReturn(cumReturn, calendarDays)
+      const baselineAnnualizedReturn = calculateAnnualizedReturn(baseReturn, calendarDays)
       return {
         periodReturn: cumReturn,
         periodBaselineReturn: baseReturn,
-        periodAlpha: cumReturn - baseReturn
+        periodAlpha: cumReturn - baseReturn,
+        annualizedReturn,
+        baselineAnnualizedReturn,
+        calendarDays
       }
     }
 
@@ -112,11 +148,16 @@ function Dashboard() {
       lastSnapshot.baseline_return ?? 0,
       firstSnapshot.baseline_return ?? 0
     )
+    const annualizedReturn = calculateAnnualizedReturn(periodReturn, calendarDays)
+    const baselineAnnualizedReturn = calculateAnnualizedReturn(periodBaselineReturn, calendarDays)
 
     return {
       periodReturn,
       periodBaselineReturn,
-      periodAlpha: periodReturn - periodBaselineReturn
+      periodAlpha: periodReturn - periodBaselineReturn,
+      annualizedReturn,
+      baselineAnnualizedReturn,
+      calendarDays
     }
   }, [performanceData?.history, timeRange])
 
@@ -376,7 +417,7 @@ function Dashboard() {
           {/* Row 2: Period Returns */}
           <div className="mb-6">
             <div className="text-xs text-gray-500 uppercase tracking-wider mb-2">{getTimeRangeLabel(timeRange)} Returns</div>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
               <div className="bg-slate-700/50 rounded-lg p-4">
                 <div className="text-sm text-gray-400 mb-1">Portfolio</div>
                 <div className={`text-2xl font-bold ${periodMetrics.periodReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
@@ -384,10 +425,24 @@ function Dashboard() {
                 </div>
               </div>
 
+              <div className="bg-slate-700/50 rounded-lg p-4">
+                <div className="text-sm text-gray-400 mb-1">Portfolio CAGR</div>
+                <div className={`text-2xl font-bold ${periodMetrics.annualizedReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {periodMetrics.annualizedReturn >= 0 ? '+' : ''}{periodMetrics.annualizedReturn.toFixed(2)}%
+                </div>
+              </div>
+
               <div className="bg-slate-700/50 rounded-lg p-4 border border-amber-600/30">
                 <div className="text-sm text-amber-400 mb-1">QQQ Baseline</div>
                 <div className={`text-2xl font-bold ${periodMetrics.periodBaselineReturn >= 0 ? 'text-amber-400' : 'text-amber-600'}`}>
                   {periodMetrics.periodBaselineReturn >= 0 ? '+' : ''}{periodMetrics.periodBaselineReturn.toFixed(2)}%
+                </div>
+              </div>
+
+              <div className="bg-slate-700/50 rounded-lg p-4 border border-amber-600/30">
+                <div className="text-sm text-amber-400 mb-1">Baseline CAGR</div>
+                <div className={`text-2xl font-bold ${periodMetrics.baselineAnnualizedReturn >= 0 ? 'text-amber-400' : 'text-amber-600'}`}>
+                  {periodMetrics.baselineAnnualizedReturn >= 0 ? '+' : ''}{periodMetrics.baselineAnnualizedReturn.toFixed(2)}%
                 </div>
               </div>
 
