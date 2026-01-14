@@ -710,8 +710,8 @@ function Dashboard() {
         );
       })()}
 
-      {/* Execution Timing */}
-      {(status?.last_execution || status?.next_execution) && (
+      {/* Execution Timing - Admin Only */}
+      {hasPermission('scheduler:control') && (status?.last_execution || status?.next_execution) && (
         <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
           <h3 className="text-lg font-semibold mb-4">Execution Schedule</h3>
 

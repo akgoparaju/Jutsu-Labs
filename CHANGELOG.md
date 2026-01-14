@@ -1,3 +1,137 @@
+#### **Bug Fix: Daily Return Calculation in Performance Table** (2026-01-14)
+
+**Fixed incorrect "Day %" values in Daily Performance table**
+
+**Problem**: Daily Performance table showed wrong daily return percentages. For example, on 1/14/2026 portfolio equity dropped from $10,331 to $10,121 (-2.03%) but "Day %" displayed +0.07%.
+
+**Root Cause**: The `daily_return` field is calculated at snapshot creation time by comparing to the *immediately previous snapshot*, not the previous day's snapshot. With multiple snapshots per day (up to 13), this produces "since last snapshot" returns instead of true daily returns.
+
+**Evidence**:
+| Date | Equity | Stored Daily% | Correct Daily% |
+|------|--------|---------------|----------------|
+| 1/14 | $10,121 | +0.07% | -2.03% |
+| 1/9  | $10,346 | -0.14% | +1.40% |
+| 1/6  | $10,150 | +0.03% | +1.21% |
+
+**Solution**: Recalculate daily returns in frontend after date deduplication by comparing each day's equity to the previous day's equity.
+
+**Changes Made**:
+1. `dashboard/src/pages/Performance.tsx` - Added `dailyReturnsMap` calculation after deduplication to compute true day-over-day returns
+2. Updated table rendering to use recalculated `trueDailyReturn` instead of stored `snapshot.daily_return`
+
+**Agent**: DASHBOARD_FRONTEND_AGENT | **Layer**: Infrastructure
+
+---
+
+#### **Architecture Fix: Regime-to-Trade Separation of Concerns** (2026-01-14)
+
+**Implemented architectural separation between scheduler and P/L refresh for regime data authority**
+
+**Problem**: Dashboard showed conflicting regime data because both scheduler (daily_dry_run.py) and P/L refresh (data_refresh.py) were writing regime fields to performance_snapshots table. When scheduler hadn't run for weeks, stale regime data from refresh snapshots was displayed.
+
+**Solution**: Clear separation of concerns:
+- **Scheduler** → AUTHORITATIVE for regime (Cell, TrendState, VolState)
+- **P/L Refresh** → P/L and equity curves ONLY (no regime fields)
+- New `snapshot_source` column tracks data source ("scheduler"|"refresh"|"backtest"|"manual")
+
+**Changes Made**:
+1. `jutsu_engine/data/models.py` - Added `snapshot_source` column to PerformanceSnapshot
+2. `jutsu_engine/live/data_refresh.py` - Removed regime fields from snapshot creation, added snapshot_source="refresh"
+3. `jutsu_engine/live/mock_order_executor.py` - Added snapshot_source="scheduler" to snapshots
+4. `jutsu_engine/live/performance_tracker.py` - Added snapshot_source parameter (default="backtest")
+5. `jutsu_engine/api/routes/indicators.py` - Updated regime query to prioritize scheduler snapshots
+6. `jutsu_engine/api/scheduler.py` - Switched from MemoryJobStore to SQLAlchemyJobStore for job persistence
+7. `jutsu_engine/api/main.py` - Added scheduler health monitoring on startup
+8. `alembic/versions/20260114_0001_add_snapshot_source_column.py` - Database migration
+
+**Architecture Decision**: Scheduler is the ONLY authoritative source for regime data. Dashboard now queries scheduler snapshots specifically for regime display.
+
+**Agent**: SYSTEM_ORCHESTRATOR | **Layer**: Infrastructure + Application
+
+---
+
+#### **Analysis: Regime-to-Trade Execution Gap** (2026-01-14)
+
+**Comprehensive analysis of why Cell 1 regime doesn't result in Cell 1 trades**
+
+**Issue 1: Trade Execution Gap**
+- state.json shows `last_run: 2025-12-16` (month stale) with `trend_state: "Sideways"`
+- Rebalance threshold (5%) may filter small position changes
+- Multiple position sources (state.json vs database) can diverge
+- No verification that daily runs complete successfully
+
+**Issue 2: Context Retrieval Brittleness**
+- `data_refresh.py` uses single-attempt context retrieval
+- Silent fallback to stale state.json on failure
+- No retry mechanism or UI notification
+
+**Implementation Requirements Document Created**: `claudedocs/regime_to_trade_gap_analysis_2026-01-14.md`
+
+**Priority 1 (Critical):**
+1. Context retrieval with 3-attempt retry + exponential backoff
+2. Add `data_source` field to snapshots ("live_context" vs "fallback")
+3. Unified position source (database only)
+4. Daily run completion verification
+
+**Priority 2 (High):**
+5. Last successful trade timestamp
+6. Regime change alerting
+7. Health check endpoint
+8. Dashboard stale data indicator
+
+**Files Analyzed**:
+- `scripts/daily_dry_run.py` - Trade execution flow
+- `jutsu_engine/live/data_refresh.py` - Context retrieval
+- `jutsu_engine/live/mock_order_executor.py` - Threshold filtering
+- `jutsu_engine/live/strategy_runner.py` - Allocation calculation
+
+**Agent**: SYSTEM_ORCHESTRATOR | **Layer**: Cross-cutting
+
+---
+
+#### **Bug Fix: Performance Snapshot Regime Data from Live Context** (2026-01-13)
+
+**Fixed trend_state discrepancy in database snapshots**
+
+**Issue**: Decision Tree UI showed correct indicator values (T_norm=0.1141 > 0.05, SMA Fast > Slow = Bull) but "Combined" trend_state displayed "Sideways" instead of expected "BullStrong"
+
+**Root Cause**: `data_refresh.py` was reading `trend_state`, `vol_state`, and computing `strategy_cell` from `state/state.json`, which can be stale if the daily strategy run didn't update it. The live strategy runner context has the correct calculated values.
+
+**Fix**: Updated `save_performance_snapshot()` in `data_refresh.py` to:
+1. Get regime values (`trend_state`, `vol_state`, `current_cell`) from strategy runner context first (source of truth)
+2. Fall back to `state.json` only if context is unavailable
+3. Moved context retrieval outside try/if blocks to ensure proper scope
+
+**Files Modified**:
+- `jutsu_engine/live/data_refresh.py` - Prioritize strategy context over state.json for regime data
+
+**Agent**: LIVE_TRADING_AGENT | **Layer**: Infrastructure
+
+---
+
+#### **Bug Fix: Regime Data Consistency & Viewer Permissions** (2026-01-13)
+
+**Fixed Decision Tree showing incorrect regime cell and Event Schedule visible to viewers**
+
+**Bug 1: Decision Tree vs Performance Tab Regime Discrepancy**
+- **Issue**: Decision Tree and Target Allocation showed Cell 1, while Performance tab and Dashboard Current Regime showed Cell 3
+- **Root Cause**: `/api/indicators` endpoint was reading `current_cell`, `trend_state`, and `vol_state` from the live strategy context (`runner.get_strategy_context()`), which can have stale/default values if the engine hasn't processed bars recently
+- **Fix**: Updated `indicators.py` to first query the latest `PerformanceSnapshot` from the database (source of truth) for regime indicators, falling back to live context only if no snapshot exists
+- **Pattern**: Same fix applied to `/api/status` endpoint on 2025-12-11
+
+**Bug 2: Event Schedule Visible to Viewers**
+- **Issue**: "Execution Schedule" section showing last/next execution times was visible to viewer role users
+- **Root Cause**: Missing permission check on the Execution Schedule section (lines 714-738) while the Scheduler Control component had proper `hasPermission('scheduler:control')` check
+- **Fix**: Added `hasPermission('scheduler:control')` check to the Execution Schedule section
+
+**Files Modified**:
+- `jutsu_engine/api/routes/indicators.py` - Added DB snapshot priority for regime indicators
+- `dashboard/src/pages/Dashboard.tsx` - Added permission check to Execution Schedule section
+
+**Agent**: Claude Code | **Layer**: API + UI
+
+---
+
 #### **Feature: Multi-User Access Control - Phase 3** (2026-01-13)
 
 **Implemented viewer permission restrictions and production URL fixes**

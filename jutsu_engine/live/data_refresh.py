@@ -702,34 +702,52 @@ class DashboardDataRefresher:
                     with open(state_path, 'w') as f:
                         json.dump(minimal_state, f, indent=2)
             
+            # Get regime data from strategy runner context (source of truth)
+            # FIX: state.json can be stale, so prefer live strategy context
+            # Initialize outside try block to ensure scope availability
+            strategy_context = None
+            try:
+                from jutsu_engine.api.dependencies import get_strategy_runner
+                runner = get_strategy_runner()
+                strategy_context = runner.get_strategy_context() if runner else None
+                if strategy_context:
+                    logger.debug(f"Got strategy context: cell={strategy_context.get('current_cell')}, trend={strategy_context.get('trend_state')}, vol={strategy_context.get('vol_state')}")
+            except Exception as ctx_err:
+                logger.warning(f"Could not get strategy context: {ctx_err}")
+            
             try:
                 if state_path.exists():
                     with open(state_path, 'r') as f:
                         state = json.load(f)
-
-                    # ALWAYS read vol_state from state.json (not available from indicators)
-                    # Strategy stores vol_state as integer: 0 = "Low", 1 = "High"
-                    vol_state_num = state.get('vol_state')
-                    if vol_state_num is not None:
-                        vol_state_map = {0: 'Low', 1: 'High'}
-                        vol_state = vol_state_map.get(vol_state_num, 'Low')
-                        logger.debug(f"Vol state from state.json: {vol_state_num} -> {vol_state}")
-                    else:
-                        logger.warning("vol_state not found in state.json")
                     
-                    # Read trend_state from state.json if not from indicators
-                    # Note: indicators.get('trend') returns simplified Bullish/Bearish/Sideways
-                    # but state.json has the actual strategy trend (BullStrong, Sideways, etc.)
-                    # Prefer state.json trend_state for consistency with strategy decisions
-                    trend_state_raw = state.get('trend_state')
-                    if trend_state_raw:
-                        # Always prefer state.json for trend_state (matches strategy decision)
-                        trend_state = trend_state_raw
-                        logger.debug(f"Trend state from state.json: {trend_state}")
-                    elif trend_state is None:
-                        # Default to Sideways if not specified (most common/neutral state)
-                        trend_state = 'Sideways'
-                        logger.debug(f"Trend state defaulted to: {trend_state}")
+                    # Get vol_state: prefer context, fall back to state.json
+                    if strategy_context and strategy_context.get('vol_state'):
+                        vol_state = strategy_context['vol_state']
+                        logger.debug(f"Vol state from strategy context: {vol_state}")
+                    else:
+                        # Fall back to state.json
+                        vol_state_num = state.get('vol_state')
+                        if vol_state_num is not None:
+                            vol_state_map = {0: 'Low', 1: 'High'}
+                            vol_state = vol_state_map.get(vol_state_num, 'Low')
+                            logger.debug(f"Vol state from state.json (fallback): {vol_state_num} -> {vol_state}")
+                        else:
+                            vol_state = 'Low'
+                            logger.warning("vol_state not found, defaulting to Low")
+                    
+                    # Get trend_state: prefer context, fall back to state.json
+                    if strategy_context and strategy_context.get('trend_state'):
+                        trend_state = strategy_context['trend_state']
+                        logger.debug(f"Trend state from strategy context: {trend_state}")
+                    else:
+                        # Fall back to state.json
+                        trend_state_raw = state.get('trend_state')
+                        if trend_state_raw:
+                            trend_state = trend_state_raw
+                            logger.debug(f"Trend state from state.json (fallback): {trend_state}")
+                        elif trend_state is None:
+                            trend_state = 'Sideways'
+                            logger.debug(f"Trend state defaulted to: {trend_state}")
 
                     # Calculate QQQ baseline (with initialization if needed)
                     # Priority: 1) Database system_state, 2) state.json, 3) fallback value
@@ -806,10 +824,13 @@ class DashboardDataRefresher:
             except Exception as e:
                 logger.error(f"Failed to read state.json for regime data: {e}", exc_info=True)
 
-            # Determine strategy cell from trend and vol
+            # Determine strategy cell: prefer context, fall back to computing from states
             strategy_cell = None
-            if trend_state and vol_state:
-                # Simplified cell mapping
+            if strategy_context and strategy_context.get('current_cell') is not None:
+                strategy_cell = strategy_context['current_cell']
+                logger.debug(f"Strategy cell from context: {strategy_cell}")
+            elif trend_state and vol_state:
+                # Fall back to computing from trend and vol states
                 cell_map = {
                     ('BullStrong', 'Low'): 1, ('BullStrong', 'High'): 2,
                     ('Sideways', 'Low'): 3, ('Sideways', 'High'): 4,
@@ -818,8 +839,10 @@ class DashboardDataRefresher:
                     ('Bearish', 'Low'): 5, ('Bearish', 'High'): 6,
                 }
                 strategy_cell = cell_map.get((trend_state, vol_state))
+                logger.debug(f"Strategy cell computed from states: {strategy_cell}")
 
-            # Create snapshot
+            # Create snapshot (P/L refresh - no regime fields, scheduler is authoritative)
+            # Architecture decision 2026-01-14: Scheduler writes regime, refresh writes P/L only
             snapshot = PerformanceSnapshot(
                 timestamp=datetime.now(timezone.utc),
                 total_equity=float(total_equity),
@@ -828,13 +851,13 @@ class DashboardDataRefresher:
                 daily_return=daily_pnl_pct,
                 cumulative_return=total_pnl_pct,
                 drawdown=drawdown,
-                strategy_cell=strategy_cell,
-                trend_state=trend_state,
-                vol_state=vol_state,
+                # Regime fields intentionally omitted - scheduler is authoritative source
+                # strategy_cell, trend_state, vol_state set by scheduler only
                 positions_json=positions_json,
                 baseline_value=baseline_value,
                 baseline_return=baseline_return,
                 mode=self._mode.db_value,
+                snapshot_source="refresh",  # Mark as P/L refresh snapshot
             )
             
             session.add(snapshot)

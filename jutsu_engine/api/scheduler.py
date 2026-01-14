@@ -30,8 +30,11 @@ from threading import Lock
 import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.memory import MemoryJobStore
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+
+from jutsu_engine.utils.config import get_database_url
 
 logger = logging.getLogger('API.SCHEDULER')
 
@@ -542,13 +545,25 @@ class SchedulerService:
             logger.info("Scheduler already running")
             return
 
-        # Configure scheduler with reasonable misfire grace time
-        # Default of 1 second is too strict - jobs get marked as "missed"
-        # if event loop is delayed by network I/O, database queries, etc.
+        # Configure scheduler with persistent job store (SQLAlchemy)
+        # Architecture decision 2026-01-14: Use SQLAlchemyJobStore to prevent
+        # job loss on server restart (MemoryJobStore loses jobs)
+        #
+        # Default misfire_grace_time of 1 second is too strict - jobs get marked
+        # as "missed" if event loop is delayed by network I/O, database queries, etc.
         # 300 seconds (5 minutes) allows for temporary delays while still
         # catching truly missed executions.
+        try:
+            database_url = get_database_url()
+            jobstore = SQLAlchemyJobStore(url=database_url)
+            logger.info("Using SQLAlchemyJobStore for persistent job scheduling")
+        except Exception as e:
+            # Fallback to MemoryJobStore if database not available
+            logger.warning(f"Failed to create SQLAlchemyJobStore, using MemoryJobStore: {e}")
+            jobstore = MemoryJobStore()
+
         self._scheduler = AsyncIOScheduler(
-            jobstores={'default': MemoryJobStore()},
+            jobstores={'default': jobstore},
             timezone=EASTERN,
             job_defaults={
                 'misfire_grace_time': 300,  # 5 minutes grace period

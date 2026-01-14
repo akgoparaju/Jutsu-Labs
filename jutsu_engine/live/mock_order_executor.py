@@ -497,6 +497,7 @@ class MockOrderExecutor(ExecutorInterface):
                     'value': float(pos.market_value) if pos.market_value else 0.0
                 })
 
+            # Scheduler creates authoritative regime snapshots (architecture 2026-01-14)
             snapshot = PerformanceSnapshot(
                 timestamp=datetime.now(timezone.utc),
                 total_equity=float(account_equity),
@@ -511,7 +512,8 @@ class MockOrderExecutor(ExecutorInterface):
                 positions_json=json.dumps(positions_data) if positions_data else None,
                 baseline_value=float(baseline_value) if baseline_value else None,
                 baseline_return=baseline_return,
-                mode=self._mode.db_value
+                mode=self._mode.db_value,
+                snapshot_source="scheduler",  # Authoritative for regime
             )
             self._session.add(snapshot)
             self._session.commit()

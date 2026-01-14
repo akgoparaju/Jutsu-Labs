@@ -300,6 +300,10 @@ class PerformanceSnapshot(Base):
     trend_state = Column(String(20))  # BullStrong, Sideways, BearStrong
     vol_state = Column(String(10))  # Low, High
 
+    # Source of this snapshot for regime authority tracking
+    # "scheduler" = authoritative for regime, "refresh" = P/L only, "manual" = user-triggered
+    snapshot_source = Column(String(20))  # "scheduler" | "refresh" | "manual"
+
     # Position breakdown at snapshot time (JSON: [{symbol, quantity, value}])
     positions_json = Column(Text)  # JSON string of position breakdown
 

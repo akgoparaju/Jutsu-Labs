@@ -110,7 +110,8 @@ class PerformanceTracker:
         cash: Decimal,
         positions_value: Decimal,
         strategy_context: Optional[Dict[str, Any]] = None,
-        timestamp: Optional[datetime] = None
+        timestamp: Optional[datetime] = None,
+        snapshot_source: str = "backtest"
     ) -> PerformanceSnapshot:
         """
         Record a performance snapshot to the database.
@@ -127,6 +128,7 @@ class PerformanceTracker:
                 - trend_state: BullStrong, Sideways, BearStrong
                 - vol_state: Low, High
             timestamp: Optional snapshot timestamp (defaults to now UTC)
+            snapshot_source: Source of snapshot ("scheduler"|"backtest"|"refresh"|"manual")
 
         Returns:
             Created or updated PerformanceSnapshot object
@@ -158,6 +160,7 @@ class PerformanceTracker:
             existing.strategy_cell = context.get('current_cell')
             existing.trend_state = context.get('trend_state')
             existing.vol_state = context.get('vol_state')
+            existing.snapshot_source = snapshot_source
 
             self.session.commit()
             logger.info(f"Updated snapshot: equity={total_equity}, return={daily_return}%")
@@ -176,6 +179,7 @@ class PerformanceTracker:
             strategy_cell=context.get('current_cell'),
             trend_state=context.get('trend_state'),
             vol_state=context.get('vol_state'),
+            snapshot_source=snapshot_source,
         )
 
         self.session.add(snapshot)

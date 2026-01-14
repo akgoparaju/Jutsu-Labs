@@ -415,17 +415,18 @@ export interface ValidateInvitationResponse {
 
 // User Management API
 export const usersApi = {
-  listUsers: () => api.get<UsersListResponse>('/auth/users'),
-  listInvitations: () => api.get<InvitationsListResponse>('/auth/invitations'),
+  // Admin-only endpoints (under /users)
+  listUsers: () => api.get<UsersListResponse>('/users'),
+  listInvitations: () => api.get<InvitationsListResponse>('/users/invitations'),
   createInvitation: (data: CreateInvitationRequest) =>
-    api.post<CreateInvitationResponse>('/auth/invite', data),
+    api.post<CreateInvitationResponse>('/users/invite', data),
   updateRole: (userId: number, data: UpdateRoleRequest) =>
-    api.put(`/auth/users/${userId}/role`, data),
+    api.put(`/users/${userId}`, data),
   deactivateUser: (userId: number) =>
-    api.delete(`/auth/users/${userId}`),
+    api.delete(`/users/${userId}`),
   revokeInvitation: (invitationId: number) =>
-    api.delete(`/auth/invitations/${invitationId}`),
-  // Public invitation endpoints (different path)
+    api.delete(`/users/invitations/${invitationId}`),
+  // Public invitation endpoints (under /invitations - no auth required)
   validateInvitation: (token: string) =>
     api.get<ValidateInvitationResponse>(`/invitations/${token}`),
   acceptInvitation: (token: string, data: AcceptInvitationRequest) =>

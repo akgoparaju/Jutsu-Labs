@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+from sqlalchemy import desc
 
 from jutsu_engine.api.schemas import (
     IndicatorsResponse,
@@ -18,7 +20,11 @@ from jutsu_engine.api.schemas import (
 from jutsu_engine.api.dependencies import (
     get_strategy_runner,
     verify_credentials,
+    get_db,
+    get_engine_state,
+    EngineState,
 )
+from jutsu_engine.data.models import PerformanceSnapshot
 
 logger = logging.getLogger('API.INDICATORS')
 
@@ -124,6 +130,8 @@ def get_signal_for_indicator(name: str, value: float) -> Optional[str]:
     description="Returns all current indicator values from the strategy."
 )
 async def get_indicators(
+    db: Session = Depends(get_db),
+    engine_state: EngineState = Depends(get_engine_state),
     _auth: bool = Depends(verify_credentials),
 ) -> IndicatorsResponse:
     """
@@ -133,6 +141,11 @@ async def get_indicators(
     - All strategy indicators with current values
     - Signal descriptions where applicable
     - Indicator descriptions
+
+    Note: Core regime indicators (current_cell, trend_state, vol_state) are
+    sourced from the database snapshot (source of truth) rather than the
+    live strategy context, which may have stale values if the engine hasn't
+    processed bars recently.
     """
     try:
         runner = get_strategy_runner()
@@ -147,15 +160,56 @@ async def get_indicators(
 
         indicators = []
 
-        # Core regime indicators - only include if value is not None
-        if 'current_cell' in context and context['current_cell'] is not None:
+        # Get regime indicators from SCHEDULER snapshot (authoritative source)
+        # Architecture decision 2026-01-14: Scheduler is authoritative for regime,
+        # P/L refresh snapshots intentionally do NOT contain regime fields.
+        # Priority: scheduler snapshot > any snapshot with regime > live context
+        db_cell = None
+        db_trend = None
+        db_vol = None
+        regime_source = None
+
+        try:
+            # First: Try to get regime from scheduler snapshot (authoritative)
+            scheduler_snapshot = db.query(PerformanceSnapshot).filter(
+                PerformanceSnapshot.mode == engine_state.mode,
+                PerformanceSnapshot.snapshot_source == "scheduler"
+            ).order_by(desc(PerformanceSnapshot.timestamp)).first()
+
+            if scheduler_snapshot and scheduler_snapshot.strategy_cell is not None:
+                db_cell = scheduler_snapshot.strategy_cell
+                db_trend = scheduler_snapshot.trend_state
+                db_vol = scheduler_snapshot.vol_state
+                regime_source = "scheduler"
+                logger.debug(f"Regime from scheduler snapshot: Cell {db_cell}, Trend {db_trend}, Vol {db_vol}")
+            else:
+                # Fallback: Try any snapshot with regime data (backward compatibility)
+                any_regime_snapshot = db.query(PerformanceSnapshot).filter(
+                    PerformanceSnapshot.mode == engine_state.mode,
+                    PerformanceSnapshot.strategy_cell.isnot(None)
+                ).order_by(desc(PerformanceSnapshot.timestamp)).first()
+
+                if any_regime_snapshot:
+                    db_cell = any_regime_snapshot.strategy_cell
+                    db_trend = any_regime_snapshot.trend_state
+                    db_vol = any_regime_snapshot.vol_state
+                    regime_source = any_regime_snapshot.snapshot_source or "legacy"
+                    logger.debug(f"Regime from {regime_source} snapshot: Cell {db_cell}, Trend {db_trend}, Vol {db_vol}")
+        except Exception as e:
+            logger.warning(f"Could not get regime from DB snapshot: {e}")
+
+        # Core regime indicators - prefer DB snapshot, fall back to live context
+        # current_cell
+        cell_value = db_cell if db_cell is not None else context.get('current_cell')
+        if cell_value is not None:
             indicators.append(IndicatorValue(
                 name='current_cell',
-                value=float(context['current_cell']),
-                signal=f"Cell {context['current_cell']}",
+                value=float(cell_value),
+                signal=f"Cell {cell_value}",
                 description=INDICATOR_DESCRIPTIONS.get('current_cell'),
             ))
 
+        # t_norm and z_score always from live context (not stored in snapshot)
         if 't_norm' in context and context['t_norm'] is not None:
             t_norm = context['t_norm']
             indicators.append(IndicatorValue(
@@ -174,23 +228,25 @@ async def get_indicators(
                 description=INDICATOR_DESCRIPTIONS.get('z_score'),
             ))
 
-        # State indicators (convert to numeric where needed) - check for None values
-        if 'trend_state' in context and context['trend_state'] is not None:
+        # State indicators - prefer DB snapshot, fall back to live context
+        trend_state = db_trend if db_trend is not None else context.get('trend_state')
+        if trend_state is not None:
             trend_map = {'BullStrong': 2, 'BullWeak': 1, 'Sideways': 0, 'BearWeak': -1, 'BearStrong': -2}
-            trend_value = trend_map.get(context['trend_state'], 0)
+            trend_value = trend_map.get(trend_state, 0)
             indicators.append(IndicatorValue(
                 name='trend_state',
                 value=float(trend_value),
-                signal=context['trend_state'],
+                signal=trend_state,
                 description=INDICATOR_DESCRIPTIONS.get('trend_state'),
             ))
 
-        if 'vol_state' in context and context['vol_state'] is not None:
-            vol_value = 1.0 if context['vol_state'] == 'High' else 0.0
+        vol_state = db_vol if db_vol is not None else context.get('vol_state')
+        if vol_state is not None:
+            vol_value = 1.0 if vol_state == 'High' else 0.0
             indicators.append(IndicatorValue(
                 name='vol_state',
                 value=vol_value,
-                signal=context['vol_state'],
+                signal=vol_state,
                 description=INDICATOR_DESCRIPTIONS.get('vol_state'),
             ))
 
@@ -264,10 +320,9 @@ async def get_indicators(
                     description=f"Current {key.replace('current_', '').replace('_weight', '').upper()} allocation",
                 ))
 
-        # Get target allocation based on current cell
-        cell_id = context.get('current_cell')
+        # Get target allocation based on current cell (use cell_value which prefers DB snapshot)
         bond_trend = context.get('bond_trend')
-        target_allocation = get_target_allocation_for_cell(int(cell_id), bond_trend) if cell_id else None
+        target_allocation = get_target_allocation_for_cell(int(cell_value), bond_trend) if cell_value else None
 
         return IndicatorsResponse(
             timestamp=datetime.now(timezone.utc),

@@ -669,6 +669,29 @@ function Performance() {
         }
         const deduplicatedHistory = Array.from(historyByDate.values())
 
+        // BUG FIX: Recalculate daily_return as true day-over-day change
+        // The stored daily_return compares to the previous snapshot (same day), not previous day
+        // We need to recalculate based on previous day's equity after deduplication
+        const dailyReturnsMap = new Map<string, number>()
+        for (let i = 0; i < deduplicatedHistory.length; i++) {
+          const current = deduplicatedHistory[i]
+          const currentDateKey = new Date(current.timestamp).toLocaleDateString()
+          if (i === 0) {
+            // First day: no previous day to compare, use stored value or 0
+            dailyReturnsMap.set(currentDateKey, current.daily_return ?? 0)
+          } else {
+            const previous = deduplicatedHistory[i - 1]
+            const prevEquity = previous.total_equity ?? 0
+            const currEquity = current.total_equity ?? 0
+            if (prevEquity > 0) {
+              const trueDaily = ((currEquity - prevEquity) / prevEquity) * 100
+              dailyReturnsMap.set(currentDateKey, trueDaily)
+            } else {
+              dailyReturnsMap.set(currentDateKey, 0)
+            }
+          }
+        }
+
         return (
         <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
           <h3 className="text-lg font-semibold mb-4">Daily Performance</h3>
@@ -713,6 +736,9 @@ function Performance() {
                   const tqqqPos = snapshot.positions?.find(p => p.symbol === 'TQQQ')
                   // Calculate alpha (strategy return - baseline return)
                   const alpha = (snapshot.cumulative_return ?? 0) - (snapshot.baseline_return ?? 0)
+                  // Get the recalculated true daily return (day-over-day, not snapshot-over-snapshot)
+                  const dateKey = new Date(snapshot.timestamp).toLocaleDateString()
+                  const trueDailyReturn = dailyReturnsMap.get(dateKey) ?? 0
 
                   return (
                     <tr key={idx} className="border-b border-slate-700/50">
@@ -747,9 +773,9 @@ function Performance() {
                         ${(tqqqPos?.value ?? 0).toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0})}
                       </td>
                       <td className={`py-2 pr-4 ${
-                        (snapshot.daily_return ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
+                        trueDailyReturn >= 0 ? 'text-green-400' : 'text-red-400'
                       }`}>
-                        {((snapshot.daily_return ?? 0)).toFixed(2)}%
+                        {trueDailyReturn.toFixed(2)}%
                       </td>
                       <td className={`py-2 pr-4 ${
                         (snapshot.cumulative_return ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'

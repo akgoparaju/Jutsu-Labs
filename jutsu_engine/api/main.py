@@ -166,6 +166,45 @@ async def lifespan(app: FastAPI):
         scheduler_service = get_scheduler_service()
         scheduler_service.start()
         logger.info(f"Scheduler service started (enabled: {scheduler_service.state.enabled})")
+        
+        # HEALTH CHECK: Detect stale scheduler execution (architecture fix 2026-01-14)
+        # Alert if scheduler hasn't run in over 1 day while enabled
+        if scheduler_service.state.enabled:
+            last_run = scheduler_service.state.last_run
+            if last_run:
+                from datetime import datetime, timezone
+                try:
+                    # Parse last_run timestamp
+                    if isinstance(last_run, str):
+                        # Handle ISO format with timezone
+                        last_run_dt = datetime.fromisoformat(last_run.replace('Z', '+00:00'))
+                    else:
+                        last_run_dt = last_run
+                    
+                    # Ensure timezone-aware comparison
+                    if last_run_dt.tzinfo is None:
+                        last_run_dt = last_run_dt.replace(tzinfo=timezone.utc)
+                    
+                    now = datetime.now(timezone.utc)
+                    days_since_last_run = (now - last_run_dt).days
+                    
+                    if days_since_last_run > 1:
+                        logger.warning(
+                            f"SCHEDULER HEALTH WARNING: Scheduler hasn't run in {days_since_last_run} days! "
+                            f"Last run: {last_run_dt.isoformat()}. "
+                            "Regime data may be stale. Consider triggering manually via POST /api/control/scheduler/trigger"
+                        )
+                    elif days_since_last_run == 1:
+                        logger.info(f"Scheduler last ran {days_since_last_run} day ago: {last_run_dt.isoformat()}")
+                    else:
+                        logger.info(f"Scheduler last ran: {last_run_dt.isoformat()}")
+                except Exception as parse_err:
+                    logger.warning(f"Could not parse scheduler last_run timestamp: {parse_err}")
+            else:
+                logger.warning(
+                    "SCHEDULER HEALTH WARNING: Scheduler is enabled but has never run! "
+                    "Trigger manually via POST /api/control/scheduler/trigger"
+                )
     except Exception as e:
         logger.warning(f"Failed to start scheduler service: {e}")
 
