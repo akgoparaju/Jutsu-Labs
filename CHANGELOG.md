@@ -1,3 +1,67 @@
+#### **Feature: Multi-User Access Control - Phase 2** (2026-01-13)
+
+**Implemented Dashboard UI with role-based conditional rendering and user management interface**
+
+**Changes**:
+
+**Frontend (Dashboard)**:
+- Updated `AuthContext.tsx` with role-based permission system:
+  - Added `role` field to User interface
+  - Added `hasPermission(permission: string)` function
+  - Added `ROLE_PERMISSIONS` mapping matching backend permissions
+  - Added `isAdmin` derived boolean for convenience
+
+- Updated `Dashboard.tsx` with conditional rendering:
+  - "Execute Trade" button - requires `trades:execute` permission
+  - "Engine Control" panel - requires `engine:control` permission
+  - "Scheduler Control" component - requires `scheduler:control` permission
+
+- Updated `Settings.tsx`:
+  - Updated role display to use `user.role` instead of `user.is_admin`
+  - Added "User Management" section (admin-only, requires `users:manage`)
+
+- Created `UserManagement.tsx` component:
+  - Users tab: List all users with role selector, status, last login
+  - Invitations tab: List pending/accepted/expired invitations
+  - Invite form: Send new invitations with role selection
+  - Copy invitation link functionality
+  - Role change and user deactivation actions
+
+- Created `AcceptInvitation.tsx` page:
+  - Public route at `/accept-invitation?token=...`
+  - Token validation and account creation form
+  - Username/password input with validation
+  - Success/error states with navigation to login
+
+- Updated `api/client.ts`:
+  - Added user management types: `UserInfo`, `InvitationInfo`, etc.
+  - Added `usersApi` object with all user management endpoints
+  - Added `validateInvitation()` and `acceptInvitation()` API calls
+
+- Updated `App.tsx`:
+  - Added public route for `/accept-invitation`
+
+**Files Created**:
+- `dashboard/src/components/UserManagement.tsx` - User management UI
+- `dashboard/src/pages/AcceptInvitation.tsx` - Invitation acceptance page
+
+**Files Modified**:
+- `dashboard/src/contexts/AuthContext.tsx` - Permission system
+- `dashboard/src/pages/Dashboard.tsx` - Conditional admin controls
+- `dashboard/src/pages/Settings.tsx` - User management section
+- `dashboard/src/api/client.ts` - User management API
+- `dashboard/src/App.tsx` - New routes
+
+**Database/Migration**:
+- Fixed `alembic/env.py` to load `.env` with `dotenv`
+- Fixed PostgreSQL boolean comparison in migration (dialect-specific SQL)
+- Added `_index_exists()` helper to prevent duplicate index errors
+- Successfully migrated staging database (`jutsu_labs_staging`)
+
+**Agent**: MULTI_USER_ORCHESTRATOR | **Layer**: UI
+
+---
+
 #### **Feature: Multi-User Access Control - Phase 1** (2026-01-13)
 
 **Implemented role-based access control (RBAC) system with invitation-based onboarding**

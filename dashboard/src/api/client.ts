@@ -341,3 +341,93 @@ export const schwabAuthApi = {
     api.post<SchwabAuthCallbackResponse>('/schwab/callback', data),
   deleteToken: () => api.delete('/schwab/token'),
 }
+
+// User Management Types
+export interface UserInfo {
+  id: number
+  username: string
+  email: string | null
+  role: string
+  is_active: boolean
+  created_at: string
+  last_login: string | null
+}
+
+export interface UsersListResponse {
+  users: UserInfo[]
+  total: number
+}
+
+export interface InvitationInfo {
+  id: number
+  email: string
+  role: string
+  token: string
+  expires_at: string
+  created_at: string
+  accepted: boolean
+  accepted_at: string | null
+  invited_by_username: string
+}
+
+export interface InvitationsListResponse {
+  invitations: InvitationInfo[]
+  total: number
+}
+
+export interface CreateInvitationRequest {
+  email: string
+  role?: string
+}
+
+export interface CreateInvitationResponse {
+  message: string
+  invitation_id: number
+  email: string
+  role: string
+  expires_at: string
+  invitation_link: string
+}
+
+export interface UpdateRoleRequest {
+  role: string
+}
+
+export interface AcceptInvitationRequest {
+  username: string
+  password: string
+  email?: string
+}
+
+export interface AcceptInvitationResponse {
+  success: boolean
+  username: string
+  role: string
+  message: string
+}
+
+export interface ValidateInvitationResponse {
+  valid: boolean
+  email: string | null
+  role: string
+  expires_at: string
+}
+
+// User Management API
+export const usersApi = {
+  listUsers: () => api.get<UsersListResponse>('/auth/users'),
+  listInvitations: () => api.get<InvitationsListResponse>('/auth/invitations'),
+  createInvitation: (data: CreateInvitationRequest) =>
+    api.post<CreateInvitationResponse>('/auth/invite', data),
+  updateRole: (userId: number, data: UpdateRoleRequest) =>
+    api.put(`/auth/users/${userId}/role`, data),
+  deactivateUser: (userId: number) =>
+    api.delete(`/auth/users/${userId}`),
+  revokeInvitation: (invitationId: number) =>
+    api.delete(`/auth/invitations/${invitationId}`),
+  // Public invitation endpoints (different path)
+  validateInvitation: (token: string) =>
+    api.get<ValidateInvitationResponse>(`/invitations/${token}`),
+  acceptInvitation: (token: string, data: AcceptInvitationRequest) =>
+    api.post<AcceptInvitationResponse>(`/invitations/${token}/accept`, data),
+}

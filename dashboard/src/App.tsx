@@ -3,6 +3,7 @@ import { AuthProvider } from './contexts/AuthContext'
 import ProtectedRoute from './components/ProtectedRoute'
 import Layout from './components/Layout'
 import Login from './pages/Login'
+import AcceptInvitation from './pages/AcceptInvitation'
 import Dashboard from './pages/Dashboard'
 import Trades from './pages/Trades'
 import Performance from './pages/Performance'
@@ -14,8 +15,9 @@ function App() {
   return (
     <AuthProvider>
       <Routes>
-        {/* Public route: Login */}
+        {/* Public routes: Login and Accept Invitation */}
         <Route path="/login" element={<Login />} />
+        <Route path="/accept-invitation" element={<AcceptInvitation />} />
 
         {/* Protected routes: Dashboard and sub-pages */}
         <Route element={<ProtectedRoute />}>

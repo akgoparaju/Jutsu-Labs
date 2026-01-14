@@ -14,7 +14,18 @@ interface User {
   username: string
   email: string | null
   is_admin: boolean
+  role: string
   last_login: string | null
+}
+
+// Permission mapping - must match backend ROLE_PERMISSIONS
+const ROLE_PERMISSIONS: Record<string, Set<string>> = {
+  admin: new Set(['*']),
+  viewer: new Set([
+    'dashboard:read', 'performance:read', 'trades:read',
+    'config:read', 'indicators:read', 'regime:read',
+    'status:read', 'self:password', 'self:2fa', 'self:passkey',
+  ]),
 }
 
 interface AuthContextType {
@@ -27,6 +38,9 @@ interface AuthContextType {
   pendingUsername: string | null
   user: User | null
   error: string | null
+  isAdmin: boolean
+  role: string | null
+  hasPermission: (permission: string) => boolean
   login: (username: string, password: string) => Promise<boolean>
   loginWith2FA: (username: string, password: string, totpCode: string) => Promise<boolean>
   loginWithPasskey: (username: string, credential: string) => Promise<boolean>
@@ -80,7 +94,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // If auth not required, consider user as authenticated
         if (!status.auth_required) {
           setIsAuthenticated(true)
-          setUser({ username: 'anonymous', email: null, is_admin: true, last_login: null })
+          setUser({ username: 'anonymous', email: null, is_admin: true, role: 'admin', last_login: null })
         }
       }
     } catch (err) {
@@ -339,6 +353,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     fetch(`${API_BASE}/api/auth/logout`, { method: 'POST' }).catch(() => {})
   }
 
+  // Derived permission values
+  const role = user?.role ?? null
+  const isAdmin = user?.role === 'admin' || user?.is_admin === true
+
+  // Permission check function
+  const hasPermission = (permission: string): boolean => {
+    if (!user) return false
+    const userRole = user.role || 'viewer'
+    const permissions = ROLE_PERMISSIONS[userRole] || new Set()
+    return permissions.has('*') || permissions.has(permission)
+  }
+
   return (
     <AuthContext.Provider
       value={{
@@ -351,6 +377,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         pendingUsername,
         user,
         error,
+        isAdmin,
+        role,
+        hasPermission,
         login,
         loginWith2FA,
         loginWithPasskey,

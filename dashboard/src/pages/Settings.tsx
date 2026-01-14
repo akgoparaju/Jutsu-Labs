@@ -1,10 +1,11 @@
-import { User, Shield } from 'lucide-react'
+import { User, Shield, Users } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import TwoFactorSettings from '../components/TwoFactorSettings'
 import PasskeySettings from '../components/PasskeySettings'
+import UserManagement from '../components/UserManagement'
 
 function Settings() {
-  const { user, isAuthRequired } = useAuth()
+  const { user, isAuthRequired, hasPermission } = useAuth()
 
   return (
     <div className="space-y-6">
@@ -37,11 +38,11 @@ function Settings() {
                 <div className="flex items-center gap-2">
                   <span className="text-gray-400 w-24">Role:</span>
                   <span className={`px-2 py-0.5 rounded-full text-xs ${
-                    user.is_admin 
-                      ? 'bg-purple-500/20 text-purple-400' 
+                    user.role === 'admin'
+                      ? 'bg-purple-500/20 text-purple-400'
                       : 'bg-gray-500/20 text-gray-400'
                   }`}>
-                    {user.is_admin ? 'Administrator' : 'User'}
+                    {user.role === 'admin' ? 'Administrator' : 'Viewer'}
                   </span>
                 </div>
                 {user.last_login && (
@@ -74,6 +75,17 @@ function Settings() {
         <div className="bg-slate-800 rounded-lg p-6">
           <PasskeySettings />
         </div>
+      )}
+
+      {/* User Management - Admin Only */}
+      {isAuthRequired && hasPermission('users:manage') && (
+        <>
+          <div className="flex items-center gap-2 mt-8">
+            <Users className="w-5 h-5 text-gray-400" />
+            <h2 className="text-lg font-semibold text-white">User Management</h2>
+          </div>
+          <UserManagement />
+        </>
       )}
 
       {/* Auth not required message */}

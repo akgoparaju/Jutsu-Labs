@@ -5,6 +5,7 @@ import { ExecuteTradeModal } from '../components/ExecuteTradeModal'
 import { SchedulerControl } from '../components/SchedulerControl'
 import { SchwabTokenBanner } from '../components/SchwabTokenBanner'
 import { performanceApi } from '../api/client'
+import { useAuth } from '../contexts/AuthContext'
 
 // Time range types for dashboard
 type DashboardTimeRange = '90d' | 'ytd' | '1y' | 'all'
@@ -91,6 +92,7 @@ function Dashboard() {
   const stopEngine = useStopEngine()
   const switchMode = useSwitchMode()
   const queryClient = useQueryClient()
+  const { hasPermission } = useAuth()
 
   // Time range state for portfolio metrics
   const [timeRange, setTimeRange] = useState<DashboardTimeRange>('90d')
@@ -204,12 +206,14 @@ function Dashboard() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold">Jutsu Trader</h2>
-        <button
-          onClick={() => setShowTradeModal(true)}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors font-medium"
-        >
-          Execute Trade
-        </button>
+{hasPermission('trades:execute') && (
+          <button
+            onClick={() => setShowTradeModal(true)}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors font-medium"
+          >
+            Execute Trade
+          </button>
+        )}
       </div>
 
       {/* Schwab Token Status Banner - Shows warnings when token is expiring */}
@@ -222,92 +226,94 @@ function Dashboard() {
         onSuccess={handleTradeSuccess}
       />
 
-      {/* Control Panel */}
-      <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
-        <h3 className="text-lg font-semibold mb-4">Engine Control</h3>
+      {/* Control Panel - Admin Only */}
+      {hasPermission('engine:control') && (
+        <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
+          <h3 className="text-lg font-semibold mb-4">Engine Control</h3>
 
-        <div className="flex items-center gap-4 mb-4">
-          <div className="flex items-center gap-2">
-            <span className={`w-3 h-3 rounded-full ${
-              status?.is_running ? 'bg-green-500 animate-pulse' : 'bg-gray-500'
-            }`} />
-            <span className="font-medium">
-              {status?.is_running ? 'Running' : 'Stopped'}
-            </span>
+          <div className="flex items-center gap-4 mb-4">
+            <div className="flex items-center gap-2">
+              <span className={`w-3 h-3 rounded-full ${
+                status?.is_running ? 'bg-green-500 animate-pulse' : 'bg-gray-500'
+              }`} />
+              <span className="font-medium">
+                {status?.is_running ? 'Running' : 'Stopped'}
+              </span>
+            </div>
+
+            <div className="px-3 py-1 rounded-full text-sm font-medium bg-slate-700">
+              Mode: {status?.mode === 'online_live' ? 'Live Trading' : status?.mode === 'offline_mock' ? 'Paper Trading' : status?.mode || 'N/A'}
+            </div>
+
+            {status?.uptime_seconds && (
+              <div className="text-sm text-gray-400">
+                Uptime: {Math.floor(status.uptime_seconds / 60)}m {Math.floor(status.uptime_seconds % 60)}s
+              </div>
+            )}
           </div>
 
-          <div className="px-3 py-1 rounded-full text-sm font-medium bg-slate-700">
-            Mode: {status?.mode === 'online_live' ? 'Live Trading' : status?.mode === 'offline_mock' ? 'Paper Trading' : status?.mode || 'N/A'}
+          <div className="flex gap-3">
+            {!status?.is_running ? (
+              <>
+                <button
+                  onClick={() => handleStart('offline_mock')}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+                >
+                  Start Paper Trading
+                </button>
+                <button
+                  onClick={() => handleStart('online_live')}
+                  className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 rounded-lg transition-colors"
+                >
+                  Start Live Trading
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={handleStop}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg transition-colors"
+                >
+                  Stop Engine
+                </button>
+                <select
+                  value={status?.mode || ''}
+                  onChange={(e) => handleModeSwitch(e.target.value)}
+                  className="px-4 py-2 bg-slate-700 rounded-lg border border-slate-600"
+                >
+                  <option value="offline_mock">Paper Trading</option>
+                  <option value="online_live">Live Trading</option>
+                </select>
+              </>
+            )}
           </div>
 
-          {status?.uptime_seconds && (
-            <div className="text-sm text-gray-400">
-              Uptime: {Math.floor(status.uptime_seconds / 60)}m {Math.floor(status.uptime_seconds % 60)}s
+          {confirmLive && (
+            <div className="mt-4 p-4 bg-yellow-900/30 border border-yellow-600 rounded-lg">
+              <p className="text-yellow-400 font-medium mb-2">
+                Warning: Live trading will execute real orders with real money!
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => {
+                    startEngine.mutate({ mode: 'online_live', confirm: true })
+                    setConfirmLive(false)
+                  }}
+                  className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 rounded-lg"
+                >
+                  Confirm Live Trading
+                </button>
+                <button
+                  onClick={() => setConfirmLive(false)}
+                  className="px-4 py-2 bg-slate-600 hover:bg-slate-700 rounded-lg"
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
           )}
         </div>
-
-        <div className="flex gap-3">
-          {!status?.is_running ? (
-            <>
-              <button
-                onClick={() => handleStart('offline_mock')}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
-              >
-                Start Paper Trading
-              </button>
-              <button
-                onClick={() => handleStart('online_live')}
-                className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 rounded-lg transition-colors"
-              >
-                Start Live Trading
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                onClick={handleStop}
-                className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg transition-colors"
-              >
-                Stop Engine
-              </button>
-              <select
-                value={status?.mode || ''}
-                onChange={(e) => handleModeSwitch(e.target.value)}
-                className="px-4 py-2 bg-slate-700 rounded-lg border border-slate-600"
-              >
-                <option value="offline_mock">Paper Trading</option>
-                <option value="online_live">Live Trading</option>
-              </select>
-            </>
-          )}
-        </div>
-
-        {confirmLive && (
-          <div className="mt-4 p-4 bg-yellow-900/30 border border-yellow-600 rounded-lg">
-            <p className="text-yellow-400 font-medium mb-2">
-              Warning: Live trading will execute real orders with real money!
-            </p>
-            <div className="flex gap-3">
-              <button
-                onClick={() => {
-                  startEngine.mutate({ mode: 'online_live', confirm: true })
-                  setConfirmLive(false)
-                }}
-                className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 rounded-lg"
-              >
-                Confirm Live Trading
-              </button>
-              <button
-                onClick={() => setConfirmLive(false)}
-                className="px-4 py-2 bg-slate-600 hover:bg-slate-700 rounded-lg"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
+      )}
 
       {/* Regime Display */}
       <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
@@ -739,8 +745,8 @@ function Dashboard() {
         </div>
       )}
 
-      {/* Scheduler Control - Collapsible at bottom */}
-      <SchedulerControl />
+      {/* Scheduler Control - Admin Only */}
+      {hasPermission('scheduler:control') && <SchedulerControl />}
     </div>
   )
 }
