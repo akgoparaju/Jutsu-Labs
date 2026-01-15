@@ -2,6 +2,99 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================
+   RESPONSIVE UI FOUNDATION - CSS Variables
+   Version: 1.0.0
+   ============================================ */
+
+:root {
+  /* Responsive spacing tokens (mobile-first defaults) */
+  --space-page-x: 1rem;
+  --space-page-y: 1rem;
+  --space-card: 1rem;
+  --space-section: 1.5rem;
+  
+  /* Responsive text sizes (mobile-first defaults) */
+  --text-heading-1: 1.25rem;
+  --text-heading-2: 1.125rem;
+  --text-heading-3: 1rem;
+  --text-body: 0.875rem;
+  --text-small: 0.75rem;
+  
+  /* Mobile viewport height fix */
+  --vh: 1vh;
+}
+
+/* Small tablets and up (640px+) */
+@media (min-width: 640px) {
+  :root {
+    --space-page-x: 1.5rem;
+    --space-card: 1.25rem;
+    --text-heading-1: 1.5rem;
+    --text-heading-2: 1.25rem;
+  }
+}
+
+/* Tablets and up (768px+) */
+@media (min-width: 768px) {
+  :root {
+    --space-page-x: 2rem;
+    --space-card: 1.5rem;
+    --space-section: 2rem;
+    --text-heading-1: 1.75rem;
+    --text-heading-2: 1.5rem;
+    --text-body: 1rem;
+  }
+}
+
+/* Desktops and up (1024px+) */
+@media (min-width: 1024px) {
+  :root {
+    --space-page-x: 2.5rem;
+    --text-heading-1: 2rem;
+  }
+}
+
+/* Dynamic viewport height fix for iOS Safari */
+@supports (height: 100dvh) {
+  :root {
+    --vh: 1dvh;
+  }
+}
+
+/* Touch target utility - minimum 44x44px as per Apple HIG */
+.touch-target {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+/* Safe area inset utilities for notched devices */
+.safe-area-inset-top {
+  padding-top: env(safe-area-inset-top);
+}
+
+.safe-area-inset-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.safe-area-inset-left {
+  padding-left: env(safe-area-inset-left);
+}
+
+.safe-area-inset-right {
+  padding-right: env(safe-area-inset-right);
+}
+
+/* Full height utility using dynamic viewport height */
+.h-screen-dynamic {
+  height: calc(var(--vh, 1vh) * 100);
+}
+
+/* Min height utility using dynamic viewport height */
+.min-h-screen-dynamic {
+  min-height: calc(var(--vh, 1vh) * 100);
+}
+
 :root {
   font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;

@@ -71,21 +71,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [requiresPasskey, setRequiresPasskey] = useState(false)
   const [passkeyOptions, setPasskeyOptions] = useState<string | null>(null)
 
-  // Check auth status on mount
+  // Initialize auth on mount - check status and verify token in one flow
+  // This prevents a race condition where isLoading becomes false before token verification
   useEffect(() => {
-    checkAuthStatus()
+    initializeAuth()
   }, [])
 
-  // Verify token on mount if present
-  useEffect(() => {
-    if (token && isAuthRequired) {
-      verifyToken()
-    }
-  }, [token, isAuthRequired])
-
-  const checkAuthStatus = async () => {
+  const initializeAuth = async () => {
     try {
       setIsLoading(true)
+
+      // Step 1: Check if auth is required
       const response = await fetch(`${API_BASE}/api/auth/status`)
       if (response.ok) {
         const status: AuthStatus = await response.json()
@@ -95,6 +91,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!status.auth_required) {
           setIsAuthenticated(true)
           setUser({ username: 'anonymous', email: null, is_admin: true, role: 'admin', last_login: null })
+          return // Done - no token verification needed
+        }
+
+        // Step 2: If auth is required and we have a token, verify it
+        // Read token from state (initialized from localStorage on mount)
+        if (token) {
+          try {
+            const tokenResponse = await fetch(`${API_BASE}/api/auth/me`, {
+              headers: {
+                'Authorization': `Bearer ${token}`
+              }
+            })
+
+            if (tokenResponse.ok) {
+              const userData: User = await tokenResponse.json()
+              setUser(userData)
+              setIsAuthenticated(true)
+              setError(null)
+            } else {
+              // Token invalid or expired
+              localStorage.removeItem(TOKEN_KEY)
+              setToken(null)
+              setIsAuthenticated(false)
+              setUser(null)
+            }
+          } catch (err) {
+            console.error('Failed to verify token:', err)
+            localStorage.removeItem(TOKEN_KEY)
+            setToken(null)
+            setIsAuthenticated(false)
+          }
         }
       }
     } catch (err) {
@@ -107,35 +134,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  const verifyToken = async () => {
-    if (!token) {
-      setIsAuthenticated(false)
-      return
-    }
-
-    try {
-      const response = await fetch(`${API_BASE}/api/auth/me`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      })
-
-      if (response.ok) {
-        const userData: User = await response.json()
-        setUser(userData)
-        setIsAuthenticated(true)
-        setError(null)
-      } else {
-        // Token invalid or expired
-        localStorage.removeItem(TOKEN_KEY)
-        setToken(null)
-        setIsAuthenticated(false)
-        setUser(null)
-      }
-    } catch (err) {
-      console.error('Failed to verify token:', err)
-      setIsAuthenticated(false)
-    }
+  // Legacy checkAuthStatus for manual refresh (e.g., after login/logout)
+  const checkAuthStatus = async () => {
+    await initializeAuth()
   }
 
   const login = async (username: string, password: string): Promise<boolean> => {

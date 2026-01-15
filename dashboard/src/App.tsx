@@ -12,6 +12,18 @@ import Config from './pages/Config'
 import DecisionTree from './pages/DecisionTree'
 import Settings from './pages/Settings'
 
+// V2 Responsive UI imports
+import ResponsiveLayout from './layouts/ResponsiveLayout'
+import {
+  DashboardV2,
+  DecisionTreeV2,
+  PerformanceV2,
+  TradesV2,
+  ConfigV2,
+  SettingsV2,
+  MoreV2,
+} from './pages/v2'
+
 function App() {
   return (
     <AuthProvider>
@@ -33,6 +45,21 @@ function App() {
               </RequirePermission>
             } />
             <Route path="settings" element={<Settings />} />
+          </Route>
+
+          {/* V2 Responsive UI routes (parallel development) */}
+          <Route path="/v2" element={<ResponsiveLayout />}>
+            <Route index element={<DashboardV2 />} />
+            <Route path="decision-tree" element={<DecisionTreeV2 />} />
+            <Route path="trades" element={<TradesV2 />} />
+            <Route path="performance" element={<PerformanceV2 />} />
+            <Route path="config" element={
+              <RequirePermission permission="config:write" redirectTo="/v2">
+                <ConfigV2 />
+              </RequirePermission>
+            } />
+            <Route path="settings" element={<SettingsV2 />} />
+            <Route path="more" element={<MoreV2 />} />
           </Route>
         </Route>
       </Routes>
