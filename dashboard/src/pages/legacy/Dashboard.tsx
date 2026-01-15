@@ -1,11 +1,11 @@
-import { useStatus, useRegime, useIndicators, useStartEngine, useStopEngine, useSwitchMode } from '../hooks/useStatus'
+import { useStatus, useRegime, useIndicators, useStartEngine, useStopEngine, useSwitchMode } from '../../hooks/useStatus'
 import { useState, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ExecuteTradeModal } from '../components/ExecuteTradeModal'
-import { SchedulerControl } from '../components/SchedulerControl'
-import { SchwabTokenBanner } from '../components/SchwabTokenBanner'
-import { performanceApi } from '../api/client'
-import { useAuth } from '../contexts/AuthContext'
+import { ExecuteTradeModal } from '../../components/ExecuteTradeModal'
+import { SchedulerControl } from '../../components/SchedulerControl'
+import { SchwabTokenBanner } from '../../components/SchwabTokenBanner'
+import { performanceApi } from '../../api/client'
+import { useAuth } from '../../contexts/AuthContext'
 
 // Time range types for dashboard
 type DashboardTimeRange = '90d' | 'ytd' | '1y' | 'all'

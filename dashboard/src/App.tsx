@@ -5,14 +5,18 @@ import RequirePermission from './components/RequirePermission'
 import Layout from './components/Layout'
 import Login from './pages/Login'
 import AcceptInvitation from './pages/AcceptInvitation'
-import Dashboard from './pages/Dashboard'
-import Trades from './pages/Trades'
-import Performance from './pages/Performance'
-import Config from './pages/Config'
-import DecisionTree from './pages/DecisionTree'
-import Settings from './pages/Settings'
 
-// V2 Responsive UI imports
+// Legacy V1 imports (will be removed after verification period)
+import {
+  Dashboard,
+  DecisionTree,
+  Trades,
+  Performance,
+  Config,
+  Settings,
+} from './pages/legacy'
+
+// V2 Responsive UI imports (now default)
 import ResponsiveLayout from './layouts/ResponsiveLayout'
 import {
   DashboardV2,
@@ -32,34 +36,35 @@ function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/accept-invitation" element={<AcceptInvitation />} />
 
-        {/* Protected routes: Dashboard and sub-pages */}
+        {/* Protected routes */}
         <Route element={<ProtectedRoute />}>
-          <Route path="/" element={<Layout />}>
-            <Route index element={<Dashboard />} />
-            <Route path="decision-tree" element={<DecisionTree />} />
-            <Route path="trades" element={<Trades />} />
-            <Route path="performance" element={<Performance />} />
-            <Route path="config" element={
-              <RequirePermission permission="config:write" redirectTo="/">
-                <Config />
-              </RequirePermission>
-            } />
-            <Route path="settings" element={<Settings />} />
-          </Route>
-
-          {/* V2 Responsive UI routes (parallel development) */}
-          <Route path="/v2" element={<ResponsiveLayout />}>
+          {/* Default routes: V2 Responsive UI */}
+          <Route path="/" element={<ResponsiveLayout />}>
             <Route index element={<DashboardV2 />} />
             <Route path="decision-tree" element={<DecisionTreeV2 />} />
             <Route path="trades" element={<TradesV2 />} />
             <Route path="performance" element={<PerformanceV2 />} />
             <Route path="config" element={
-              <RequirePermission permission="config:write" redirectTo="/v2">
+              <RequirePermission permission="config:write" redirectTo="/">
                 <ConfigV2 />
               </RequirePermission>
             } />
             <Route path="settings" element={<SettingsV2 />} />
             <Route path="more" element={<MoreV2 />} />
+          </Route>
+
+          {/* Legacy V1 routes (will be removed after verification period) */}
+          <Route path="/legacy" element={<Layout />}>
+            <Route index element={<Dashboard />} />
+            <Route path="decision-tree" element={<DecisionTree />} />
+            <Route path="trades" element={<Trades />} />
+            <Route path="performance" element={<Performance />} />
+            <Route path="config" element={
+              <RequirePermission permission="config:write" redirectTo="/legacy">
+                <Config />
+              </RequirePermission>
+            } />
+            <Route path="settings" element={<Settings />} />
           </Route>
         </Route>
       </Routes>

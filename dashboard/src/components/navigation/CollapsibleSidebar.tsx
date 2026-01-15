@@ -19,7 +19,7 @@
  */
 
 import { useState, useEffect } from 'react'
-import { NavLink, useLocation } from 'react-router-dom'
+import { NavLink, Link, useLocation } from 'react-router-dom'
 import {
   Menu,
   X,
@@ -42,12 +42,12 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
-  { path: '/v2', icon: LayoutDashboard, label: 'Dashboard' },
-  { path: '/v2/decision-tree', icon: GitBranch, label: 'Decision Tree' },
-  { path: '/v2/performance', icon: TrendingUp, label: 'Performance' },
-  { path: '/v2/trades', icon: History, label: 'Trade History' },
-  { path: '/v2/config', icon: Settings, label: 'Configuration', permission: 'config:write' },
-  { path: '/v2/settings', icon: Shield, label: 'Settings' },
+  { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
+  { path: '/decision-tree', icon: GitBranch, label: 'Decision Tree' },
+  { path: '/performance', icon: TrendingUp, label: 'Performance' },
+  { path: '/trades', icon: History, label: 'Trade History' },
+  { path: '/config', icon: Settings, label: 'Configuration', permission: 'config:write' },
+  { path: '/settings', icon: Shield, label: 'Settings' },
 ]
 
 interface CollapsibleSidebarProps {
@@ -74,8 +74,8 @@ export function CollapsibleSidebar({ className = '' }: CollapsibleSidebarProps) 
 
   // Helper to check if current path matches nav item
   const isActive = (path: string): boolean => {
-    if (path === '/v2') {
-      return location.pathname === '/v2'
+    if (path === '/') {
+      return location.pathname === '/'
     }
     return location.pathname.startsWith(path)
   }
@@ -133,15 +133,19 @@ export function CollapsibleSidebar({ className = '' }: CollapsibleSidebarProps) 
         aria-label="Main navigation"
       >
         <div className="flex flex-col h-full">
-          {/* Logo Header */}
-          <div className="flex items-center h-16 px-4 border-b border-slate-700">
+          {/* Logo Header - Links to Dashboard */}
+          <Link
+            to="/"
+            className="flex items-center h-16 px-4 border-b border-slate-700 hover:bg-slate-800/50 transition-colors"
+            onClick={() => setIsOpen(false)}
+          >
             <img
               src={logoImg}
               alt="Jutsu Trading Logo"
               className="w-8 h-8 object-contain"
             />
             <span className="ml-3 text-lg font-bold text-white">Jutsu Trader</span>
-          </div>
+          </Link>
 
           {/* Navigation Links */}
           <nav className="flex-1 overflow-y-auto p-4">

@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { indicatorsApi, configApi, IndicatorsResponse, ConfigResponse } from '../api/client'
+import { indicatorsApi, configApi, IndicatorsResponse, ConfigResponse } from '../../api/client'
 import {
   GitBranch,
   TrendingUp,

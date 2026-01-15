@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState, useEffect, useRef, useMemo } from 'react'
-import { performanceApi } from '../api/client'
+import { performanceApi } from '../../api/client'
 import { createChart, IChartApi, ISeriesApi, LineData, TickMarkType } from 'lightweight-charts'
 
 // Time range options

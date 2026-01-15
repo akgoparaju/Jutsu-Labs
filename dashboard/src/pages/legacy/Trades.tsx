@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { tradesApi, TradeRecord } from '../api/client'
-import { ExecuteTradeModal } from '../components/ExecuteTradeModal'
+import { tradesApi, TradeRecord } from '../../api/client'
+import { ExecuteTradeModal } from '../../components/ExecuteTradeModal'
 
 function Trades() {
   const queryClient = useQueryClient()

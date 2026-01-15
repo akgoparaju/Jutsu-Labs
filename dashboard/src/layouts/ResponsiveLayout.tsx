@@ -17,7 +17,7 @@
  * @part Responsive UI - Phase 2.4
  */
 
-import { Outlet, useNavigate } from 'react-router-dom'
+import { Outlet, useNavigate, Link } from 'react-router-dom'
 import {
   Wifi,
   WifiOff,
@@ -77,15 +77,15 @@ function ResponsiveLayout() {
           <div className="flex items-center justify-between">
             {/* Left: Logo (mobile only) / Spacer (tablet/desktop) */}
             <div className="flex items-center gap-3">
-              {/* Logo shown only on mobile (sidebar hidden) */}
-              <div className="flex items-center gap-2 sm:hidden">
+              {/* Logo shown only on mobile (sidebar hidden) - Links to Dashboard */}
+              <Link to="/" className="flex items-center gap-2 sm:hidden hover:opacity-80 transition-opacity">
                 <img
                   src={logoImg}
                   alt="Jutsu Trading Logo"
                   className="w-8 h-8 object-contain"
                 />
                 <span className="text-lg font-bold">Jutsu</span>
-              </div>
+              </Link>
               {/* Spacer for tablet (where hamburger is positioned) */}
               <div className="hidden sm:block lg:hidden w-12" />
             </div>

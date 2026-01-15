@@ -139,7 +139,8 @@ function Layout() {
         <nav className="w-64 bg-slate-800 min-h-[calc(100vh-73px)] border-r border-slate-700">
           <div className="p-4 space-y-2">
             <NavLink
-              to="/"
+              to="/legacy"
+              end
               className={({ isActive }) =>
                 `flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
                   isActive
@@ -153,7 +154,7 @@ function Layout() {
             </NavLink>
 
             <NavLink
-              to="/decision-tree"
+              to="/legacy/decision-tree"
               className={({ isActive }) =>
                 `flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
                   isActive
@@ -167,7 +168,7 @@ function Layout() {
             </NavLink>
 
             <NavLink
-              to="/performance"
+              to="/legacy/performance"
               className={({ isActive }) =>
                 `flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
                   isActive
@@ -181,7 +182,7 @@ function Layout() {
             </NavLink>
 
             <NavLink
-              to="/trades"
+              to="/legacy/trades"
               className={({ isActive }) =>
                 `flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
                   isActive
@@ -197,7 +198,7 @@ function Layout() {
             {/* Configuration tab - only visible to admins */}
             {hasPermission('config:write') && (
               <NavLink
-                to="/config"
+                to="/legacy/config"
                 className={({ isActive }) =>
                   `flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
                     isActive
@@ -212,7 +213,7 @@ function Layout() {
             )}
 
             <NavLink
-              to="/settings"
+              to="/legacy/settings"
               className={({ isActive }) =>
                 `flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
                   isActive

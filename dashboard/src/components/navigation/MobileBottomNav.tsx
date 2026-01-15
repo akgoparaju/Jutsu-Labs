@@ -29,11 +29,11 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
-  { path: '/v2', icon: LayoutDashboard, label: 'Dashboard' },
-  { path: '/v2/decision-tree', icon: GitBranch, label: 'Tree' },
-  { path: '/v2/performance', icon: TrendingUp, label: 'Performance' },
-  { path: '/v2/trades', icon: History, label: 'Trades' },
-  { path: '/v2/more', icon: MoreHorizontal, label: 'More' },
+  { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
+  { path: '/decision-tree', icon: GitBranch, label: 'Tree' },
+  { path: '/performance', icon: TrendingUp, label: 'Performance' },
+  { path: '/trades', icon: History, label: 'Trades' },
+  { path: '/more', icon: MoreHorizontal, label: 'More' },
 ]
 
 export function MobileBottomNav() {
@@ -41,8 +41,8 @@ export function MobileBottomNav() {
 
   // Helper to check if current path matches nav item
   const isActive = (path: string): boolean => {
-    if (path === '/v2') {
-      return location.pathname === '/v2'
+    if (path === '/') {
+      return location.pathname === '/'
     }
     return location.pathname.startsWith(path)
   }

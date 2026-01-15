@@ -1,3 +1,54 @@
+#### **Feature: Logo/Title Hyperlink to Dashboard** (2026-01-14)
+
+**Implemented clickable logo and title in navigation that links to Dashboard page**
+
+**Summary**: The Jutsu Trading logo and "Jutsu Trader" title in both the sidebar and mobile header are now clickable hyperlinks that navigate to the Dashboard page (`/`).
+
+**Changes Made**:
+- **CollapsibleSidebar.tsx**: Wrapped logo/title in `<Link to="/">` with hover effect and sidebar close on click
+- **ResponsiveLayout.tsx**: Wrapped mobile header logo/title in `<Link to="/">` with hover opacity effect
+
+**Files Modified**:
+- `dashboard/src/components/navigation/CollapsibleSidebar.tsx`
+- `dashboard/src/layouts/ResponsiveLayout.tsx`
+
+**Agent**: DASHBOARD_FRONTEND_AGENT | **Layer**: Infrastructure
+
+---
+
+#### **Feature: V2 UI as Default, V1 Moved to Legacy Routes** (2026-01-14)
+
+**Implemented route migration to make V2 responsive UI the default experience**
+
+**Summary**: V2 responsive UI is now the default at root routes (`/`). V1 UI has been moved to `/legacy/*` routes for backwards compatibility until removal after verification period.
+
+**Route Changes**:
+- `/` → V2 Dashboard (was: V1 Dashboard)
+- `/decision-tree` → V2 Decision Tree (was: `/v2/decision-tree`)
+- `/performance` → V2 Performance (was: `/v2/performance`)
+- `/trades` → V2 Trades (was: `/v2/trades`)
+- `/config` → V2 Config (was: `/v2/config`)
+- `/settings` → V2 Settings (was: `/v2/settings`)
+- `/more` → V2 More menu (was: `/v2/more`)
+- `/legacy/*` → V1 pages (new legacy routes)
+
+**Files Modified**:
+- `dashboard/src/App.tsx` - Route structure reorganized
+- `dashboard/src/components/navigation/CollapsibleSidebar.tsx` - Removed `/v2` prefix
+- `dashboard/src/components/navigation/MobileBottomNav.tsx` - Removed `/v2` prefix
+- `dashboard/src/pages/v2/MoreV2.tsx` - Removed `/v2` prefix
+- `dashboard/src/components/Layout.tsx` - Added `/legacy` prefix
+
+**Files Moved**:
+- `dashboard/src/pages/*.tsx` → `dashboard/src/pages/legacy/*.tsx` (6 files)
+- Created: `dashboard/src/pages/legacy/index.ts` (exports)
+
+**Data-Driven Analysis**: 21 hardcoded paths identified and updated (15 `/v2/` → `/`, 6 `/` → `/legacy/`)
+
+**Agent**: DASHBOARD_FRONTEND_AGENT | **Layer**: Infrastructure
+
+---
+
 #### **Fix: Equity Curve Blank on Mobile Viewport** (2026-01-14)
 
 **Fixed equity curve chart not displaying when window is shrunk to mobile size**

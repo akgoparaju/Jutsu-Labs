@@ -23,14 +23,14 @@ interface MenuItem {
 
 const menuItems: MenuItem[] = [
   {
-    path: '/v2/config',
+    path: '/config',
     icon: Settings,
     label: 'Configuration',
     description: 'Trading strategy and engine settings',
     permission: 'config:write',
   },
   {
-    path: '/v2/settings',
+    path: '/settings',
     icon: Shield,
     label: 'Account Settings',
     description: 'Security, 2FA, and passkey management',

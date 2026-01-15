@@ -1,8 +1,8 @@
 import { User, Shield, Users } from 'lucide-react'
-import { useAuth } from '../contexts/AuthContext'
-import TwoFactorSettings from '../components/TwoFactorSettings'
-import PasskeySettings from '../components/PasskeySettings'
-import UserManagement from '../components/UserManagement'
+import { useAuth } from '../../contexts/AuthContext'
+import TwoFactorSettings from '../../components/TwoFactorSettings'
+import PasskeySettings from '../../components/PasskeySettings'
+import UserManagement from '../../components/UserManagement'
 
 function Settings() {
   const { user, isAuthRequired, hasPermission } = useAuth()
