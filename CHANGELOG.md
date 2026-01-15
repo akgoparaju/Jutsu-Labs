@@ -1,3 +1,156 @@
+#### **Fix: Equity Curve Blank on Mobile Viewport** (2026-01-14)
+
+**Fixed equity curve chart not displaying when window is shrunk to mobile size**
+
+**Problem**: When resizing the browser window to mobile phone dimensions, the equity curve chart on the Performance page (V2) would display as completely blank/empty.
+
+**Root Cause**: The chart was initialized using `chartContainerRef.current.clientWidth` for the width. During viewport transitions (desktop → mobile), the container's layout may not be complete when the chart re-initializes, resulting in `clientWidth = 0`. The chart was created with `width: 0`, making it invisible. The window resize event listener only fires after resize, not during the initial layout phase after breakpoint changes.
+
+**Solution**: 
+1. Added fallback width (`|| 300`) when initializing chart to prevent zero-width charts
+2. Replaced `window.addEventListener('resize', ...)` with `ResizeObserver` on the chart container
+3. ResizeObserver detects actual container size changes and updates chart width reliably
+
+**File Modified**: `dashboard/src/pages/v2/PerformanceV2.tsx`
+
+**Agent**: DASHBOARD_FRONTEND_AGENT | **Layer**: Infrastructure
+
+---
+
+#### **Fix: V2 Routes Race Condition for Viewer Users** (2026-01-15)
+
+**Fixed viewers being redirected from V2 routes to V1 main page**
+
+**Problem**: Viewers (and potentially other users) were being redirected from V2 routes (`/v2/`, `/v2/performance`) to the V1 main page (`/`) when directly navigating to V2 URLs.
+
+**Root Cause**: Race condition in `AuthContext.tsx` between two separate useEffect hooks:
+1. **Effect 1**: `checkAuthStatus()` - Checks if auth is required, sets `isLoading = false` when done
+2. **Effect 2**: `verifyToken()` - Verifies JWT token, but runs AFTER Effect 1 completes
+
+This created a window where `isLoading = false` before token verification completed, causing `ProtectedRoute` to redirect to `/login`, which then redirected authenticated users to `/` (V1 dashboard).
+
+**Solution**: Consolidated auth initialization into a single `initializeAuth()` function that:
+1. Checks auth status
+2. If auth required AND token exists, verifies the token
+3. Only sets `isLoading = false` after ALL initialization is complete
+
+**File Modified**: `dashboard/src/contexts/AuthContext.tsx`
+
+**Agent**: DASHBOARD_FRONTEND_AGENT | **Layer**: Infrastructure
+
+---
+
+#### **Fix: Decision Tree Indicator Source from Scheduler Snapshots** (2026-01-14)
+
+**Fixed Decision Tree showing inconsistent data - Bull+Bull indicators but Sideways trend state**
+
+**Problem**: Decision Tree displayed conflicting information where indicator values (T_norm, SMA crossover) showed bullish signals but the Combined Trend displayed "Sideways". This occurred because `scripts/daily_dry_run.py` only passed partial strategy context when saving snapshots.
+
+**Root Cause**: When calling `save_performance_snapshot`, only `current_cell`, `trend_state`, and `vol_state` were passed. The indicator values (`t_norm`, `z_score`, `sma_fast`, `sma_slow`) were missing, causing them to be saved as NULL in the database. The API then fell back to live context for these values, creating inconsistency.
+
+**Solution**: Updated `scripts/daily_dry_run.py` (lines 700-710) to include all indicator values in strategy_context:
+- `t_norm` - Kalman trend normalized value
+- `z_score` - Volatility z-score
+- `sma_fast` - Fast SMA value
+- `sma_slow` - Slow SMA value
+
+**Verification**: After running `daily_dry_run.py`, scheduler snapshots now contain complete indicator values and Decision Tree shows consistent Regime 3 (Sideways + Low Vol) matching all displayed values.
+
+**Architecture Reinforced**:
+- **Scheduler** → Authoritative source for ALL indicator values + regime data
+- **Data Refresh** → Only updates P/L, positions, equity values
+- **API /indicators** → Reads from scheduler snapshot, no live context fallback for regime indicators
+
+**File Modified**: `scripts/daily_dry_run.py`
+
+**Agent**: SYSTEM_ORCHESTRATOR | **Layer**: Infrastructure
+
+---
+
+#### **Fix: DecisionTreeV2 Full Responsive Implementation** (2026-01-14)
+
+**Completed missing DecisionTreeV2.tsx page that was only a placeholder since Phase 2**
+
+**Problem**: During Phase 4 completion, DecisionTreeV2.tsx was overlooked. It remained a 27-line placeholder that said "will be implemented in Phase 4" while other v2 pages (Settings, Config, Performance, Trades) were fully implemented.
+
+**Solution**: Implemented full 660+ line responsive decision tree page with:
+
+**4-Stage Decision Flow**:
+1. **Stage 1: Trend Classification** - Kalman Trend Detector + SMA Structure → Combined Trend
+2. **Stage 2: Volatility Classification** - ATR-based Tier + VIX Regime → Volatility Level
+3. **Stage 3: Cell Assignment** - 6-Cell Matrix with visual grid (current cell highlighted)
+4. **Stage 4: Treasury Overlay** - Duration tiers + allocation adjustment
+
+**Final Allocation Table**: Card view for mobile, table view for desktop with all 6 cells
+
+**Responsive Patterns Applied**:
+- `useIsMobileOrSmaller()` for card/table view switching
+- `ResponsiveCard padding="md"` for containers
+- `grid-cols-1 lg:grid-cols-2` for decision stages
+- Color-coded trend states (green=bullish, red=bearish, gray=neutral)
+- Current cell highlighting (purple border/background)
+
+**Build Results**: 691KB JS (189KB gzip) - TypeScript compilation passed
+
+**File Modified**: `dashboard/src/pages/v2/DecisionTreeV2.tsx`
+
+**Agent**: DASHBOARD_FRONTEND_AGENT | **Layer**: Infrastructure
+
+---
+
+#### **Fix: V2 UI Sidebar Spacing Issue** (2026-01-14)
+
+**Fixed massive empty gap (~450px) between sidebar and main content on all v2 pages**
+
+**Root Cause**:
+- `CollapsibleSidebar.tsx` had `lg:static lg:z-auto` which changed sidebar from `fixed` to `static` on desktop
+- Static positioning made full-height sidebar occupy document flow space
+- Main content was pushed below the sidebar instead of beside it
+
+**Solution**:
+- Removed `lg:static lg:z-auto` from sidebar, keeping it `position: fixed` on desktop
+- Main content's `lg:ml-64` margin now works correctly with fixed sidebar
+
+**Validation**: Playwright screenshots confirmed fix on /v2, /v2/performance, /v2/decision-tree
+
+**File Modified**: `dashboard/src/components/navigation/CollapsibleSidebar.tsx`
+
+**Agent**: DASHBOARD_FRONTEND_AGENT | **Layer**: Infrastructure
+
+---
+
+#### **Feature: Responsive UI Implementation Complete** (2026-01-14)
+
+**Completed Phase 4 - All 63 responsive UI tasks done (100%)**
+
+**Phase 4 Deliverables**:
+1. **SettingsV2.tsx** - Responsive settings with account info, 2FA, passkeys, user management
+2. **ConfigV2.tsx** - Responsive config with table/card views, inline editing
+3. **PerformanceV2.tsx** - Responsive charts, metrics, regime breakdown with adaptive views
+4. **TradesV2.tsx** - Responsive trade stats, filters, pagination with card/table switching
+
+**Key Patterns Applied**:
+- `useIsMobileOrSmaller()` for card/table view switching
+- `ResponsiveGrid` with columns: { default: 2, md: 3, lg: 5 }
+- 44px minimum touch targets for accessibility
+- Responsive chart heights (250px mobile, 300px desktop)
+- Permission checks preserved (users:manage, trades:execute)
+
+**Build Results**: 666KB JS (185KB gzip) - TypeScript compilation passed
+
+**Files Modified**:
+- `dashboard/src/pages/v2/SettingsV2.tsx`
+- `dashboard/src/pages/v2/ConfigV2.tsx`
+- `dashboard/src/pages/v2/PerformanceV2.tsx`
+- `dashboard/src/pages/v2/TradesV2.tsx`
+- `docs/RESPONSIVE-UI-PROGRESS.md`
+
+**Next**: Route switch-over (/v2/* → /*) when ready for production
+
+**Agent**: DASHBOARD_FRONTEND_AGENT | **Layer**: Infrastructure
+
+---
+
 #### **UI Enhancement: Dashboard Layout Reorganization** (2026-01-14)
 
 **Reorganized dashboard blocks for improved UX and clearer data separation**
