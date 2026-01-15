@@ -701,6 +701,12 @@ def main(check_freshness: bool = False):
                 'current_cell': signals.get('current_cell'),
                 'trend_state': signals.get('trend_state'),
                 'vol_state': signals.get('vol_state'),
+                # Include indicator values for Decision Tree display (architecture 2026-01-14)
+                # These are the authoritative values used by scheduler to determine regime
+                't_norm': signals.get('t_norm'),
+                'z_score': signals.get('z_score'),
+                'sma_fast': signals.get('sma_fast'),
+                'sma_slow': signals.get('sma_slow'),
             },
             baseline_value=baseline_value,
             baseline_return=baseline_return

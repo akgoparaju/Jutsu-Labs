@@ -161,12 +161,16 @@ async def get_indicators(
         indicators = []
 
         # Get regime indicators from SCHEDULER snapshot (authoritative source)
-        # Architecture decision 2026-01-14: Scheduler is authoritative for regime,
-        # P/L refresh snapshots intentionally do NOT contain regime fields.
+        # Architecture decision 2026-01-14: Scheduler is authoritative for regime AND indicators.
+        # P/L refresh snapshots intentionally do NOT contain regime or indicator fields.
         # Priority: scheduler snapshot > any snapshot with regime > live context
         db_cell = None
         db_trend = None
         db_vol = None
+        db_t_norm = None
+        db_z_score = None
+        db_sma_fast = None
+        db_sma_slow = None
         regime_source = None
 
         try:
@@ -180,6 +184,11 @@ async def get_indicators(
                 db_cell = scheduler_snapshot.strategy_cell
                 db_trend = scheduler_snapshot.trend_state
                 db_vol = scheduler_snapshot.vol_state
+                # Also extract indicator values from scheduler snapshot
+                db_t_norm = scheduler_snapshot.t_norm
+                db_z_score = scheduler_snapshot.z_score
+                db_sma_fast = scheduler_snapshot.sma_fast
+                db_sma_slow = scheduler_snapshot.sma_slow
                 regime_source = "scheduler"
                 logger.debug(f"Regime from scheduler snapshot: Cell {db_cell}, Trend {db_trend}, Vol {db_vol}")
             else:
@@ -193,6 +202,11 @@ async def get_indicators(
                     db_cell = any_regime_snapshot.strategy_cell
                     db_trend = any_regime_snapshot.trend_state
                     db_vol = any_regime_snapshot.vol_state
+                    # Also try to get indicator values from fallback snapshot
+                    db_t_norm = getattr(any_regime_snapshot, 't_norm', None)
+                    db_z_score = getattr(any_regime_snapshot, 'z_score', None)
+                    db_sma_fast = getattr(any_regime_snapshot, 'sma_fast', None)
+                    db_sma_slow = getattr(any_regime_snapshot, 'sma_slow', None)
                     regime_source = any_regime_snapshot.snapshot_source or "legacy"
                     logger.debug(f"Regime from {regime_source} snapshot: Cell {db_cell}, Trend {db_trend}, Vol {db_vol}")
         except Exception as e:
@@ -209,9 +223,10 @@ async def get_indicators(
                 description=INDICATOR_DESCRIPTIONS.get('current_cell'),
             ))
 
-        # t_norm and z_score always from live context (not stored in snapshot)
-        if 't_norm' in context and context['t_norm'] is not None:
-            t_norm = context['t_norm']
+        # t_norm and z_score - prefer scheduler snapshot, fall back to live context
+        # Architecture 2026-01-14: All indicators should come from scheduler for consistency
+        t_norm = float(db_t_norm) if db_t_norm is not None else context.get('t_norm')
+        if t_norm is not None:
             indicators.append(IndicatorValue(
                 name='t_norm',
                 value=float(t_norm),
@@ -219,8 +234,8 @@ async def get_indicators(
                 description=INDICATOR_DESCRIPTIONS.get('t_norm'),
             ))
 
-        if 'z_score' in context and context['z_score'] is not None:
-            z_score = context['z_score']
+        z_score = float(db_z_score) if db_z_score is not None else context.get('z_score')
+        if z_score is not None:
             indicators.append(IndicatorValue(
                 name='z_score',
                 value=float(z_score),
@@ -251,17 +266,20 @@ async def get_indicators(
             ))
 
         # Decision tree indicators - SMA indicators
-        if 'sma_fast' in context and context['sma_fast'] is not None:
+        # Prefer scheduler snapshot values for consistency with regime
+        sma_fast = float(db_sma_fast) if db_sma_fast is not None else context.get('sma_fast')
+        if sma_fast is not None:
             indicators.append(IndicatorValue(
                 name='sma_fast',
-                value=float(context['sma_fast']),
+                value=float(sma_fast),
                 description=INDICATOR_DESCRIPTIONS.get('sma_fast'),
             ))
 
-        if 'sma_slow' in context and context['sma_slow'] is not None:
+        sma_slow = float(db_sma_slow) if db_sma_slow is not None else context.get('sma_slow')
+        if sma_slow is not None:
             indicators.append(IndicatorValue(
                 name='sma_slow',
-                value=float(context['sma_slow']),
+                value=float(sma_slow),
                 description=INDICATOR_DESCRIPTIONS.get('sma_slow'),
             ))
 

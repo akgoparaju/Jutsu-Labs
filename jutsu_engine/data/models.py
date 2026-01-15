@@ -304,6 +304,13 @@ class PerformanceSnapshot(Base):
     # "scheduler" = authoritative for regime, "refresh" = P/L only, "manual" = user-triggered
     snapshot_source = Column(String(20))  # "scheduler" | "refresh" | "manual"
 
+    # Indicator values at snapshot time (scheduler snapshots only)
+    # These are the values used by scheduler to determine regime
+    t_norm = Column(Numeric(10, 6))  # Normalized trend indicator (-1 to 1)
+    z_score = Column(Numeric(10, 6))  # Volatility z-score
+    sma_fast = Column(Numeric(18, 6))  # QQQ fast SMA value
+    sma_slow = Column(Numeric(18, 6))  # QQQ slow SMA value
+
     # Position breakdown at snapshot time (JSON: [{symbol, quantity, value}])
     positions_json = Column(Text)  # JSON string of position breakdown
 

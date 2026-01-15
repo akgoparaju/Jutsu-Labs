@@ -181,13 +181,22 @@ async def get_performance(
         # Calculate Sharpe Ratio from daily returns
         # Sharpe = (Mean Return - Risk Free Rate) / Std Dev of Returns
         # Using annualized Sharpe with risk-free rate ≈ 0
+        # IMPORTANT: Deduplicate to one snapshot per day (latest) to avoid skewing metrics
         sharpe_ratio = None
         if history:
             import math
+            # Deduplicate: take latest snapshot per day for accurate daily returns
+            daily_snapshots = {}
+            for snap in history:
+                if snap.daily_return is not None and snap.timestamp:
+                    day_key = snap.timestamp.date()
+                    # Keep the latest snapshot for each day
+                    if day_key not in daily_snapshots or snap.timestamp > daily_snapshots[day_key].timestamp:
+                        daily_snapshots[day_key] = snap
+            
             daily_returns = [
                 float(snap.daily_return)
-                for snap in history
-                if snap.daily_return is not None
+                for snap in daily_snapshots.values()
             ]
             if len(daily_returns) >= 2:
                 mean_return = sum(daily_returns) / len(daily_returns)

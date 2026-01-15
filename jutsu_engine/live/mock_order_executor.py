@@ -498,6 +498,7 @@ class MockOrderExecutor(ExecutorInterface):
                 })
 
             # Scheduler creates authoritative regime snapshots (architecture 2026-01-14)
+            # Includes indicator values used to determine regime for Decision Tree display
             snapshot = PerformanceSnapshot(
                 timestamp=datetime.now(timezone.utc),
                 total_equity=float(account_equity),
@@ -509,6 +510,11 @@ class MockOrderExecutor(ExecutorInterface):
                 strategy_cell=context.get('current_cell'),
                 trend_state=context.get('trend_state'),
                 vol_state=context.get('vol_state'),
+                # Indicator values from scheduler (authoritative for Decision Tree)
+                t_norm=float(context['t_norm']) if context.get('t_norm') is not None else None,
+                z_score=float(context['z_score']) if context.get('z_score') is not None else None,
+                sma_fast=float(context['sma_fast']) if context.get('sma_fast') is not None else None,
+                sma_slow=float(context['sma_slow']) if context.get('sma_slow') is not None else None,
                 positions_json=json.dumps(positions_data) if positions_data else None,
                 baseline_value=float(baseline_value) if baseline_value else None,
                 baseline_return=baseline_return,
