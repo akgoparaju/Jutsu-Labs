@@ -291,15 +291,21 @@ async def get_regime(
     Get current strategy regime.
 
     Returns cell, trend state, volatility state, and indicator values.
-    Prefers database snapshot (source of truth) over live strategy context.
+
+    Architecture Decision (2026-01-14):
+    - Scheduler is authoritative for regime data (strategy_cell, trend_state, vol_state)
+    - Refresh snapshots have NULL regime (correct behavior)
+    - Query filters for snapshots WITH regime data to get scheduler snapshots
     """
     try:
-        # First try to get from latest performance snapshot (source of truth)
+        # Get latest snapshot WITH regime data (scheduler snapshots)
+        # Architecture: Only scheduler writes regime, refresh writes P/L only
         latest_snapshot = db.query(PerformanceSnapshot).filter(
-            PerformanceSnapshot.mode == engine_state.mode
+            PerformanceSnapshot.mode == engine_state.mode,
+            PerformanceSnapshot.strategy_cell.isnot(None)  # Only snapshots with regime
         ).order_by(desc(PerformanceSnapshot.timestamp)).first()
 
-        if latest_snapshot and latest_snapshot.strategy_cell is not None:
+        if latest_snapshot:
             # Use database snapshot values (most accurate for cell/trend/vol)
             # But supplement with live strategy context for t_norm/z_score
             t_norm_val = None

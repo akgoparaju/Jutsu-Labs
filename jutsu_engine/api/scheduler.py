@@ -57,6 +57,9 @@ class SchedulerState:
 
     Stores scheduler configuration that survives API restarts.
     Uses a JSON file for simple persistence.
+
+    Note: Implements __getstate__/__setstate__ to support pickling when used
+    with APScheduler's SQLAlchemyJobStore (threading.Lock cannot be pickled).
     """
 
     def __init__(self, state_file: Path = Path('state/scheduler_state.json')):
@@ -71,6 +74,19 @@ class SchedulerState:
             'run_count': 0,
         }
         self._load_state()
+
+    def __getstate__(self):
+        """Return state for pickling, excluding the Lock object."""
+        state = self.__dict__.copy()
+        # Remove the lock - it cannot be pickled
+        del state['_lock']
+        return state
+
+    def __setstate__(self, state):
+        """Restore state from pickle, recreating the Lock object."""
+        self.__dict__.update(state)
+        # Recreate the lock after unpickling
+        self._lock = Lock()
 
     def _load_state(self):
         """Load state from file if exists."""

@@ -1,3 +1,131 @@
+#### **Fix: Position Tracking Bug After Threshold Filtering** (2026-01-15)
+
+**Fixed incorrect position and cash values when trades are filtered by rebalance threshold**
+
+**Problem**: When the scheduler executed trades, positions that were filtered out by the threshold (e.g., TQQQ -1 share = 0.5% < 5% threshold → SKIP) were still being recorded as changed in the database. This caused:
+- TQQQ position: recorded as 36 instead of 37 (trade was skipped but position was updated anyway)
+- Cash: $632.43 instead of $759.83 (incorrect remainder calculation instead of tracking actual trade proceeds)
+
+**Root Cause**: Two bugs in `daily_dry_run.py`:
+1. **BUG 1**: After threshold filtering removed some trades, the code used `target_positions` instead of `actual_positions_after_trades` for database updates (lines 583-590)
+2. **BUG 2**: Cash was calculated as `equity - positions_value` (remainder approach) instead of tracking actual cash flows from executed trades
+
+**Solution**:
+1. Calculate `actual_positions_after_trades` by applying only the filtered trades to current positions
+2. Track cash from actual trade proceeds: `actual_cash = previous_cash + sell_proceeds - buy_costs`
+3. Use actual positions (not target) for `update_positions()`, `positions_for_snapshot`, and state save
+
+**File Modified**: `scripts/daily_dry_run.py` (lines 571-667, 751-754)
+
+**Database Corrections Applied**:
+- Production (jutsu_labs): Corrected TQQQ=37, Cash=$759.83, Equity=$10,339.42
+- Staging (jutsu_labs_staging): Synced to match post-trade state
+
+**Agent**: Claude Opus 4.5 | **Layer**: Engine/Scheduler
+
+---
+
+#### **Fix: Regime Query Only Uses Scheduler Snapshots** (2026-01-15)
+
+**Fixed equity-curve endpoint overwriting regime with NULL from refresh snapshots**
+
+**Problem**: Performance table showed "-" for regime on 1/14 even though scheduler had recorded Cell 3. The equity-curve endpoint used "keep latest per day" logic, which overwrote scheduler regime data with NULL from subsequent refresh snapshots.
+
+**Root Cause**: The equity-curve endpoint queried all snapshots without separating regime data (scheduler-only) from P/L data (any source). When a refresh snapshot was the latest for a day, its NULL `strategy_cell` overwrote the scheduler's regime.
+
+**Solution**: Two-pass query approach:
+1. Query all snapshots for P/L data (equity, return, baseline) - latest per day wins
+2. Query ONLY scheduler snapshots for regime data (`snapshot_source = 'scheduler'`)
+3. Build regime lookup by date, apply to final data
+
+**File Modified**: `jutsu_engine/api/routes/performance.py` (lines 346-388)
+
+**Agent**: Claude Opus 4.5 | **Layer**: API/Routes
+
+---
+
+#### **Fix: Scheduler Fails to Start Due to Unpicklable Lock Object** (2026-01-15)
+
+**Fixed APScheduler failing to start with "cannot pickle '_thread.lock' object" error**
+
+**Problem**: The scheduler was not starting on 2026-01-15. Docker logs showed the error:
+```
+TypeError: cannot pickle '_thread.lock' object
+```
+
+**Root Cause**: The `SchedulerState` class in `scheduler.py` contains a `threading.Lock()` object (`self._lock`) for thread-safe operations. When APScheduler with `SQLAlchemyJobStore` attempts to persist job state, it pickles the scheduler context. Python's `pickle` module cannot serialize `Lock` objects, causing the scheduler initialization to fail.
+
+**Solution**: Added `__getstate__` and `__setstate__` methods to `SchedulerState` class to handle pickle serialization:
+- `__getstate__`: Returns state dict without the `_lock` attribute
+- `__setstate__`: Restores state and recreates a fresh `Lock` object
+
+**File Modified**: `jutsu_engine/api/scheduler.py` (lines 33-46)
+
+**Agent**: Claude Opus 4.5 | **Layer**: Engine/Scheduler
+
+---
+
+#### **Fix: Dashboard Shows Wrong Regime (BullStrong Instead of Sideways)** (2026-01-15)
+
+**Fixed `/api/status/regime` endpoint returning stale/incorrect regime data**
+
+**Problem**: Dashboard "Current Regime" card displayed Cell 1/BullStrong while Decision Tree correctly showed Cell 3/Sideways. The regime data was inconsistent between UI components.
+
+**Root Cause**: Architecture design flaw in regime query logic:
+- **Scheduler snapshots**: Write complete data including `strategy_cell`, `trend_state`, `vol_state`
+- **Refresh snapshots**: Write P/L data only, regime fields are NULL (correct by design)
+- **Bug**: The `/api/status/regime` endpoint queried the latest snapshot by timestamp without filtering for regime data. Since refresh runs more frequently than scheduler, the latest snapshot was often a refresh snapshot with NULL regime, causing fallback to stale live strategy context.
+
+**Solution**: Updated the regime query in `get_regime()` to filter for snapshots that actually have regime data:
+```python
+latest_snapshot = db.query(PerformanceSnapshot).filter(
+    PerformanceSnapshot.mode == engine_state.mode,
+    PerformanceSnapshot.strategy_cell.isnot(None)  # Only scheduler snapshots
+).order_by(desc(PerformanceSnapshot.timestamp)).first()
+```
+
+**Architecture Decision**: Scheduler is authoritative for regime data. Refresh snapshots correctly have NULL regime. Query must filter for scheduler snapshots when retrieving regime information.
+
+**File Modified**: `jutsu_engine/api/routes/status.py` (lines 300-306)
+
+**Agent**: Claude Opus 4.5 | **Layer**: API/Routes
+
+---
+
+#### **Fix: 2FA Verification Fails Due to Database Column Type Mismatch** (2026-01-14)
+
+**Fixed 2FA enable failing for all users with "An unexpected error occurred" message**
+
+**Problem**: When any user (viewer or admin) attempted to enable 2FA, the setup step worked (QR code displayed), but clicking "Verify & Enable" would fail with a generic error message.
+
+**Root Cause**: Database column type mismatch between model and schema:
+- **Model** (`jutsu_engine/data/models.py`): `backup_codes = Column(JSON)` - expects JSONB type
+- **Database** (from 2025-12-09 migration): `ALTER TABLE users ADD COLUMN backup_codes TEXT[];` - PostgreSQL array type
+
+When the 2FA verify endpoint called `db.commit()` after setting `current_user.backup_codes = backup_codes` (a Python list), SQLAlchemy tried to serialize the list as JSONB but the database column was TEXT[], causing the transaction to fail.
+
+**Solution**: Created Alembic migration `20260114_0003_fix_backup_codes_column_type.py` that:
+1. Converts `backup_codes` column from TEXT[] to JSONB in PostgreSQL
+2. Preserves any existing backup codes data during conversion
+3. SQLite (development) requires no changes - TEXT is JSON compatible
+
+**Migration Command**:
+```bash
+alembic upgrade head
+```
+
+**Files Created**:
+- `alembic/versions/20260114_0003_fix_backup_codes_column_type.py`
+
+**Files Analyzed**:
+- `jutsu_engine/api/routes/two_factor.py` (lines 134-148)
+- `jutsu_engine/data/models.py` (lines 85-88)
+- `jutsu_engine/api/main.py` (global exception handler returning generic error)
+
+**Agent**: DASHBOARD_BACKEND_AGENT | **Layer**: Infrastructure
+
+---
+
 #### **Feature: Logo/Title Hyperlink to Dashboard** (2026-01-14)
 
 **Implemented clickable logo and title in navigation that links to Dashboard page**

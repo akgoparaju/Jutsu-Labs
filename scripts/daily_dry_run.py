@@ -568,6 +568,19 @@ def main(check_freshness: bool = False):
                     strategy_context=strategy_context
                 )
 
+        # Calculate ACTUAL positions after filtered trades
+        # BUG FIX (2026-01-15): Previously used target_positions which ignored threshold filtering
+        # This caused positions to be recorded incorrectly (e.g., TQQQ=36 instead of 37 when
+        # the TQQQ trade was skipped due to being below threshold)
+        if fills:
+            actual_positions_after_trades = dict(current_positions)  # Start with current
+            for symbol, diff in filtered_diffs.items():
+                current_qty = actual_positions_after_trades.get(symbol, 0)
+                actual_positions_after_trades[symbol] = current_qty + diff
+            logger.info(f"  Actual positions after filtered trades: {actual_positions_after_trades}")
+        else:
+            actual_positions_after_trades = current_positions
+
         if fills:
             logger.info(f"  {len(fills)} hypothetical orders logged:")
             for fill in fills:
@@ -576,18 +589,18 @@ def main(check_freshness: bool = False):
             logger.info("  No orders - portfolio already at target or below threshold")
 
         # Step 12b: Update positions in database ONLY if trades executed
-        # BUG FIX: Previously updated positions unconditionally, causing quantities
-        # to change without trades (recalculated based on price changes)
+        # BUG FIX (2026-01-15): Use actual_positions_after_trades, NOT target_positions
+        # This respects threshold filtering decisions (e.g., if TQQQ trade was skipped,
+        # TQQQ position should remain unchanged)
         if fills:
             logger.info("Step 12b: Updating positions in database (trades executed)")
             executor.update_positions(
-                target_positions=target_positions,
+                target_positions=actual_positions_after_trades,  # Use ACTUAL positions
                 current_prices=current_prices,
                 account_equity=account_equity
             )
             logger.info("  Positions updated in database ✅")
-            # After trades, use target positions for snapshot
-            positions_for_snapshot = target_positions
+            positions_for_snapshot = actual_positions_after_trades
         else:
             logger.info("Step 12b: Skipping position update (no trades executed)")
             logger.info("  Positions unchanged in database ✅")
@@ -604,41 +617,54 @@ def main(check_freshness: bool = False):
             for sym, qty in positions_for_snapshot.items()
         )
 
-        # BUG FIX: Calculate ACTUAL equity from positions + cash
-        # Previously used static initial_capital, never reflecting P&L
-        # Cash is what remains after allocating to positions
+        # BUG FIX (2026-01-15): Calculate cash from ACTUAL trade proceeds
+        # Previously used remainder approach (cash = equity - positions) which was incorrect
+        # Portfolio manager expects: cash_after = cash_before + sell_proceeds - buy_costs
+
+        # First, get previous cash from database
+        db_url = get_database_url()
+        db_type = get_database_type()
+        if db_type == DATABASE_TYPE_SQLITE:
+            snap_engine = create_engine(db_url, connect_args={'check_same_thread': False})
+        else:
+            snap_engine = create_engine(db_url)
+        SnapSession = sessionmaker(bind=snap_engine)
+        snap_session = SnapSession()
+
+        try:
+            previous_snapshot = snap_session.query(PerformanceSnapshot).filter(
+                PerformanceSnapshot.mode == 'offline_mock'
+            ).order_by(desc(PerformanceSnapshot.timestamp)).first()
+
+            if previous_snapshot and previous_snapshot.cash is not None:
+                previous_cash = Decimal(str(previous_snapshot.cash))
+            else:
+                # First run - no previous cash, start with initial capital minus positions
+                previous_cash = initial_capital - sum(
+                    current_prices.get(sym, Decimal('0')) * qty
+                    for sym, qty in current_positions.items()
+                )
+                logger.warning(f"    No previous cash found, estimated: ${previous_cash:,.2f}")
+        finally:
+            snap_session.close()
+            snap_engine.dispose()
+
         if fills:
-            # After trades, use the calculated cash remainder
-            actual_cash = cash_amount
+            # Calculate cash change from actual executed trades
+            cash_change = Decimal('0')
+            for fill in fills:
+                fill_value = Decimal(str(fill['value']))
+                if fill['action'] == 'SELL':
+                    cash_change += fill_value  # Sell increases cash
+                else:  # BUY
+                    cash_change -= fill_value  # Buy decreases cash
+
+            actual_cash = previous_cash + cash_change
+            logger.info(f"    Cash calculation: ${previous_cash:,.2f} + ${cash_change:,.2f} = ${actual_cash:,.2f}")
         else:
             # No trades - cash remains UNCHANGED from previous day
-            # BUG FIX (2025-01-02): Query previous snapshot for actual cash instead of
-            # deriving from account_equity (which created circular calculation keeping equity at $10,000)
-            # Reopen database session for this query
-            db_url = get_database_url()
-            db_type = get_database_type()
-            if db_type == DATABASE_TYPE_SQLITE:
-                snap_engine = create_engine(db_url, connect_args={'check_same_thread': False})
-            else:
-                snap_engine = create_engine(db_url)
-            SnapSession = sessionmaker(bind=snap_engine)
-            snap_session = SnapSession()
-            
-            try:
-                previous_snapshot = snap_session.query(PerformanceSnapshot).filter(
-                    PerformanceSnapshot.mode == 'offline_mock'
-                ).order_by(desc(PerformanceSnapshot.timestamp)).first()
-                
-                if previous_snapshot and previous_snapshot.cash:
-                    actual_cash = Decimal(str(previous_snapshot.cash))
-                    logger.info(f"    Cash from previous snapshot (no trades): ${actual_cash:,.2f}")
-                else:
-                    # First run or no previous cash - estimate from initial capital
-                    actual_cash = initial_capital - positions_value
-                    logger.warning(f"    No previous cash found, estimated from initial capital: ${actual_cash:,.2f}")
-            finally:
-                snap_session.close()
-                snap_engine.dispose()
+            actual_cash = previous_cash
+            logger.info(f"    Cash unchanged (no trades): ${actual_cash:,.2f}")
 
         # Actual equity = positions at current prices + cash
         actual_equity = positions_value + actual_cash
@@ -722,9 +748,10 @@ def main(check_freshness: bool = False):
         vol_state_str = signals['vol_state']
         state['vol_state'] = vol_state_map.get(vol_state_str, 0)
         state['trend_state'] = signals.get('trend_state')  # Save trend_state for consistency
-        # BUG FIX: Only update positions in state if trades executed
+        # BUG FIX (2026-01-15): Only update positions in state if trades executed
+        # Use actual_positions_after_trades (respects threshold filtering), NOT target_positions
         if fills:
-            state['current_positions'] = target_positions
+            state['current_positions'] = actual_positions_after_trades
         # else: keep existing current_positions unchanged
         state['account_equity'] = float(actual_equity)  # BUG FIX: Save actual equity
         state['last_allocation'] = target_weights
@@ -738,9 +765,9 @@ def main(check_freshness: bool = False):
         logger.info("=" * 80)
         logger.info(f"Strategy Cell: {signals['current_cell']}")
         logger.info(f"Vol State: {signals['vol_state']}")
-        logger.info(f"Account Equity: ${account_equity:,.2f}")
+        logger.info(f"Account Equity: ${actual_equity:,.2f}")
         logger.info(f"Hypothetical Orders: {len(fills)}")
-        logger.info(f"Cash Remainder: ${cash_amount:,.2f} ({cash_pct:.2f}%)")
+        logger.info(f"Cash: ${actual_cash:,.2f}")
         logger.info(f"Mode: {executor.get_mode().value.upper()} (no actual orders placed)")
         logger.info("=" * 80)
 

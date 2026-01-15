@@ -343,28 +343,46 @@ async def get_equity_curve(
         if filter_start_date:
             query_filters.append(PerformanceSnapshot.timestamp >= filter_start_date)
 
+        # Query all snapshots for P/L data (value, return, baseline)
+        # Latest per day wins for financial data (refresh snapshots update P/L)
         snapshots = db.query(
             PerformanceSnapshot.timestamp,
             PerformanceSnapshot.total_equity,
             PerformanceSnapshot.cumulative_return,
-            PerformanceSnapshot.strategy_cell,
             PerformanceSnapshot.baseline_value,
             PerformanceSnapshot.baseline_return,
         ).filter(
             and_(*query_filters)
         ).order_by(PerformanceSnapshot.timestamp).all()
 
+        # Query ONLY scheduler snapshots for regime data (authoritative source)
+        # Architecture Decision (2026-01-15): Regime is ONLY written by scheduler
+        # Refresh snapshots have NULL regime (correct behavior)
+        scheduler_filters = query_filters + [PerformanceSnapshot.snapshot_source == 'scheduler']
+        scheduler_snapshots = db.query(
+            PerformanceSnapshot.timestamp,
+            PerformanceSnapshot.strategy_cell,
+        ).filter(
+            and_(*scheduler_filters)
+        ).order_by(PerformanceSnapshot.timestamp).all()
+
+        # Build regime lookup by date (latest scheduler snapshot per day)
+        regime_by_date = {}
+        for snapshot in scheduler_snapshots:
+            date_key = snapshot.timestamp.strftime('%Y-%m-%d')
+            regime_by_date[date_key] = snapshot.strategy_cell
+
         # Format for charting - deduplicate by date (keep latest per day)
         # lightweight-charts requires unique ascending timestamps
         data_by_date = {}
         for snapshot in snapshots:
             date_key = snapshot.timestamp.strftime('%Y-%m-%d')
-            # Later entries overwrite earlier ones (keeping latest per day)
+            # Later entries overwrite earlier ones (keeping latest per day for P/L)
             data_by_date[date_key] = {
                 "time": date_key,
                 "value": float(snapshot.total_equity),
                 "return": float(snapshot.cumulative_return) if snapshot.cumulative_return else 0.0,
-                "regime": snapshot.strategy_cell,
+                "regime": regime_by_date.get(date_key),  # Only from scheduler snapshots
                 "baseline_value": float(snapshot.baseline_value) if snapshot.baseline_value is not None else None,
                 "baseline_return": float(snapshot.baseline_return) if snapshot.baseline_return is not None else None,
             }
