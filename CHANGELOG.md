@@ -1,3 +1,34 @@
+#### **Change: Docker Build Only on Release Tags** (2026-01-15)
+
+**Modified GitHub Actions workflow to build Docker images only on release tags, not every push to main**
+
+**Previous Behavior**:
+- Docker builds triggered on: push to `main`, push to `serverdB`, version tags (`v*`), manual dispatch
+- Every commit to `main` triggered a full multi-platform Docker build (~10-15 min)
+
+**New Behavior**:
+- Docker builds triggered on: version tags (`v*`) only, manual dispatch
+- No automatic builds on branch pushes
+- `latest` tag now applied to release tags instead of default branch
+
+**Changes Made**:
+1. Removed `branches:` trigger section (main, serverdB)
+2. Updated `latest` tag to apply on `refs/tags/v*` instead of default branch
+
+**File Modified**: `.github/workflows/docker-publish.yml`
+
+**How to Deploy**:
+```bash
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+**Manual Build Still Available**: Use GitHub Actions "Run workflow" button for ad-hoc builds.
+
+**Agent**: Claude Opus 4.5 | **Layer**: Infrastructure/CI-CD
+
+---
+
 #### **Fix: Scheduler Hourly/4PM Refresh Jobs Not Executing** (2026-01-15)
 
 **Fixed hourly and market close data refresh jobs failing to execute due to pickle serialization error**
