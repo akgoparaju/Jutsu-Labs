@@ -211,6 +211,37 @@ class SchedulerService:
 
         logger.info("SchedulerService initialized")
 
+    def __getstate__(self):
+        """
+        Return state for pickling, excluding non-pickleable objects.
+        
+        APScheduler's SQLAlchemyJobStore pickles job functions (instance methods),
+        which requires pickling the entire SchedulerService instance.
+        The AsyncIOScheduler cannot be pickled, so we exclude it.
+        
+        Architecture fix 2026-01-15: Resolves "Schedulers cannot be serialized" error
+        that was preventing hourly and market close refresh jobs from executing.
+        """
+        state = self.__dict__.copy()
+        # Remove non-pickleable objects
+        state['_scheduler'] = None  # AsyncIOScheduler cannot be pickled
+        state['_config_loader'] = None  # Callables may not be pickleable
+        return state
+
+    def __setstate__(self, state):
+        """
+        Restore state from pickle.
+        
+        After unpickling, the scheduler will be None and needs to be
+        re-initialized by calling start() if needed.
+        """
+        self.__dict__.update(state)
+        # Re-initialize non-pickleable objects to None (they'll be set by start())
+        if '_scheduler' not in self.__dict__:
+            self._scheduler = None
+        if '_config_loader' not in self.__dict__:
+            self._config_loader = None
+
     def _get_execution_time(self) -> str:
         """
         Get execution time from config with database overrides.
