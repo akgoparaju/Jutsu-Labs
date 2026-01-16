@@ -1,3 +1,36 @@
+#### **Fix: Scheduler Hourly/4PM Refresh Jobs Not Executing** (2026-01-15)
+
+**Fixed hourly and market close data refresh jobs failing to execute due to pickle serialization error**
+
+**Problem**: Docker logs showed:
+```
+"Failed to start scheduler service: Schedulers cannot be serialized. Ensure that you are not passing a scheduler instance as an argument to a job, or scheduling an instance method where the instance contains a scheduler as an attribute."
+```
+Portfolio P/L, value, and baseline_value were stale because hourly (10 AM - 3:30 PM EST) and market close (4 PM EST) refresh jobs never executed.
+
+**Root Cause**: Regression introduced in commit `2ff899f` (2026-01-14) when switching from `MemoryJobStore` to `SQLAlchemyJobStore`:
+- `SQLAlchemyJobStore` pickles job functions to store them in the database
+- Job functions (`_execute_hourly_refresh_job`, etc.) are instance methods of `SchedulerService`
+- Pickling instance methods requires pickling the entire `SchedulerService` instance
+- `SchedulerService` contains `self._scheduler` (AsyncIOScheduler) which cannot be pickled
+- Previous fix only added pickle support to `SchedulerState` (for `threading.Lock`), but missed `SchedulerService`
+
+**Solution**: Added `__getstate__` and `__setstate__` methods to `SchedulerService` class:
+- `__getstate__`: Excludes `_scheduler` and `_config_loader` from pickle state
+- `__setstate__`: Restores state with these attributes set to None
+
+**File Modified**: `jutsu_engine/api/scheduler.py` (lines 213-242)
+
+**Verification**: Post-deployment logs confirm:
+- ✅ "Using SQLAlchemyJobStore for persistent job scheduling"
+- ✅ All 4 jobs added to job store successfully
+- ✅ "Scheduler started" without errors
+- ✅ No "next_run_time" warnings
+
+**Agent**: Claude Opus 4.5 | **Layer**: Engine/Scheduler
+
+---
+
 #### **Fix: Position Tracking Bug After Threshold Filtering** (2026-01-15)
 
 **Fixed incorrect position and cash values when trades are filtered by rebalance threshold**
