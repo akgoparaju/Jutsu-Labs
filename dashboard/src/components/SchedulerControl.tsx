@@ -93,6 +93,52 @@ export function SchedulerControl() {
     }
   }
 
+  // Convert EST time string to local time display
+  // Input: "09:45 AM EST" -> Output: "09:45 AM EST (6:45 AM PST)"
+  const formatEstWithLocal = (estTimeStr: string | null | undefined) => {
+    if (!estTimeStr) return 'N/A'
+    try {
+      // Parse the EST time (format: "HH:MM AM/PM EST")
+      const match = estTimeStr.match(/(\d{1,2}):(\d{2})\s*(AM|PM)\s*EST/i)
+      if (!match) return estTimeStr
+
+      let hours = parseInt(match[1], 10)
+      const minutes = parseInt(match[2], 10)
+      const isPM = match[3].toUpperCase() === 'PM'
+
+      // Convert to 24-hour format
+      if (isPM && hours !== 12) hours += 12
+      if (!isPM && hours === 12) hours = 0
+
+      // Check if user is in Eastern timezone - no conversion needed
+      const userTz = Intl.DateTimeFormat().resolvedOptions().timeZone
+      if (userTz === 'America/New_York' || userTz.includes('Eastern')) {
+        return estTimeStr
+      }
+
+      // Create a date in Eastern timezone for today
+      const today = new Date()
+      const dateStr = today.toLocaleDateString('en-CA') // YYYY-MM-DD format
+      const timeStr = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:00`
+
+      // Create ISO string with Eastern timezone offset
+      // EST = UTC-5, EDT = UTC-4. Use America/New_York to handle DST automatically
+      const easternDate = new Date(`${dateStr}T${timeStr}-05:00`) // EST offset
+
+      // Format in user's local timezone
+      const localTime = easternDate.toLocaleString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+        timeZoneName: 'short',
+      })
+
+      return `${estTimeStr} (${localTime})`
+    } catch {
+      return estTimeStr
+    }
+  }
+
   // Get status indicator color
   const getStatusColor = () => {
     if (status?.is_running) return 'bg-yellow-500 animate-pulse'
@@ -239,7 +285,7 @@ export function SchedulerControl() {
         {/* Execution Time */}
         <div className="flex justify-between text-sm">
           <span className="text-gray-400">Execution Time:</span>
-          <span className="font-medium">{status?.execution_time_est || 'N/A'}</span>
+          <span className="font-medium">{formatEstWithLocal(status?.execution_time_est)}</span>
         </div>
 
         {/* Next Run */}

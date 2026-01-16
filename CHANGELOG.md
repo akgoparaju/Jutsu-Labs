@@ -1,3 +1,40 @@
+#### **Fix: Scheduler Jobs Not Triggering Due to Corrupted APScheduler Data** (2026-01-16)
+
+**Fixed scheduler not executing daily trades at scheduled time (6:45 AM PST / 9:45 AM EST)**
+
+**Problem**: Scheduler showed jobs as "Added" in logs but failed to trigger execution. API returned `'Job' object has no attribute 'next_run_time'` errors.
+
+**Root Cause**: SQLAlchemyJobStore contained corrupted pickle data from jobs serialized before pickle fixes (Jan 14-15):
+- SchedulerService `__getstate__` returns a `dict` for custom pickle handling
+- APScheduler's SQLAlchemyJobStore expects `Job` objects when unpickling
+- Jobs stored before pickle fix contained malformed data causing attribute errors
+
+**Solution**: Cleared `apscheduler_jobs` table in PostgreSQL to remove corrupted job data. Fresh jobs will be created on container restart.
+
+**Files Modified**: Database cleanup only (no code changes)
+
+**Agent**: ORCHESTRATION | **Layer**: Infrastructure/Database
+
+---
+
+#### **Enhancement: Display Local Timezone for Scheduler Execution Time** (2026-01-16)
+
+**Added local timezone conversion for scheduler execution time display**
+
+**Problem**: "Execution Time: 09:45 AM EST" showed only market time (Eastern), confusing users in other timezones like PST.
+
+**Solution**: Added `formatEstWithLocal()` function to convert EST to user's local timezone:
+- Parses EST time string (e.g., "09:45 AM EST")
+- Converts to user's local timezone using Intl API
+- Displays both: "09:45 AM EST (6:45 AM PST)"
+- Skips duplicate display for users already in Eastern timezone
+
+**Files Modified**: `dashboard/src/components/SchedulerControl.tsx`
+
+**Agent**: ORCHESTRATION | **Layer**: Infrastructure/Dashboard
+
+---
+
 #### **Fix: Daily Performance Table Showing NULL Regime for Recent Dates** (2026-01-15)
 
 **Fixed regime appearing as "-" (null) in Daily Performance table despite scheduler running correctly**
