@@ -105,6 +105,9 @@ function PerformanceV2() {
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Line'> | null>(null)
   const baselineSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
+  // Track chart readiness to trigger data update when chart is initialized
+  // Fixes race condition where equityCurve data loads before chart is ready
+  const [chartReady, setChartReady] = useState(false)
 
   const { data: performance, isLoading } = useQuery({
     queryKey: ['performance', mode, timeRange, queryParams],
@@ -271,8 +274,12 @@ function PerformanceV2() {
     })
     resizeObserver.observe(chartContainerRef.current)
 
+    // Signal chart is ready for data - triggers data update effect
+    setChartReady(true)
+
     return () => {
       resizeObserver.disconnect()
+      setChartReady(false)
       if (chartRef.current) {
         chartRef.current.remove()
         chartRef.current = null
@@ -347,7 +354,7 @@ function PerformanceV2() {
     }
 
     chartRef.current?.timeScale().fitContent()
-  }, [equityCurve, timeRange])
+  }, [equityCurve, timeRange, chartReady])
 
   if (isLoading) {
     return (

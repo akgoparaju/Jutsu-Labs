@@ -254,6 +254,29 @@ async def get_performance(
             losing_trades=losing_trades,
         )
 
+        # Query scheduler snapshots for authoritative regime data
+        # Architecture Decision (2026-01-14): Regime is ONLY written by scheduler
+        # Refresh snapshots have NULL regime fields (correct behavior)
+        scheduler_snapshots = db.query(
+            PerformanceSnapshot.timestamp,
+            PerformanceSnapshot.strategy_cell,
+            PerformanceSnapshot.trend_state,
+            PerformanceSnapshot.vol_state,
+        ).filter(
+            PerformanceSnapshot.mode == effective_mode,
+            PerformanceSnapshot.snapshot_source == 'scheduler',
+        ).order_by(PerformanceSnapshot.timestamp).all()
+
+        # Build regime lookup by date (latest scheduler snapshot per day)
+        regime_by_date: dict = {}
+        for sched_snap in scheduler_snapshots:
+            date_key = sched_snap.timestamp.strftime('%Y-%m-%d')
+            regime_by_date[date_key] = {
+                'strategy_cell': sched_snap.strategy_cell,
+                'trend_state': sched_snap.trend_state,
+                'vol_state': sched_snap.vol_state,
+            }
+
         # Convert history to schema
         history_schemas = []
         for snapshot in history:
@@ -273,6 +296,11 @@ async def get_performance(
                 except (json.JSONDecodeError, KeyError) as e:
                     logger.warning(f"Failed to parse positions_json: {e}")
 
+            # Lookup regime from scheduler snapshots (authoritative source)
+            # Fall back to snapshot's own regime data for backward compatibility
+            date_key = snapshot.timestamp.strftime('%Y-%m-%d')
+            regime_data = regime_by_date.get(date_key, {})
+            
             history_schemas.append(PerformanceSnapshotSchema(
                 timestamp=snapshot.timestamp,
                 total_equity=float(snapshot.total_equity),
@@ -281,9 +309,9 @@ async def get_performance(
                 daily_return=float(snapshot.daily_return) if snapshot.daily_return else None,
                 cumulative_return=float(snapshot.cumulative_return) if snapshot.cumulative_return else None,
                 drawdown=float(snapshot.drawdown) if snapshot.drawdown else None,
-                strategy_cell=snapshot.strategy_cell,
-                trend_state=snapshot.trend_state,
-                vol_state=snapshot.vol_state,
+                strategy_cell=regime_data.get('strategy_cell') or snapshot.strategy_cell,
+                trend_state=regime_data.get('trend_state') or snapshot.trend_state,
+                vol_state=regime_data.get('vol_state') or snapshot.vol_state,
                 positions=positions,
                 baseline_value=float(snapshot.baseline_value) if snapshot.baseline_value is not None else None,
                 baseline_return=float(snapshot.baseline_return) if snapshot.baseline_return is not None else None,

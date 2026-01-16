@@ -1,3 +1,56 @@
+#### **Fix: Daily Performance Table Showing NULL Regime for Recent Dates** (2026-01-15)
+
+**Fixed regime appearing as "-" (null) in Daily Performance table despite scheduler running correctly**
+
+**Problem**: Dashboard Daily Performance table showed NULL regime for Jan 14-15, even though:
+- Scheduler snapshots with regime data (Cell 3, Sideways+Low) existed in database
+- The `/api/performance/equity-curve` endpoint correctly looked up regime from scheduler snapshots
+
+**Root Cause**: Architecture mismatch between endpoints:
+- `get_equity_curve`: Builds `regime_by_date` lookup from scheduler snapshots (correct)
+- `get_performance`: Returned `strategy_cell/trend_state/vol_state` directly from each snapshot record
+- "Refresh" snapshots (hourly P/L updates) have NULL regime fields by design (architecture decision 2026-01-14)
+- When latest snapshot for a day was a refresh snapshot, regime showed as NULL
+
+**Solution**: Modified `get_performance` to use same regime lookup pattern as `get_equity_curve`:
+1. Query scheduler snapshots separately for authoritative regime data
+2. Build `regime_by_date` lookup dictionary by date key
+3. Populate history entries with regime from scheduler snapshots, falling back to snapshot's own data
+
+**Files Modified**: `jutsu_engine/api/routes/performance.py`
+
+**Agent**: DASHBOARD_BACKEND_AGENT | **Layer**: Infrastructure/API
+
+---
+
+#### **Fix: Equity Curve Chart Race Condition Causing Flaky Loading** (2026-01-15)
+
+**Fixed equity curve chart sometimes not rendering, requiring page refresh**
+
+**Problem**: Users reported intermittent blank equity curve charts that only loaded after manual refresh.
+
+**Root Cause**: Race condition between chart initialization and data loading:
+- Chart init effect depends on `[isLoading, isMobile]` - triggers when `performance` query completes
+- Data update effect depends on `[equityCurve, timeRange]` - independent `equityCurve` query
+- If `equityCurve` loads BEFORE chart is initialized:
+  1. Data update runs but `chartRef.current` is null → early return
+  2. Chart initializes later when `performance` completes
+  3. Data update doesn't re-run because `equityCurve` didn't change
+
+**Solution**: Added `chartReady` state to coordinate chart initialization and data loading:
+1. Added `const [chartReady, setChartReady] = useState(false)` state
+2. Set `chartReady(true)` after chart series are created
+3. Reset `chartReady(false)` in cleanup function
+4. Added `chartReady` to data update effect dependencies
+
+This ensures data update effect re-runs when chart becomes ready, even if equityCurve data arrived first.
+
+**Files Modified**: `dashboard/src/pages/v2/PerformanceV2.tsx`
+
+**Agent**: DASHBOARD_FRONTEND_AGENT | **Layer**: Infrastructure/Dashboard
+
+---
+
 #### **Change: Docker Build Only on Release Tags** (2026-01-15)
 
 **Modified GitHub Actions workflow to build Docker images only on release tags, not every push to main**
