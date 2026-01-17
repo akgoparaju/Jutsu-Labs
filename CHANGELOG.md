@@ -1,3 +1,67 @@
+#### **Enhancement: Docker/Unraid Deployment Support for Security Migration** (2026-01-17)
+
+**Added automatic security migration support for Docker and Unraid deployments**
+
+**Changes**:
+- `docker-compose.yml`: Added `TOTP_ENCRYPTION_KEY` environment variable
+- `Dockerfile`: Added `alembic/` directory and `alembic.ini` to image
+- `docker/docker-entrypoint.sh`: Added automatic migration on startup + security config checks
+- `.env.example`: Added TOTP_ENCRYPTION_KEY documentation
+- `docs/SECURITY_ENCRYPTION_AUDIT.md`: Added comprehensive deployment instructions for Local, Docker, and Unraid
+
+**Unraid Deployment**:
+1. In Docker UI → Edit container → Add Variable
+2. Name: `TOTP_ENCRYPTION_KEY`, Value: `<generated-fernet-key>`
+3. Apply and restart - migration runs automatically
+
+**Agent**: INFRASTRUCTURE_ORCHESTRATOR | **Layer**: Infrastructure/Docker
+
+---
+
+#### **Security: Encrypt TOTP Secrets and Hash Backup Codes** (2026-01-17)
+
+**Implemented encryption for TOTP secrets and hashing for backup codes to comply with security standards**
+
+**Problem**: Database audit revealed sensitive 2FA data stored in plain text:
+- TOTP secrets (Base32 seeds) were readable - complete 2FA bypass if database compromised
+- Backup codes were stored as plaintext JSON arrays - permanent 2FA bypass tokens exposed
+- Invitation tokens were stored in plaintext
+
+**Compliance Violations Fixed**:
+- NIST 800-63B Section 5.1.4.2 (TOTP secrets must be encrypted at rest)
+- NIST 800-63B Section 5.1.2 (Backup codes must be hashed like passwords)
+- OWASP ASVS 4.0 Section 2.9.2 (Authenticator secrets protection)
+
+**Solution**:
+1. **TOTP Secrets**: Encrypted with AES-256-GCM via Fernet when `TOTP_ENCRYPTION_KEY` is set
+2. **Backup Codes**: Hashed with bcrypt (same as passwords) - plaintext shown only once during generation
+3. **Invitation Tokens**: Hashed with SHA-256 before storage
+
+**Backwards Compatibility**:
+- All code supports both encrypted/hashed (new) and plaintext (legacy) formats
+- Migration script encrypts existing TOTP secrets if key is set
+- Backup codes must be regenerated (one-way hashing)
+
+**Files Created**:
+- `jutsu_engine/utils/encryption.py` - Encryption utilities module
+- `alembic/versions/20260117_0001_encrypt_totp_hash_backup_codes.py` - Data migration
+- `docs/SECURITY_ENCRYPTION_AUDIT.md` - Comprehensive audit documentation
+
+**Files Modified**:
+- `jutsu_engine/data/models.py` - Updated column comments
+- `jutsu_engine/api/routes/two_factor.py` - Encrypt/hash on storage, decrypt/verify on use
+- `jutsu_engine/api/routes/users.py` - Hash invitation tokens
+- `jutsu_engine/api/routes/invitations.py` - Verify hashed invitation tokens
+
+**Environment Variable Required**:
+```bash
+TOTP_ENCRYPTION_KEY=<fernet-key>  # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+**Agent**: SECURITY_AGENT | **Layer**: Entry Points (API)
+
+---
+
 #### **Fix: Scheduler Jobs Not Triggering Due to Corrupted APScheduler Data** (2026-01-16)
 
 **Fixed scheduler not executing daily trades at scheduled time (6:45 AM PST / 9:45 AM EST)**

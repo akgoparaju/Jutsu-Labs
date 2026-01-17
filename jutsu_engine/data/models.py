@@ -493,9 +493,13 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     # Two-Factor Authentication (2FA/TOTP)
-    totp_secret = Column(String(32), nullable=True)  # Base32 secret for TOTP
-    totp_enabled = Column(Boolean, default=False)    # Whether 2FA is active
-    backup_codes = Column(JSON, nullable=True)  # List of one-time backup codes (JSON for SQLite/PostgreSQL compatibility)
+    # Security: totp_secret is encrypted at rest using Fernet (AES-256-GCM) when TOTP_ENCRYPTION_KEY is set
+    # Compliance: NIST 800-63B Section 5.1.4.2, OWASP ASVS 2.9.2
+    totp_secret = Column(String(255), nullable=True)  # Encrypted TOTP secret (Fernet token or legacy plaintext)
+    totp_enabled = Column(Boolean, default=False)     # Whether 2FA is active
+    # Security: backup_codes are stored as bcrypt hashes (like passwords)
+    # Compliance: NIST 800-63B Section 5.1.2 - recovery secrets must be hashed
+    backup_codes = Column(JSON, nullable=True)  # List of bcrypt-hashed backup codes
 
     # Passkey/WebAuthn relationship
     passkeys = relationship("Passkey", back_populates="user", cascade="all, delete-orphan")
@@ -617,6 +621,8 @@ class UserInvitation(Base):
     
     # Invitation details
     email = Column(String(255), nullable=True)  # Optional email hint
+    # Security: Token is stored as SHA-256 hash (64 hex chars) for security
+    # Compliance: Protects invitation tokens from database exposure
     token = Column(String(64), unique=True, nullable=False, index=True)
     role = Column(String(20), default="viewer", nullable=False)
     

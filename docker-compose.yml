@@ -54,6 +54,11 @@ services:
       # Set to 'true' to disable /docs, /redoc, /openapi.json endpoints in production
       - DISABLE_DOCS=${DISABLE_DOCS:-true}
 
+      # 2FA Security (TOTP Encryption)
+      # Generate key: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      # REQUIRED for TOTP secret encryption - without this, TOTP secrets stored in plain text
+      - TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY:-}
+
       # Legacy API authentication (deprecated, use JWT instead)
       - JUTSU_API_USERNAME=${JUTSU_API_USERNAME:-}
       - JUTSU_API_PASSWORD=${JUTSU_API_PASSWORD:-}

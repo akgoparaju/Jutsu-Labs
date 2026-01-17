@@ -65,6 +65,8 @@ RUN pip install --no-cache-dir -r requirements.txt && \
 COPY jutsu_engine/ ./jutsu_engine/
 COPY config/ ./config/
 COPY scripts/ ./scripts/
+COPY alembic/ ./alembic/
+COPY alembic.ini ./
 
 # Store default config in backup location (for volume mount fallback)
 # When user mounts empty ./config volume, we need the default config available

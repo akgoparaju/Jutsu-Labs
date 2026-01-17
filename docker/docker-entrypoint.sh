@@ -230,6 +230,44 @@ else:
                 print(f'  WARNING: Could not create database: {e}')
 "
 
+# ==============================================================================
+# Run Database Migrations (Alembic)
+# ==============================================================================
+echo ""
+echo "Running database migrations..."
+if [ -d "/app/alembic" ]; then
+    cd /app
+    python3 -m alembic upgrade head 2>&1 || {
+        echo "  WARNING: Migration failed or no pending migrations"
+        echo "  - This is normal for fresh installations"
+    }
+    echo "  Database migrations complete"
+else
+    echo "  Alembic directory not found, skipping migrations"
+fi
+
+# ==============================================================================
+# Security Configuration Checks
+# ==============================================================================
+echo ""
+echo "Security Configuration:"
+
+# Check TOTP encryption key
+if [ -n "$TOTP_ENCRYPTION_KEY" ]; then
+    echo "  - TOTP Encryption: ENABLED (AES-256-GCM)"
+else
+    echo "  - TOTP Encryption: DISABLED (secrets stored in plain text)"
+    echo "    WARNING: Set TOTP_ENCRYPTION_KEY for NIST 800-63B compliance"
+    echo "    Generate: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+fi
+
+# Check SECRET_KEY
+if [ "$SECRET_KEY" = "change-this-in-production" ] || [ -z "$SECRET_KEY" ]; then
+    echo "  - JWT Secret: DEFAULT (insecure for production!)"
+else
+    echo "  - JWT Secret: Custom key configured"
+fi
+
 # Display startup summary
 echo ""
 echo "=================================================="

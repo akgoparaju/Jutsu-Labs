@@ -33,6 +33,7 @@ from jutsu_engine.api.dependencies import (
     verify_password,
 )
 from jutsu_engine.utils.security_logger import security_logger, get_client_ip
+from jutsu_engine.utils.encryption import totp_encryption, BackupCodeManager
 
 logger = logging.getLogger('API.2FA')
 
@@ -132,20 +133,23 @@ class BackupCodesResponse(BaseModel):
 # HELPER FUNCTIONS
 # ==============================================================================
 
-def generate_backup_codes(count: int = 10) -> List[str]:
+def generate_backup_codes(count: int = 10) -> tuple[List[str], List[str]]:
     """
-    Generate secure one-time backup codes.
-
+    Generate secure one-time backup codes with bcrypt hashes.
+    
     Format: XXXX-XXXX (8 alphanumeric characters with hyphen)
+    
+    Returns:
+        Tuple of (plaintext_codes, hashed_codes):
+        - plaintext_codes: Show to user ONCE
+        - hashed_codes: Store in database (bcrypt hashed)
+    
+    Security:
+        - Backup codes are hashed like passwords (NIST 800-63B Section 5.1.2)
+        - Each code has unique bcrypt salt
+        - Cannot be recovered from database - user must save them
     """
-    codes = []
-    for _ in range(count):
-        # Generate 8 random alphanumeric characters
-        code_chars = ''.join(secrets.choice('ABCDEFGHJKLMNPQRSTUVWXYZ23456789') for _ in range(8))
-        # Format as XXXX-XXXX
-        code = f"{code_chars[:4]}-{code_chars[4:]}"
-        codes.append(code)
-    return codes
+    return BackupCodeManager.generate_codes(count)
 
 
 def generate_qr_code(provisioning_uri: str) -> Optional[str]:
@@ -184,28 +188,37 @@ def generate_qr_code(provisioning_uri: str) -> Optional[str]:
 def verify_backup_code(user, code: str, db: Session) -> bool:
     """
     Verify and consume a backup code.
-
+    
+    Supports both:
+    - New format: bcrypt-hashed codes
+    - Legacy format: plaintext codes (for backwards compatibility)
+    
     Returns True if code is valid and was consumed.
+    
+    Security:
+        - Uses constant-time comparison for hashed codes
+        - Removes used code from database to prevent reuse
     """
     if not user.backup_codes:
         return False
 
     try:
-        # backup_codes is a JSON column (list of strings)
+        # backup_codes is a JSON column (list of strings - hashes or legacy plaintext)
         codes = list(user.backup_codes)
-        # Normalize code format (remove hyphens for comparison)
-        normalized_code = code.replace('-', '').upper()
-
-        for i, stored_code in enumerate(codes):
-            if stored_code.replace('-', '').upper() == normalized_code:
-                # Remove used code
-                codes.pop(i)
-                user.backup_codes = codes  # Assign list directly to JSON column
-                db.commit()
-                return True
+        
+        # Use BackupCodeManager for verification (handles both hashed and legacy)
+        is_valid, index = BackupCodeManager.verify_code(code, codes)
+        
+        if is_valid:
+            # Remove used code
+            codes.pop(index)
+            user.backup_codes = codes  # Assign list directly to JSON column
+            db.commit()
+            return True
 
         return False
-    except Exception:
+    except Exception as e:
+        logger.error(f"Backup code verification error: {e}")
         return False
 
 
@@ -248,6 +261,10 @@ async def setup_2fa(
 
     Returns the secret key (for manual entry) and a QR code (for authenticator apps).
     User must then call /verify with a valid TOTP code to complete setup.
+    
+    Security:
+        - TOTP secret is encrypted before storage (NIST 800-63B compliant)
+        - Plaintext secret shown to user only during setup
 
     Raises:
         HTTPException 401: If not authenticated
@@ -277,11 +294,14 @@ async def setup_2fa(
     # Generate new secret
     secret = pyotp.random_base32()
 
-    # Store secret (not enabled until verified)
-    current_user.totp_secret = secret
+    # Encrypt secret before storage (if encryption is configured)
+    encrypted_secret = totp_encryption.encrypt(secret)
+    
+    # Store encrypted secret (not enabled until verified)
+    current_user.totp_secret = encrypted_secret
     db.commit()
 
-    # Generate provisioning URI
+    # Generate provisioning URI (uses plaintext secret)
     totp = pyotp.TOTP(secret)
     provisioning_uri = totp.provisioning_uri(
         name=current_user.username,
@@ -294,7 +314,7 @@ async def setup_2fa(
     logger.info(f"2FA setup initiated for user '{current_user.username}'")
 
     return TwoFactorSetupResponse(
-        secret=secret,
+        secret=secret,  # Show plaintext to user for manual entry
         qr_code=qr_code,
         provisioning_uri=provisioning_uri,
         message="Scan the QR code with your authenticator app, then verify with a code."
@@ -315,6 +335,10 @@ async def verify_2fa(
     to confirm the user has correctly configured their authenticator app.
 
     Returns backup codes that should be stored securely.
+    
+    Security:
+        - Backup codes are bcrypt-hashed before storage (NIST 800-63B compliant)
+        - Plaintext backup codes shown to user ONCE, then discarded
 
     Raises:
         HTTPException 401: If not authenticated
@@ -346,8 +370,18 @@ async def verify_2fa(
             detail="2FA is already enabled."
         )
 
+    # Decrypt TOTP secret for verification
+    try:
+        decrypted_secret = totp_encryption.decrypt(current_user.totp_secret)
+    except ValueError as e:
+        logger.error(f"Failed to decrypt TOTP secret for user '{current_user.username}': {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="2FA configuration error. Please contact support."
+        )
+
     # Verify the code
-    totp = pyotp.TOTP(current_user.totp_secret)
+    totp = pyotp.TOTP(decrypted_secret)
     if not totp.verify(verify_request.code, valid_window=1):
         security_logger.log_2fa_failure(
             username=current_user.username,
@@ -358,12 +392,12 @@ async def verify_2fa(
             detail="Invalid verification code. Please try again."
         )
 
-    # Generate backup codes
-    backup_codes = generate_backup_codes(10)
+    # Generate backup codes (returns plaintext and hashed versions)
+    plaintext_codes, hashed_codes = generate_backup_codes(10)
 
-    # Enable 2FA
+    # Enable 2FA with hashed backup codes
     current_user.totp_enabled = True
-    current_user.backup_codes = backup_codes  # Assign list directly to JSON column
+    current_user.backup_codes = hashed_codes  # Store hashes, not plaintext
     db.commit()
 
     # Log security event
@@ -376,7 +410,7 @@ async def verify_2fa(
 
     return TwoFactorVerifyResponse(
         success=True,
-        backup_codes=backup_codes,
+        backup_codes=plaintext_codes,  # Return plaintext to user ONCE
         message="2FA enabled successfully. Save your backup codes securely!"
     )
 
@@ -469,6 +503,10 @@ async def validate_2fa(
 
     Note: This endpoint does not require authentication as it's part of
     the login flow (user has already provided valid credentials).
+    
+    Security:
+        - TOTP secret decrypted only for verification
+        - Backup codes verified against bcrypt hashes
 
     Returns:
         Whether the code is valid
@@ -492,18 +530,23 @@ async def validate_2fa(
         )
 
     # Try TOTP code first
-    totp = pyotp.TOTP(user.totp_secret)
-    if totp.verify(validate_request.code, valid_window=1):
-        security_logger.log_2fa_success(
-            username=user.username,
-            ip_address=client_ip
-        )
-        return TwoFactorValidateResponse(
-            valid=True,
-            message="2FA verification successful"
-        )
+    try:
+        decrypted_secret = totp_encryption.decrypt(user.totp_secret)
+        totp = pyotp.TOTP(decrypted_secret)
+        if totp.verify(validate_request.code, valid_window=1):
+            security_logger.log_2fa_success(
+                username=user.username,
+                ip_address=client_ip
+            )
+            return TwoFactorValidateResponse(
+                valid=True,
+                message="2FA verification successful"
+            )
+    except ValueError as e:
+        logger.error(f"TOTP decryption failed for user '{user.username}': {e}")
+        # Continue to backup code check
 
-    # Try backup code
+    # Try backup code (handles both hashed and legacy plaintext)
     if verify_backup_code(user, validate_request.code, db):
         security_logger.log_2fa_success(
             username=user.username,
@@ -537,6 +580,11 @@ async def regenerate_backup_codes(
     Generate new backup codes.
 
     This invalidates all previous backup codes. Requires 2FA to be enabled.
+    
+    Security:
+        - New codes are bcrypt-hashed before storage
+        - Plaintext codes shown to user ONCE, then discarded
+        - Previous codes are completely replaced (not recoverable)
 
     Raises:
         HTTPException 401: If not authenticated
@@ -556,14 +604,14 @@ async def regenerate_backup_codes(
             detail="2FA must be enabled to generate backup codes"
         )
 
-    # Generate new backup codes
-    backup_codes = generate_backup_codes(10)
-    current_user.backup_codes = backup_codes  # Assign list directly to JSON column
+    # Generate new backup codes (returns plaintext and hashed versions)
+    plaintext_codes, hashed_codes = generate_backup_codes(10)
+    current_user.backup_codes = hashed_codes  # Store hashes, not plaintext
     db.commit()
 
     logger.info(f"New backup codes generated for user '{current_user.username}'")
 
     return BackupCodesResponse(
-        backup_codes=backup_codes,
+        backup_codes=plaintext_codes,  # Return plaintext to user ONCE
         message="New backup codes generated. Previous codes are now invalid."
     )

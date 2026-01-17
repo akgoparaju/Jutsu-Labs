@@ -29,6 +29,7 @@ from jutsu_engine.api.dependencies import (
 )
 from jutsu_engine.data.models import User, UserInvitation
 from jutsu_engine.utils.security_logger import security_logger, get_client_ip
+from jutsu_engine.utils.encryption import InvitationTokenManager
 
 logger = logging.getLogger('API.INVITATIONS')
 
@@ -85,10 +86,24 @@ async def validate_invitation(
     
     Use this to check if an invitation is valid before showing
     the registration form.
+    
+    Security:
+        - Supports both hashed tokens (new) and plaintext (legacy)
+        - Token is hashed and compared against stored hash
     """
+    # Hash the input token for comparison
+    token_hash = InvitationTokenManager.hash_token(token)
+    
+    # Try to find by hash first (new format)
     invitation = db.query(UserInvitation).filter(
-        UserInvitation.token == token
+        UserInvitation.token == token_hash
     ).first()
+    
+    # Fallback to plaintext comparison (legacy tokens)
+    if not invitation:
+        invitation = db.query(UserInvitation).filter(
+            UserInvitation.token == token
+        ).first()
     
     if not invitation:
         raise HTTPException(
@@ -128,11 +143,24 @@ async def accept_invitation(
     
     Creates a new user account with the role assigned in the invitation.
     The invitation is marked as used and cannot be reused.
+    
+    Security:
+        - Supports both hashed tokens (new) and plaintext (legacy)
+        - Token is hashed and compared against stored hash
     """
-    # Validate invitation
+    # Hash the input token for comparison
+    token_hash = InvitationTokenManager.hash_token(token)
+    
+    # Try to find by hash first (new format)
     invitation = db.query(UserInvitation).filter(
-        UserInvitation.token == token
+        UserInvitation.token == token_hash
     ).first()
+    
+    # Fallback to plaintext comparison (legacy tokens)
+    if not invitation:
+        invitation = db.query(UserInvitation).filter(
+            UserInvitation.token == token
+        ).first()
     
     if not invitation:
         raise HTTPException(

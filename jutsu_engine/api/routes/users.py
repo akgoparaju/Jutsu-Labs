@@ -36,6 +36,7 @@ from jutsu_engine.api.dependencies import (
 )
 from jutsu_engine.data.models import User, UserInvitation
 from jutsu_engine.utils.security_logger import security_logger, get_client_ip
+from jutsu_engine.utils.encryption import InvitationTokenManager
 
 logger = logging.getLogger('API.USERS')
 
@@ -175,6 +176,10 @@ async def create_invitation(
     
     Generates a secure single-use invitation link that expires in 48 hours.
     The new user sets their own username and password via the link.
+    
+    Security:
+        - Token is SHA-256 hashed before storage (plaintext never stored)
+        - Plaintext token returned to admin for sharing, hash stored in DB
     """
     # Check user limit
     user_count = db.query(User).count()
@@ -184,13 +189,13 @@ async def create_invitation(
             detail=f"Maximum user limit ({MAX_USERS}) reached"
         )
     
-    # Generate secure token
-    token = secrets.token_urlsafe(32)
+    # Generate secure token and its hash
+    plaintext_token, hashed_token = InvitationTokenManager.generate_token()
     
-    # Create invitation
+    # Create invitation with hashed token
     invitation = UserInvitation(
         email=invite_request.email,
-        token=token,
+        token=hashed_token,  # Store hash, not plaintext
         role=invite_request.role,
         created_by=current_user.id if current_user else None,
         expires_at=datetime.now(timezone.utc) + timedelta(hours=INVITATION_EXPIRY_HOURS)
@@ -207,7 +212,7 @@ async def create_invitation(
         host = request.headers.get('Host', 'localhost')
         origin = f"{scheme}://{host}"
     
-    invite_url = f"{origin}/accept-invitation?token={token}"
+    invite_url = f"{origin}/accept-invitation?token={plaintext_token}"
     
     # Log security event
     logger.info(
@@ -216,7 +221,7 @@ async def create_invitation(
     )
     
     return InvitationResponse(
-        token=token,
+        token=plaintext_token,  # Return plaintext for sharing
         invite_url=invite_url,
         expires_at=invitation.expires_at.isoformat(),
         role=invitation.role
