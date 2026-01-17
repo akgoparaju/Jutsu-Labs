@@ -5,6 +5,36 @@ import { UserPlus, CheckCircle, XCircle, Loader2 } from 'lucide-react'
 
 type Step = 'loading' | 'form' | 'success' | 'error'
 
+/**
+ * Extract a human-readable error message from API error response.
+ * Handles both string errors and Pydantic validation error arrays.
+ */
+function extractErrorMessage(detail: unknown): string {
+  // If it's a string, return directly
+  if (typeof detail === 'string') {
+    return detail
+  }
+
+  // If it's an array (Pydantic validation errors), extract messages
+  if (Array.isArray(detail)) {
+    const messages = detail.map((err: any) => {
+      if (typeof err === 'string') return err
+      // Pydantic error format: { loc: [...], msg: "...", type: "..." }
+      if (err.msg) return err.msg
+      return JSON.stringify(err)
+    })
+    return messages.join('. ')
+  }
+
+  // If it's an object with a message field
+  if (detail && typeof detail === 'object' && 'message' in detail) {
+    return String((detail as any).message)
+  }
+
+  // Fallback
+  return 'An unexpected error occurred. Please try again.'
+}
+
 function AcceptInvitation() {
   const [searchParams] = useSearchParams()
   const token = searchParams.get('token')
@@ -32,13 +62,20 @@ function AcceptInvitation() {
     e.preventDefault()
     setError(null)
 
+    const trimmedUsername = username.trim()
+
     // Validation
-    if (!username.trim()) {
+    if (!trimmedUsername) {
       setError('Username is required')
       return
     }
-    if (username.length < 3) {
+    if (trimmedUsername.length < 3) {
       setError('Username must be at least 3 characters')
+      return
+    }
+    // Username format validation - must be alphanumeric with underscores only
+    if (!/^[a-zA-Z0-9_]+$/.test(trimmedUsername)) {
+      setError('Username can only contain letters, numbers, and underscores (no spaces or special characters like @)')
       return
     }
     if (!password) {
@@ -58,17 +95,24 @@ function AcceptInvitation() {
 
     try {
       await usersApi.acceptInvitation(token!, {
-        username: username.trim(),
+        username: trimmedUsername,
         password,
       })
 
       setStep('success')
     } catch (err: any) {
-      const errorMessage = err.response?.data?.detail || 'Failed to accept invitation. The link may have expired or already been used.'
+      // Extract error message, handling both string and array formats
+      const detail = err.response?.data?.detail
+      const errorMessage = detail
+        ? extractErrorMessage(detail)
+        : 'Failed to accept invitation. The link may have expired or already been used.'
       setError(errorMessage)
+
+      // Only switch to error page for truly unrecoverable errors (invalid/expired token)
       if (err.response?.status === 400 || err.response?.status === 404) {
         setStep('error')
       }
+      // For 422 (validation errors), stay on form so user can correct input
     } finally {
       setIsSubmitting(false)
     }
@@ -167,7 +211,7 @@ function AcceptInvitation() {
               autoComplete="username"
               autoFocus
             />
-            <p className="mt-1 text-xs text-gray-500">At least 3 characters</p>
+            <p className="mt-1 text-xs text-gray-500">Letters, numbers, and underscores only (not email)</p>
           </div>
 
           <div>
