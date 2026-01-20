@@ -47,6 +47,9 @@ function BacktestV2() {
   const isUserTypingDateRef = useRef(false)
   const [showConfigPane, setShowConfigPane] = useState(false)
   const [displayMode, setDisplayMode] = useState<'percentage' | 'absolute'>('percentage')
+  // Base index for percentage calculations - when panning, this updates to the first visible point
+  // so percentages are recalculated relative to that point
+  const [percentageBaseIndex, setPercentageBaseIndex] = useState<number>(0)
 
   // Chart refs
   const chartContainerRef = useRef<HTMLDivElement>(null)
@@ -56,6 +59,12 @@ function BacktestV2() {
   const [chartReady, setChartReady] = useState(false)
   // Ref to hold latest visible range change handler (avoids recreating chart on date changes)
   const visibleRangeHandlerRef = useRef<(() => void) | null>(null)
+  // Debounce timer for percentage recalculation
+  const recalcDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Ref to hold latest recalculatePercentages function (avoids stale closure in timeout)
+  const recalcFnRef = useRef<(() => void) | null>(null)
+  // Flag to track if initial load is complete - prevents date sync during chart initialization
+  const isInitialLoadRef = useRef(true)
 
   // Fetch backtest data - only use filter dates (not view dates from chart zoom)
   const { data: backtestData, isLoading: isLoadingData } = useQuery({
@@ -96,36 +105,80 @@ function BacktestV2() {
     return { min: dates[0], max: dates[dates.length - 1] }
   }, [backtestData?.summary?.start_date, backtestData?.summary?.end_date, backtestData?.timeseries])
 
-  // Handle chart range changes - update VIEW dates only (visual, no refetch)
-  // Using a ref wrapper to avoid recreating chart when dates change
-  const handleVisibleRangeChange = useCallback(() => {
-    if (!chartRef.current) return
-    
-    // Skip if user is explicitly typing dates - don't let chart overwrite their input
+  // Initialize view dates to full backtest range when data loads
+  // This ensures date inputs show the full range by default, regardless of window size
+  useEffect(() => {
+    if (dateBounds.min && dateBounds.max && !viewStartDate && !viewEndDate) {
+      setViewStartDate(dateBounds.min)
+      setViewEndDate(dateBounds.max)
+      // Mark initial load as complete after a short delay to allow chart to finish rendering
+      // This prevents the visible range callback from overwriting our initial dates
+      setTimeout(() => {
+        isInitialLoadRef.current = false
+      }, 500)
+    }
+  }, [dateBounds.min, dateBounds.max, viewStartDate, viewEndDate])
+
+  // Update view dates and percentage base based on visible range - called after debounce
+  // This syncs the date inputs with the chart's visible range when user pans/zooms
+  const updateVisibleRangeState = useCallback(() => {
+    if (!chartRef.current || !backtestData?.timeseries) return
+
+    // Don't update during initial load - preserves full date range as default
+    if (isInitialLoadRef.current) return
+
+    // Don't update if user is explicitly typing in date inputs
     if (isUserTypingDateRef.current) return
 
     const visibleRange = chartRef.current.timeScale().getVisibleRange()
     if (!visibleRange) return
 
-    // Convert time values to dates
-    const fromDate = typeof visibleRange.from === 'string'
+    // Convert visible range to date strings
+    const fromTime = typeof visibleRange.from === 'string'
       ? visibleRange.from
       : new Date((visibleRange.from as number) * 1000).toISOString().split('T')[0]
-    const toDate = typeof visibleRange.to === 'string'
+    const toTime = typeof visibleRange.to === 'string'
       ? visibleRange.to
       : new Date((visibleRange.to as number) * 1000).toISOString().split('T')[0]
 
-    // Update both VIEW dates (for display) and FILTER dates (for API refetch)
-    // This ensures period metrics are updated when zooming
-    if (viewStartDate !== fromDate || viewEndDate !== toDate) {
-      isChartInteractionRef.current = true
-      setViewStartDate(fromDate)
-      setViewEndDate(toDate)
-      // Also update filter dates to trigger API refetch and show period metrics
-      setFilterStartDate(fromDate)
-      setFilterEndDate(toDate)
+    // Update view dates to sync with chart (this updates the date inputs)
+    // Mark as chart interaction to prevent feedback loop
+    isChartInteractionRef.current = true
+    setViewStartDate(fromTime)
+    setViewEndDate(toTime)
+
+    // Update percentage base in percentage mode
+    if (displayMode === 'percentage') {
+      const timeseries = backtestData.timeseries
+      // Find first data point that is >= the visible range start
+      const firstVisibleIndex = timeseries.findIndex(point => point.date >= fromTime)
+      if (firstVisibleIndex !== -1 && firstVisibleIndex !== percentageBaseIndex) {
+        setPercentageBaseIndex(firstVisibleIndex)
+      }
     }
-  }, [viewStartDate, viewEndDate])
+  }, [backtestData?.timeseries, displayMode, percentageBaseIndex])
+
+  // Keep recalcFnRef updated with latest function
+  useEffect(() => {
+    recalcFnRef.current = updateVisibleRangeState
+  }, [updateVisibleRangeState])
+
+  // Handle chart range changes - debounced to avoid issues during active panning
+  // This syncs date inputs with visible range and recalculates percentages.
+  // IMPORTANT: Updates view dates (for display) but NOT filter dates (no API refetch).
+  const handleVisibleRangeChange = useCallback(() => {
+    // Clear any pending recalculation
+    if (recalcDebounceRef.current) {
+      clearTimeout(recalcDebounceRef.current)
+    }
+    // Debounce: wait 150ms after user stops panning/zooming before recalculating
+    // Use ref to always get latest function and avoid stale closure
+    recalcDebounceRef.current = setTimeout(() => {
+      if (recalcFnRef.current) {
+        recalcFnRef.current()
+      }
+    }, 150)
+  }, []) // No dependencies - always uses ref for latest function
 
   // Keep ref updated with latest handler
   useEffect(() => {
@@ -153,16 +206,26 @@ function BacktestV2() {
     }
   }, [viewStartDate, viewEndDate, backtestData?.timeseries])
 
-  // Reset zoom handler - resets both filter and view dates
+  // Reset zoom handler - resets filter dates and restores view to full range
   const handleResetZoom = useCallback(() => {
+    // Clear filter dates (API will return full data)
     setFilterStartDate('')
     setFilterEndDate('')
-    setViewStartDate('')
-    setViewEndDate('')
+    // Restore view dates to full backtest range
+    setViewStartDate(dateBounds.min)
+    setViewEndDate(dateBounds.max)
+    // Reset percentage base to first point
+    setPercentageBaseIndex(0)
+    // Temporarily block date sync while chart resets to prevent overwriting full range
+    isInitialLoadRef.current = true
     if (chartRef.current) {
       chartRef.current.timeScale().fitContent()
     }
-  }, [])
+    // Re-enable date sync after chart settles
+    setTimeout(() => {
+      isInitialLoadRef.current = false
+    }, 500)
+  }, [dateBounds.min, dateBounds.max])
 
   // Initialize chart
   useEffect(() => {
@@ -253,6 +316,11 @@ function BacktestV2() {
     return () => {
       resizeObserver.disconnect()
       setChartReady(false)
+      // Clear debounce timer
+      if (recalcDebounceRef.current) {
+        clearTimeout(recalcDebounceRef.current)
+        recalcDebounceRef.current = null
+      }
       if (chartRef.current) {
         chartRef.current.timeScale().unsubscribeVisibleTimeRangeChange(rangeChangeWrapper)
         chartRef.current.remove()
@@ -263,13 +331,16 @@ function BacktestV2() {
     }
   }, [isMobile]) // Only depend on isMobile for chart sizing, not loading state
 
-  // Update chart data when data or display mode changes
+  // Update chart data when data, display mode, or percentage base changes
   useEffect(() => {
     if (!chartRef.current || !portfolioSeriesRef.current || !backtestData?.timeseries || backtestData.timeseries.length === 0) return
 
     const timeseries = backtestData.timeseries
-    const firstPortfolio = timeseries[0]?.portfolio ?? 1
-    const firstBaseline = timeseries[0]?.baseline ?? 1
+    // Use percentageBaseIndex to determine which point is the "base" (0%) for percentage calculations
+    // This enables dynamic rebasing when panning/zooming in percentage mode
+    const baseIndex = Math.min(percentageBaseIndex, timeseries.length - 1)
+    const basePortfolio = timeseries[baseIndex]?.portfolio ?? 1
+    const baseBaseline = timeseries[baseIndex]?.baseline ?? 1
 
     // Configure price formatter based on display mode
     const priceFormatter = displayMode === 'absolute'
@@ -313,12 +384,12 @@ function BacktestV2() {
         baselineSeriesRef.current.setData(baselineData)
       }
     } else {
-      // Percentage mode - calculate returns from first point
+      // Percentage mode - calculate returns from base point (first visible point after panning)
       const portfolioData: LineData[] = timeseries
         .filter(point => point.portfolio != null)
         .map(point => ({
           time: point.date as string,
-          value: firstPortfolio > 0 ? (point.portfolio! / firstPortfolio - 1) * 100 : 0,
+          value: basePortfolio > 0 ? (point.portfolio! / basePortfolio - 1) * 100 : 0,
         }))
       portfolioSeriesRef.current.setData(portfolioData)
 
@@ -327,7 +398,7 @@ function BacktestV2() {
           .filter(point => point.baseline != null)
           .map(point => ({
             time: point.date as string,
-            value: firstBaseline > 0 ? (point.baseline! / firstBaseline - 1) * 100 : 0,
+            value: baseBaseline > 0 ? (point.baseline! / baseBaseline - 1) * 100 : 0,
           }))
         baselineSeriesRef.current.setData(baselineData)
       }
@@ -337,7 +408,7 @@ function BacktestV2() {
     if (!viewStartDate && !viewEndDate) {
       chartRef.current.timeScale().fitContent()
     }
-  }, [backtestData?.timeseries, displayMode, chartReady, viewStartDate, viewEndDate])
+  }, [backtestData?.timeseries, displayMode, chartReady, viewStartDate, viewEndDate, percentageBaseIndex])
 
   // Apply date range when dates change from inputs (not from chart zoom)
   useEffect(() => {

@@ -1,3 +1,29 @@
+#### **Fixed: Backtest Equity Curve - Default Date Range Independent of Viewport** (2026-01-20)
+
+Fixed the backtest equity curve default date range to always show the entire dataset regardless of window size.
+
+**Problem**: On initial page load, the date inputs would show a subset of the data range based on the chart's visible viewport. Mobile users saw different default dates than desktop users, and the chart's auto-fit behavior was overwriting the intended full range.
+
+**Root Cause**: The `subscribeVisibleTimeRangeChange` callback fired during chart initialization, immediately overwriting the full date range with whatever the chart auto-fit to display.
+
+**Solution**: Added `isInitialLoadRef` flag that:
+1. Starts as `true` to prevent date sync during initial chart setup
+2. Gets set to `false` after 500ms delay once initialization completes
+3. Is checked in `updateVisibleRangeState` to skip date updates during initial load
+4. Is temporarily set to `true` during reset to prevent overwriting restored full range
+
+**Behavior**:
+- Initial load: Date inputs show full backtest range (e.g., 2010-01-01 to 2026-01-16)
+- After user pans/zooms: Date inputs sync with visible chart range
+- Reset button: Restores full date range correctly
+
+**Files Modified**:
+- `dashboard/src/pages/v2/BacktestV2.tsx`: Added `isInitialLoadRef` flag, updated initialization effect and reset handler
+
+**Agent**: DASHBOARD_FRONTEND_AGENT
+
+---
+
 #### **Enhanced: Backtest Config File Naming - Strategy-Specific Support** (2026-01-20)
 
 Added support for strategy-specific config file naming to match dashboard CSV files.
