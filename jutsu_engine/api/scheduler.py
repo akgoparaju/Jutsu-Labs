@@ -76,10 +76,20 @@ class SchedulerState:
         self._load_state()
 
     def __getstate__(self):
-        """Return state for pickling, excluding the Lock object."""
+        """Return state for pickling, excluding the Lock object.
+
+        Note: pathlib.Path objects can fail to pickle/unpickle correctly in Python 3.11+
+        due to internal module changes. We convert Path to str to avoid:
+        'ModuleNotFoundError: No module named pathlib._local'
+
+        Fix 2026-01-20: Resolves job corruption that caused hourly refresh to stop.
+        """
         state = self.__dict__.copy()
         # Remove the lock - it cannot be pickled
         del state['_lock']
+        # Convert Path to string to avoid pickle issues with pathlib in Python 3.11+
+        if 'state_file' in state and hasattr(state['state_file'], '__fspath__'):
+            state['state_file'] = str(state['state_file'])
         return state
 
     def __setstate__(self, state):
@@ -87,6 +97,9 @@ class SchedulerState:
         self.__dict__.update(state)
         # Recreate the lock after unpickling
         self._lock = Lock()
+        # Convert state_file back to Path if it was stored as string
+        if hasattr(self, 'state_file') and isinstance(self.state_file, str):
+            self.state_file = Path(self.state_file)
 
     def _load_state(self):
         """Load state from file if exists."""

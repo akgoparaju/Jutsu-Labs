@@ -1,3 +1,25 @@
+#### **Fixed: Scheduler Hourly Refresh Job Corruption** (2026-01-20)
+
+Fixed hourly data refresh stopping in production due to APScheduler job corruption.
+
+**Root Cause**: The `SchedulerState` class stored `state_file` as a `pathlib.Path` object. When APScheduler's SQLAlchemyJobStore pickled the job, the `Path` object caused deserialization failures in Python 3.11+ with error:
+```
+ModuleNotFoundError: No module named 'pathlib._local'; 'pathlib' is not a package
+```
+
+This caused APScheduler to remove the `hourly_refresh_job` at 11:02 UTC on Jan 20, stopping all hourly refreshes.
+
+**Fix**: Modified `SchedulerState.__getstate__` to convert `Path` to `str` before pickling, and `__setstate__` to convert back to `Path` after unpickling.
+
+**Database Cleanup**: Cleared corrupted jobs from `apscheduler_jobs` table. Jobs will be recreated fresh on container restart.
+
+**Files Modified**:
+- `jutsu_engine/api/scheduler.py`: Updated `__getstate__`/`__setstate__` methods (lines 78-102)
+
+**Agent**: SCHEDULER_AGENT (INFRASTRUCTURE_ORCHESTRATOR)
+
+---
+
 #### **Fixed: Backtest Dashboard Date Picker - User Input Preserved** (2026-01-20)
 
 Fixed date picker allowing dates from 2010 to be selected without chart overwriting the value.
