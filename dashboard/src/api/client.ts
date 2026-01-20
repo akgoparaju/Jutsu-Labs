@@ -478,6 +478,7 @@ export interface BacktestRegimeResponse {
 export interface BacktestConfigResponse {
   config: Record<string, unknown>
   file_path: string
+  strategy_name?: string
 }
 
 // Backtest API

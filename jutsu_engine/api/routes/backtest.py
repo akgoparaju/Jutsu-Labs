@@ -47,6 +47,54 @@ def _find_dashboard_csv() -> Optional[Path]:
     return max(csv_files, key=lambda p: p.stat().st_mtime)
 
 
+def _extract_strategy_name(csv_path: Path) -> Optional[str]:
+    """
+    Extract strategy name from dashboard CSV filename.
+
+    Args:
+        csv_path: Path like 'dashboard_Hierarchical_Adaptive_v3_5b.csv'
+
+    Returns:
+        Strategy name like 'Hierarchical_Adaptive_v3_5b', or None if not extractable
+    """
+    filename = csv_path.stem  # e.g., 'dashboard_Hierarchical_Adaptive_v3_5b'
+    if filename.startswith("dashboard_"):
+        return filename[len("dashboard_"):]
+    return None
+
+
+def _find_config_for_strategy(strategy_name: Optional[str]) -> Optional[Path]:
+    """
+    Find config file for a strategy, with fallback to generic config.
+
+    Lookup order:
+    1. config_<strategy>.yaml
+    2. config_<strategy>.yml
+    3. config.yaml (fallback)
+    4. config.yml (fallback)
+
+    Args:
+        strategy_name: Strategy name extracted from dashboard CSV
+
+    Returns:
+        Path to config file, or None if not found
+    """
+    if strategy_name:
+        # Try strategy-specific config first
+        for ext in [".yaml", ".yml"]:
+            config_path = BACKTEST_DATA_DIR / f"config_{strategy_name}{ext}"
+            if config_path.exists():
+                return config_path
+
+    # Fall back to generic config
+    for ext in [".yaml", ".yml"]:
+        config_path = BACKTEST_DATA_DIR / f"config{ext}"
+        if config_path.exists():
+            return config_path
+
+    return None
+
+
 def _parse_dashboard_csv(csv_path: Path) -> Dict[str, Any]:
     """
     Parse the consolidated dashboard CSV file.
@@ -511,7 +559,11 @@ async def get_backtest_config(
     """
     Get strategy configuration (admin only).
 
-    Returns the parsed config.yaml from config/backtest/.
+    Looks for config file matching the current dashboard CSV:
+    1. config_<strategy>.yaml (matches dashboard_<strategy>.csv)
+    2. config_<strategy>.yml
+    3. config.yaml (fallback)
+    4. config.yml (fallback)
     """
     try:
         # Check admin role
@@ -521,16 +573,17 @@ async def get_backtest_config(
                 detail="Admin access required"
             )
 
-        # Look for config.yaml
-        config_path = BACKTEST_DATA_DIR / "config.yaml"
-        if not config_path.exists():
-            # Try config.yml
-            config_path = BACKTEST_DATA_DIR / "config.yml"
+        # Find current dashboard CSV and extract strategy name
+        csv_path = _find_dashboard_csv()
+        strategy_name = _extract_strategy_name(csv_path) if csv_path else None
 
-        if not config_path.exists():
+        # Find matching config file
+        config_path = _find_config_for_strategy(strategy_name)
+
+        if not config_path:
             raise HTTPException(
                 status_code=404,
-                detail="No config file found in backtest directory"
+                detail=f"No config file found. Expected: config_{strategy_name}.yaml or config.yaml"
             )
 
         # Parse YAML
@@ -540,6 +593,7 @@ async def get_backtest_config(
         return {
             'config': config,
             'file_path': str(config_path),
+            'strategy_name': strategy_name,
         }
 
     except HTTPException:

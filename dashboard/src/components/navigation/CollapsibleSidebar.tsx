@@ -46,9 +46,9 @@ const navItems: NavItem[] = [
   { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { path: '/decision-tree', icon: GitBranch, label: 'Decision Tree' },
   { path: '/performance', icon: TrendingUp, label: 'Performance' },
-  { path: '/backtest', icon: BarChart3, label: 'Backtest' },
   { path: '/trades', icon: History, label: 'Trade History' },
   { path: '/config', icon: Settings, label: 'Configuration', permission: 'config:write' },
+  { path: '/backtest', icon: BarChart3, label: 'Backtest' },
   { path: '/settings', icon: Shield, label: 'Settings' },
 ]
 

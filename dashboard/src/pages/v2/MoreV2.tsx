@@ -23,17 +23,17 @@ interface MenuItem {
 
 const menuItems: MenuItem[] = [
   {
-    path: '/backtest',
-    icon: BarChart3,
-    label: 'Backtest Results',
-    description: 'View golden backtest performance and metrics',
-  },
-  {
     path: '/config',
     icon: Settings,
     label: 'Configuration',
     description: 'Trading strategy and engine settings',
     permission: 'config:write',
+  },
+  {
+    path: '/backtest',
+    icon: BarChart3,
+    label: 'Backtest Results',
+    description: 'View golden backtest performance and metrics',
   },
   {
     path: '/settings',

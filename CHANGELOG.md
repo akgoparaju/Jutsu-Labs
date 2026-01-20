@@ -1,3 +1,45 @@
+#### **Enhanced: Backtest Config File Naming - Strategy-Specific Support** (2026-01-20)
+
+Added support for strategy-specific config file naming to match dashboard CSV files.
+
+**Problem**: Config file was hardcoded to `config.yaml`, which doesn't support multiple backtests with different strategies.
+
+**Solution**: Config file lookup now matches the dashboard CSV naming pattern:
+- Dashboard: `dashboard_<strategy>.csv`
+- Config: `config_<strategy>.yaml` (or `.yml`)
+
+**Lookup Order**:
+1. `config_<strategy>.yaml` (matches dashboard CSV name)
+2. `config_<strategy>.yml`
+3. `config.yaml` (fallback for backwards compatibility)
+4. `config.yml` (fallback)
+
+**Files Modified**:
+- `jutsu_engine/api/routes/backtest.py`: Added `_extract_strategy_name()` and `_find_config_for_strategy()` helpers, updated `get_backtest_config` endpoint
+
+**Agent**: API_AGENT (ENTRY_POINTS_ORCHESTRATOR)
+
+---
+
+#### **Fixed: Backtest Dashboard - Period Metrics, Zoom Normalization, and Menu Order** (2026-01-20)
+
+Fixed three issues in the backtest dashboard:
+
+1. **Period Metrics Now Show on Chart Zoom**: The "Selected Period" KPI metrics section was not appearing when zooming the chart. Fixed by updating `handleVisibleRangeChange` to set filter dates (not just view dates) on zoom, triggering API refetch and showing period metrics.
+
+2. **Chart Zoom Normalizes to 0%**: In percentage mode, zooming now correctly normalizes both Portfolio and Baseline curves to start at 0% from the first visible point. Previously, curves showed returns from the original backtest start regardless of zoom level.
+
+3. **Backtest Menu Moved After Configuration**: Reordered sidebar navigation so "Backtest" appears after "Configuration" instead of before it.
+
+**Files Modified**:
+- `dashboard/src/pages/v2/BacktestV2.tsx`: Chart zoom now updates filter dates
+- `dashboard/src/components/navigation/CollapsibleSidebar.tsx`: Reordered nav items
+- `dashboard/src/pages/v2/MoreV2.tsx`: Reordered mobile menu items
+
+**Agent**: DASHBOARD_FRONTEND_AGENT (INFRASTRUCTURE_ORCHESTRATOR)
+
+---
+
 #### **Fixed: Scheduler Hourly Refresh Job Corruption** (2026-01-20)
 
 Fixed hourly data refresh stopping in production due to APScheduler job corruption.

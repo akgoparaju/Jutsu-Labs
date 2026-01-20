@@ -115,12 +115,15 @@ function BacktestV2() {
       ? visibleRange.to
       : new Date((visibleRange.to as number) * 1000).toISOString().split('T')[0]
 
-    // Only update VIEW dates (visual only) - does NOT trigger data refetch
-    // This prevents page refresh when interacting with the chart
+    // Update both VIEW dates (for display) and FILTER dates (for API refetch)
+    // This ensures period metrics are updated when zooming
     if (viewStartDate !== fromDate || viewEndDate !== toDate) {
       isChartInteractionRef.current = true
       setViewStartDate(fromDate)
       setViewEndDate(toDate)
+      // Also update filter dates to trigger API refetch and show period metrics
+      setFilterStartDate(fromDate)
+      setFilterEndDate(toDate)
     }
   }, [viewStartDate, viewEndDate])
 
