@@ -310,6 +310,8 @@ Cell 6: BearStrong + High Vol
 
 ### Base Allocations (Before Treasury Overlay)
 
+**Important**: In the Golden Config, `use_inverse_hedge = False`, meaning PSQ is **disabled**. Cell 6 uses 100% Cash (or Treasury Overlay), not PSQ.
+
 | Cell | Trend | Vol | Name | TQQQ | QQQ | PSQ | Cash | Net Beta | Rationale |
 |------|-------|-----|------|------|-----|-----|------|----------|-----------|
 | **1** | Bull | Low | **Kill Zone** | 60% | 40% | 0% | 0% | 2.2 | Maximum upside capture with leverage |
@@ -318,6 +320,8 @@ Cell 6: BearStrong + High Vol
 | **4** | Sideways | High | **Chop** | 0% | 0% | 0% | 100% | 0.0 | Avoid whipsaw, preserve capital |
 | **5** | Bear | Low | **Grind** | 0% | 50% | 0% | 50% | 0.5 | Defensive hold with partial exposure |
 | **6** | Bear | High | **Crash** | 0% | 0% | 0% | 100% | 0.0 | Maximum capital preservation |
+
+> **Note**: The strategy supports an optional PSQ inverse hedge (`use_inverse_hedge = True`), which would change Cell 6 to 50% PSQ + 50% Cash (Net Beta -0.5). However, the Golden Config has this **disabled** for simplicity and to avoid inverse ETF decay.
 
 ### Treasury Overlay Allocations (Golden Config: `allow_treasury = True`)
 
@@ -355,7 +359,7 @@ Cell 6: BearStrong + High Vol
 - 40% TMV
 - 60% Cash
 
-**Note**: PSQ toggle is disabled in golden config (`use_inverse_hedge = False`)
+**Note**: PSQ toggle is **disabled** in Golden Config (`use_inverse_hedge = False`). Cell 6 uses Treasury Overlay (TMF/TMV + Cash), not PSQ.
 
 ---
 
@@ -700,11 +704,73 @@ END
 
 ---
 
+## Golden Config Regime Allocation Reference
+
+This section provides the **exact allocations** used in the Golden Config (`grid-configs/Gold-Configs/grid_search_hierarchical_adaptive_v3_5b.yaml`).
+
+### Key Golden Config Settings
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `use_inverse_hedge` | **False** | PSQ inverse hedge is DISABLED |
+| `allow_treasury` | **True** | Treasury Overlay is ENABLED |
+| `max_bond_weight` | **0.40** | Maximum 40% allocation to bonds |
+| `leverage_scalar` | **1.0** | No additional scaling |
+
+### Complete 6-Cell Allocation Table (Golden Config)
+
+This table shows the **exact allocations** for each regime cell with Treasury Overlay enabled and PSQ disabled:
+
+| Cell | Trend | Vol | TQQQ | QQQ | Cash | TMF or TMV | Net Beta | Description |
+|------|-------|-----|------|-----|------|----------|----------|-------------|
+| **1** | BullStrong | Low | 60% | 40% | 0% | 0% | **2.2** | Kill Zone - Maximum leverage |
+| **2** | BullStrong | High | 0% | 100% | 0% | 0% | **1.0** | Fragile - Reduce leverage |
+| **3** | Sideways | Low | 20% | 80% | 0% | 0%  | **1.4** | Drift - Moderate leverage |
+| **4** | Sideways | High | 0% | 0% | 60% | 40%*  | **0.0** | Chop - Full defensive |
+| **5** | BearStrong | Low | 0% | 50% | 30% | 20%* | **0.5** | Grind - Partial exposure |
+| **6** | BearStrong | High | 0% | 0% | 60% | 40%* | **0.0** | Crash - Full defensive |
+
+> **Note**: *Bond allocation (TMF/TMV) depends on TLT trend. If TLT is in Bond Bear (SMA_fast < SMA_slow), TMV replaces TMF.
+
+### Treasury Overlay Detail by Regime
+
+**Offensive Cells (1, 2, 3)**: No Treasury Overlay - full equity allocation
+
+**Defensive Cells (4, 5, 6)**: Treasury Overlay applies to the "Cash" portion
+
+| Cell | Base Cash % | After Treasury Overlay |
+|------|-------------|------------------------|
+| **4 (Chop)** | 100% | 60% Cash + 40% TMF/TMV |
+| **5 (Grind)** | 50% | 30% Cash + 20% TMF/TMV (+ 50% QQQ) |
+| **6 (Crash)** | 100% | 60% Cash + 40% TMF/TMV |
+
+### Bond Selection Logic
+
+| TLT Trend | Bond Selected | Rationale |
+|-----------|---------------|-----------|
+| **Bull** (SMA_20 > SMA_60) | TMF (+3x Treasuries) | Deflation/flight-to-safety environment |
+| **Bear** (SMA_20 < SMA_60) | TMV (-3x Treasuries) | Inflation/rising rates environment |
+
+### Why PSQ is Disabled in Golden Config
+
+The Golden Config disables PSQ (`use_inverse_hedge = False`) for the following reasons:
+
+1. **Inverse ETF Decay**: PSQ (-1x) experiences volatility decay over time
+2. **Complexity Reduction**: Fewer instruments simplifies execution
+3. **Treasury Overlay Preferred**: Treasury bonds provide diversified hedging without decay issues
+4. **Historical Performance**: Testing showed Treasury Overlay outperformed PSQ in most bear scenarios
+
+If PSQ were enabled (`use_inverse_hedge = True`), Cell 6 would change to:
+- **Cell 6 with PSQ**: 50% PSQ + 50% Cash (Net Beta: -0.5)
+
+---
+
 ## Document Version History
 
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2025-11-24 | Initial golden strategy documentation |
+| 1.1 | 2026-01-20 | Added Golden Config Regime Allocation Reference section; clarified PSQ is disabled |
 
 ---
 

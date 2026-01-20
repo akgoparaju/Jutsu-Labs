@@ -1,3 +1,26 @@
+#### **Documentation: Updated Hierarchical Adaptive v3.5b Golden Strategy Documentation** (2026-01-20)
+
+Updated the Golden Strategy documentation to accurately reflect the Golden Config settings.
+
+**Problem**: The documentation showed Cell 6 with PSQ option (Cell 6b: 50% PSQ + 50% Cash), but the Golden Config explicitly disables PSQ with `use_inverse_hedge = False`.
+
+**Solution**: 
+1. Added clarification note in "Base Allocations" section explaining PSQ is disabled
+2. Updated Cell 6 note in Treasury Overlay section
+3. Added new "Golden Config Regime Allocation Reference" section with:
+   - Key Golden Config settings table (use_inverse_hedge, allow_treasury, max_bond_weight, leverage_scalar)
+   - Complete 6-cell allocation table showing exact allocations for each regime
+   - Treasury Overlay detail by regime (Cells 4, 5, 6)
+   - Bond selection logic (TMF vs TMV based on TLT trend)
+   - Explanation of why PSQ is disabled in Golden Config
+
+**Files Modified**:
+- `docs/Hierarchical_Adaptive_v3_5b_Golden_Strategy.md`: Added Golden Config Regime Allocation Reference section, updated version to 1.1
+
+**Agent**: STRATEGY_AGENT (Documentation task, no code changes)
+
+---
+
 #### **Fixed: Backtest Equity Curve - Default Date Range Independent of Viewport** (2026-01-20)
 
 Fixed the backtest equity curve default date range to always show the entire dataset regardless of window size.
