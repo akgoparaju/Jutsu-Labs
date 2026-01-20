@@ -1,3 +1,221 @@
+#### **Fix: Equity Curve Mode Switching - Zoom Preservation & X-Axis Date Type** (2026-01-19)
+
+**Fixed two critical issues with the equity curve $ ↔ % mode switching**
+
+**Issues Fixed**:
+1. **NaN Errors / Broken X-Axis**: When switching to Return (%) mode, the X-axis type was corrupted from `"date"` to `"linear"`, causing SVG path errors and displaying indices instead of dates.
+2. **Zoom Reset on Mode Switch**: When user zoomed to a specific time range and then switched display modes, the zoom was reset to full data range.
+
+**Root Causes**:
+1. Separate `Plotly.restyle()` and `Plotly.relayout()` calls created intermediate states where `xaxis.type` got corrupted
+2. Hiding/showing the rangeslider triggered layout resets that lost the current zoom level
+
+**Solutions**:
+1. **Atomic Updates**: Changed to `Plotly.update()` for atomic trace + layout updates
+2. **Zoom Preservation**: Save X-axis range before mode switch, restore after update completes
+
+**Files Modified**:
+- `jutsu_engine/infrastructure/visualization/equity_plotter.py`
+  - `updateDollarMode()` and `updatePercentMode()`: Use atomic `Plotly.update()`, preserve/restore X range
+
+**Validation**: Browser-tested zoom preservation, all 71 visualization unit tests pass
+
+**Agent**: VISUALIZATION_AGENT | **Layer**: Infrastructure/Visualization
+
+---
+
+#### **Feature: Dynamic Y-Axis Auto-Scaling on Zoom** (2026-01-19)
+
+#### **Feature: Percentage Display Mode with Zoom Normalization** (2026-01-19)
+
+**Added dropdown toggle to switch between dollar ($) and percentage (%) views in equity curve plots**
+
+**New Features**:
+1. **Display Mode Dropdown**: In-chart dropdown menu (top-right) to switch between:
+   - `Value ($)`: Absolute portfolio values (default)
+   - `Return (%)`: Percentage returns from start
+
+2. **Zoom Normalization (% mode only)**: When viewing percentage returns and zooming into a specific time range, all curves are re-normalized to start at 0% from the first visible data point. This allows comparing relative performance from any starting point.
+
+**Use Cases**:
+- Compare relative performance: All curves start at 0%, making it easy to see which performed better from any point
+- Zoom into a period (e.g., 2020 COVID crash) and see how each curve recovered relative to their starting values
+
+**Example**:
+- Full view: Portfolio +150%, Baseline +80% from inception
+- Zoomed to 2022-2023: Both curves show their performance starting from 0% at the visible start date
+
+**Implementation**:
+- JavaScript event listener handles mode switching via `plotly_buttonclicked`
+- In % mode, `plotly_relayout` events trigger re-normalization of all curves
+- Original dollar values are preserved for switching back to $ mode
+
+**Files Modified**:
+- `jutsu_engine/infrastructure/visualization/equity_plotter.py`
+  - Added `updatemenus` dropdown for $ vs % mode
+  - Enhanced JavaScript to handle mode switching and % normalization
+  - Added `meta` property to traces for storing original data
+- `tests/unit/infrastructure/test_visualization.py`
+  - Added 9 new tests in `TestEquityPlotterPercentageMode` class
+
+**Validation**: All 73 visualization unit tests pass
+
+**Agent**: VISUALIZATION_AGENT | **Layer**: Infrastructure/Visualization
+
+---
+
+
+**Implemented dynamic Y-axis adjustment when zooming the equity curve X-axis**
+
+**Problem**: When zooming into a specific time range of the equity curve (via rangeslider, rangeselector buttons like "1M"/"1Y", or click-drag zoom), the Y-axis remained fixed to the full data range (e.g., 0-1M). This made it impossible to see smaller fluctuations in the zoomed period.
+
+**Solution**: Added JavaScript event listener for `plotly_relayout` events that:
+1. Detects X-axis range changes from any zoom interaction
+2. Calculates min/max Y values for all visible traces within the zoomed X range
+3. Automatically adjusts Y-axis with 5% padding to fit visible data
+4. Properly resets Y-axis to autorange when "All" button is clicked
+
+**Example Improvement**:
+- Before: Zooming to 1 month showed Y-axis 0-1M with nearly flat line
+- After: Zooming to 1 month shows Y-axis 100k-900k with clearly visible fluctuations
+
+**New Parameter**: `auto_scale_y: bool = True` (enabled by default)
+- Set `auto_scale_y=False` to disable dynamic Y-axis scaling
+
+**Files Modified**:
+- `jutsu_engine/infrastructure/visualization/equity_plotter.py`
+  - Added `auto_scale_y` parameter to `generate_equity_curve()`
+  - Added JavaScript for `plotly_relayout` event handling
+  - Uses `post_script` parameter in `write_html()` for JS injection
+- `tests/unit/infrastructure/test_visualization.py`
+  - Added `test_generate_equity_curve_with_auto_scale_y_enabled`
+  - Added `test_generate_equity_curve_with_auto_scale_y_disabled`
+
+**Validation**: 
+- Playwright browser testing confirmed Y-axis dynamically adjusts on zoom
+- All 65 visualization unit tests pass
+
+**Technical References**:
+- [Plotly.js Zoom Events](https://plotly.com/javascript/zoom-events/)
+- [GitHub Issue #6995: add Y-axis autoscaling with X-axis range change](https://github.com/plotly/plotly.js/issues/6995)
+
+**Agent**: VISUALIZATION_AGENT | **Layer**: Infrastructure/Visualization
+
+---
+
+#### **Enhancement: Colorblind-Friendly Regime Overlay Colors & Hover Tooltips** (2026-01-19)
+
+**Implemented Okabe-Ito colorblind-safe palette and added regime information to hover tooltips**
+
+**Changes**:
+1. **Colorblind-Friendly Colors**: Replaced original red-green-yellow regime colors with the scientifically validated Okabe-Ito palette (Okabe & Ito, 2008). This palette is distinguishable by individuals with all forms of color vision deficiency (deuteranopia, protanopia, tritanopia).
+
+2. **Regime in Hover Tooltip**: Added regime cell information to Portfolio trace hover tooltip, displaying "Regime: Cell X: Bull/Low" etc. when hovering over the equity curve.
+
+**New Color Mapping**:
+| Cell | Old Color | New Color (Okabe-Ito) | Hex |
+|------|-----------|----------------------|-----|
+| 1 (Bull/Low) | Forest Green | Blue | #0072B2 |
+| 2 (Bull/High) | Light Green | Sky Blue | #56B4E9 |
+| 3 (Sideways/Low) | Gold | Grey | #999999 |
+| 4 (Sideways/High) | Orange | Purple | #CC79A7 |
+| 5 (Bear/Low) | Dark Orange | Orange | #E69F00 |
+| 6 (Bear/High) | Crimson | Vermillion | #D55E00 |
+
+**Scientific References**:
+- Okabe, M. & Ito, K. (2008). Color Universal Design (CUD)
+- Default palette in R 4.0+ `palette.colors()`
+- Recommended by Nature journals, Wilke's "Fundamentals of Data Visualization"
+
+**Files Modified**: `jutsu_engine/infrastructure/visualization/equity_plotter.py`
+- Updated `REGIME_COLORS` constant with Okabe-Ito hex values
+- Added regime label preparation for hover customdata
+- Modified Portfolio trace to include regime in hovertemplate
+
+**Validation**: All 61 visualization unit tests pass
+
+**Agent**: VISUALIZATION_AGENT | **Layer**: Infrastructure/Visualization
+
+---
+
+#### **Fix: Plotly CDN xaxis Date Type Detection Failure** (2026-01-19)
+
+**Fixed equity curve rendering with regime overlay - x-axis showed numbers instead of dates**
+
+**Problem**: After regime overlay implementation, equity curves rendered empty with x-axis showing numeric indices (-1, 0, 1, 2..., 6) instead of dates. Console showed `Error: <path> attribute d: Expected number, "MNaN,..."` errors.
+
+**Root Cause**: Regime overlay adds invisible legend placeholder traces with `x=[None]`. When Plotly CDN (v3.3.0) tries to auto-detect xaxis type, it sees `[null]` as the first trace's x-data and defaults to numeric axis instead of date axis.
+
+**Solution**: Explicitly set `type='date'` in xaxis configuration for all visualization methods.
+
+**Files Modified**: `jutsu_engine/infrastructure/visualization/equity_plotter.py`
+- `generate_equity_curve()` - added `type='date'` to xaxis config (line 374)
+- `generate_drawdown()` - added `type='date'` to xaxis config (line 477)
+- `generate_positions()` - added `type='date'` to xaxis config (line 594)
+
+**Validation**: Playwright browser inspection confirms proper date axis and regime overlays render correctly.
+
+**Agent**: VISUALIZATION_AGENT | **Layer**: Infrastructure/Visualization
+
+---
+
+#### **Fix: Plotly 6.x Binary Encoding Causing Empty Equity Curves** (2026-01-19)
+
+**Fixed equity curve visualization not rendering data after regime overlay implementation**
+
+**Problem**: After adding regime overlay feature, equity curves appeared empty - chart infrastructure (axes, legend, title) rendered but no data lines displayed.
+
+**Root Cause**: Plotly Python 6.x (v6.5.0) uses binary base64 encoding for numpy arrays by default:
+```json
+"y": {"dtype": "f8", "bdata": "AAAAAACIw0AAAA..."}
+```
+CDN-hosted Plotly.js (v3.3.0) had issues decoding this format, causing y-data to not render.
+
+**Solution**: Added `_to_list()` helper function to convert pandas Series/numpy arrays to Python lists before passing to Plotly. This bypasses binary encoding and ensures plain JSON array serialization.
+
+**Files Modified**: `jutsu_engine/infrastructure/visualization/equity_plotter.py`
+- Added `_to_list()` helper function
+- Applied to all `go.Scatter()` and `go.Histogram()` calls in:
+  - `generate_equity_curve()`
+  - `generate_drawdown()`
+  - `generate_positions()`
+  - `generate_returns_distribution()`
+  - `generate_dashboard()`
+
+**Related**: GitHub issue plotly/plotly.py#5045
+
+**Agent**: VISUALIZATION_AGENT | **Layer**: Infrastructure/Visualization
+
+---
+
+#### **Feature: Regime Cell Overlay on Equity Curve** (2026-01-19)
+
+**Added colored background bands to equity curve showing which regime cell (1-6) was active during each time period**
+
+**Changes**:
+- Added `REGIME_COLORS` constant with semi-transparent colors (alpha 0.18):
+  - Cell 1 (Bull/Low Vol): Forest green
+  - Cell 2 (Bull/High Vol): Light green
+  - Cell 3 (Sideways/Low Vol): Gold
+  - Cell 4 (Sideways/High Vol): Orange
+  - Cell 5 (Bear/Low Vol): Dark orange
+  - Cell 6 (Bear/High Vol): Crimson
+- Added `REGIME_LABELS` constant for legend entries
+- Added `_has_regime_data` flag detection in `_load_and_validate_data()`
+- Added `_get_regime_spans()` method to consolidate consecutive days with same regime
+- Modified `generate_equity_curve()` with new `show_regime_overlay` parameter (default: True)
+- Uses Plotly `add_vrect()` for colored background bands behind equity line
+
+**Backward Compatibility**: Overlay silently skips if no Regime column in CSV. Works with v3_5b, v3_5c, v3_6, v3_8, v4_0 strategies that implement `get_current_regime()`.
+
+**Files Modified**:
+- `jutsu_engine/infrastructure/visualization/equity_plotter.py`
+- `tests/unit/infrastructure/test_visualization.py` (9 new tests)
+
+**Agent**: VISUALIZATION_AGENT | **Layer**: Infrastructure/Visualization
+
+---
+
 #### **Enhancement: Docker/Unraid Deployment Support for Security Migration** (2026-01-17)
 
 **Added automatic security migration support for Docker and Unraid deployments**

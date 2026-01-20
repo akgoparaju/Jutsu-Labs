@@ -14,14 +14,57 @@ Performance Targets:
     - File size: <100KB per HTML (using CDN Plotly.js)
 """
 import logging
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 logger = logging.getLogger('INFRA.VISUALIZATION')
+
+
+def _to_list(series):
+    """
+    Convert pandas Series or numpy array to Python list.
+
+    Plotly 6.x uses binary (base64) encoding for numpy arrays by default,
+    which can cause rendering issues with CDN Plotly.js. Converting to
+    Python lists ensures plain JSON array serialization.
+
+    Args:
+        series: pandas Series, numpy array, or list
+
+    Returns:
+        Python list
+    """
+    if hasattr(series, 'tolist'):
+        return series.tolist()
+    return list(series)
+
+
+# Regime cell color palette (semi-transparent for overlay)
+# Using Okabe-Ito colorblind-safe palette (Okabe & Ito, 2008)
+# Reference: https://jfly.uni-koeln.de/color/
+# This palette is distinguishable by individuals with all forms of color vision deficiency
+REGIME_COLORS = {
+    1: 'rgba(0, 114, 178, 0.18)',    # Blue - Bull/Low Vol (Okabe-Ito blue #0072B2)
+    2: 'rgba(86, 180, 233, 0.18)',   # Sky Blue - Bull/High Vol (Okabe-Ito sky blue #56B4E9)
+    3: 'rgba(153, 153, 153, 0.18)',  # Grey - Sideways/Low Vol (Okabe-Ito grey #999999)
+    4: 'rgba(204, 121, 167, 0.18)',  # Purple - Sideways/High Vol (Okabe-Ito purple #CC79A7)
+    5: 'rgba(230, 159, 0, 0.18)',    # Orange - Bear/Low Vol (Okabe-Ito orange #E69F00)
+    6: 'rgba(213, 94, 0, 0.18)',     # Vermillion - Bear/High Vol (Okabe-Ito vermillion #D55E00)
+}
+
+REGIME_LABELS = {
+    1: 'Cell 1: Bull/Low',
+    2: 'Cell 2: Bull/High',
+    3: 'Cell 3: Sideways/Low',
+    4: 'Cell 4: Sideways/High',
+    5: 'Cell 5: Bear/Low',
+    6: 'Cell 6: Bear/High',
+}
 
 
 class EquityPlotter:
@@ -132,6 +175,13 @@ class EquityPlotter:
         else:
             self.baseline_symbol = None
 
+        # Detect regime column for overlay support
+        self._has_regime_data = 'Regime' in df.columns
+        if self._has_regime_data:
+            logger.info("Regime data detected in CSV - overlay will be available")
+        else:
+            logger.debug("No Regime column in CSV - overlay will be skipped")
+
         return df
 
     def _calculate_drawdown(self, series: pd.Series) -> pd.Series:
@@ -159,20 +209,82 @@ class EquityPlotter:
 
         return drawdown
 
+    def _get_regime_spans(self) -> List[Tuple[datetime, datetime, int]]:
+        """
+        Consolidate consecutive days with same regime into spans.
+
+        Processes the Regime column (format: 'Cell_X') and groups consecutive
+        days with the same regime into single spans for efficient visualization.
+
+        Returns:
+            List of (start_date, end_date, regime_cell) tuples
+            Empty list if no regime data available
+
+        Example:
+            [(datetime(2020,1,1), datetime(2020,1,15), 1),
+             (datetime(2020,1,16), datetime(2020,2,1), 3),
+             ...]
+        """
+        if not self._has_regime_data:
+            return []
+
+        # Parse regime cell number from 'Cell_X' format
+        df = self._df.copy()
+        df['regime_num'] = df['Regime'].str.extract(r'Cell_(\d+)').astype(float)
+
+        spans = []
+        current_regime = None
+        span_start = None
+        prev_date = None
+
+        for _, row in df.iterrows():
+            regime = row.get('regime_num')
+            if pd.isna(regime):
+                continue
+            regime = int(regime)
+
+            if regime != current_regime:
+                # Close previous span
+                if current_regime is not None:
+                    spans.append((span_start, prev_date, current_regime))
+                # Start new span
+                current_regime = regime
+                span_start = row['Date']
+            prev_date = row['Date']
+
+        # Close final span
+        if current_regime is not None:
+            spans.append((span_start, prev_date, current_regime))
+
+        logger.info(f"Identified {len(spans)} regime spans for overlay")
+        return spans
+
     def generate_equity_curve(
         self,
         filename: str = 'equity_curve.html',
-        include_baseline: bool = True
+        include_baseline: bool = True,
+        show_regime_overlay: bool = True,
+        auto_scale_y: bool = True
     ) -> Path:
         """
         Generate interactive equity curve plot with portfolio vs. baseline.
 
         Creates a time-series line chart showing portfolio value evolution
-        compared to baseline (Buy & Hold) performance.
+        compared to baseline (Buy & Hold) performance. Includes a dropdown
+        to switch between absolute dollar values ($) and percentage returns (%).
+
+        In percentage mode, when zoomed, all curves are normalized to start at 0%
+        from the first visible data point, allowing relative performance comparison
+        from any starting point.
 
         Args:
             filename: Output filename for HTML plot
             include_baseline: Whether to include baseline comparison traces
+            show_regime_overlay: Whether to show colored regime cell backgrounds (default: True)
+                Requires Regime column in CSV. If not available, silently skips.
+            auto_scale_y: Whether to dynamically adjust Y-axis range when zooming X-axis.
+                When enabled, Y-axis will auto-fit to visible data when using rangeslider,
+                rangeselector buttons, or zoom. Default: True.
 
         Returns:
             Path to generated HTML file
@@ -185,38 +297,121 @@ class EquityPlotter:
 
         fig = go.Figure()
 
+        # Add regime overlay (behind the lines)
+        if show_regime_overlay and self._has_regime_data:
+            spans = self._get_regime_spans()
+            added_regimes = set()  # Track which regimes we've added to avoid duplicate legends
+
+            for start_date, end_date, regime in spans:
+                # Add vertical rectangle for this regime period
+                show_legend = regime not in added_regimes
+
+                fig.add_vrect(
+                    x0=start_date,
+                    x1=end_date,
+                    fillcolor=REGIME_COLORS.get(regime, 'rgba(128,128,128,0.1)'),
+                    layer='below',
+                    line_width=0,
+                )
+
+                # Add invisible trace for legend entry (only first occurrence of each regime)
+                if show_legend:
+                    fig.add_trace(go.Scatter(
+                        x=[None],
+                        y=[None],
+                        mode='markers',
+                        marker=dict(
+                            size=15,
+                            color=REGIME_COLORS.get(regime, 'rgba(128,128,128,0.3)'),
+                            symbol='square'
+                        ),
+                        name=REGIME_LABELS.get(regime, f'Cell {regime}'),
+                        showlegend=True,
+                        legendgroup='regime'
+                    ))
+                    added_regimes.add(regime)
+
+            logger.info(f"Added {len(spans)} regime overlay spans ({len(added_regimes)} unique regimes)")
+
+        # Prepare regime labels for hover tooltip
+        regime_hover_labels = None
+        if self._has_regime_data and 'Regime' in self._df.columns:
+            regime_hover_labels = []
+            for regime_val in self._df['Regime']:
+                if pd.isna(regime_val):
+                    regime_hover_labels.append('N/A')
+                else:
+                    # Extract cell number from 'Cell_X' format
+                    try:
+                        cell_num = int(str(regime_val).replace('Cell_', ''))
+                        regime_hover_labels.append(REGIME_LABELS.get(cell_num, str(regime_val)))
+                    except (ValueError, AttributeError):
+                        regime_hover_labels.append(str(regime_val))
+
+        # Calculate percentage returns from initial value for each series
+        portfolio_values = _to_list(self._df['Portfolio_Total_Value'])
+        portfolio_pct = [(v / portfolio_values[0] - 1) * 100 for v in portfolio_values]
+        dates = _to_list(self._df['Date'])
+
+        # Track trace indices for mode switching (excluding regime legend placeholders)
+        data_trace_start_idx = len(fig.data)  # Index where data traces start
+
         # Add portfolio equity trace
-        fig.add_trace(go.Scatter(
-            x=self._df['Date'],
-            y=self._df['Portfolio_Total_Value'],
-            mode='lines',
-            name='Portfolio',
-            line=dict(color='#1f77b4', width=2),
-            hovertemplate='<b>%{x|%Y-%m-%d}</b><br>Portfolio: $%{y:,.2f}<extra></extra>'
-        ))
+        # Store both dollar and percentage values for mode switching
+        # Note: Use _to_list() to avoid Plotly 6.x binary encoding issues with CDN
+        if regime_hover_labels:
+            fig.add_trace(go.Scatter(
+                x=dates,
+                y=portfolio_values,
+                mode='lines',
+                name='Portfolio',
+                line=dict(color='#1f77b4', width=2),
+                customdata=list(zip(regime_hover_labels, portfolio_pct, portfolio_values)),
+                hovertemplate='<b>%{x|%Y-%m-%d}</b><br>Portfolio: $%{y:,.2f}<br>Regime: %{customdata[0]}<extra></extra>',
+                meta={'original_y': portfolio_values, 'pct_y': portfolio_pct, 'trace_type': 'portfolio'}
+            ))
+        else:
+            fig.add_trace(go.Scatter(
+                x=dates,
+                y=portfolio_values,
+                mode='lines',
+                name='Portfolio',
+                line=dict(color='#1f77b4', width=2),
+                customdata=list(zip(portfolio_pct, portfolio_values)),
+                hovertemplate='<b>%{x|%Y-%m-%d}</b><br>Portfolio: $%{y:,.2f}<extra></extra>',
+                meta={'original_y': portfolio_values, 'pct_y': portfolio_pct, 'trace_type': 'portfolio'}
+            ))
 
         # Add baseline traces if available and requested
         if include_baseline:
             # Use dynamically detected baseline column (supports configurable baseline_symbol)
             if self.baseline_value_col:
+                baseline_values = _to_list(self._df[self.baseline_value_col])
+                baseline_pct = [(v / baseline_values[0] - 1) * 100 for v in baseline_values]
                 fig.add_trace(go.Scatter(
-                    x=self._df['Date'],
-                    y=self._df[self.baseline_value_col],
+                    x=dates,
+                    y=baseline_values,
                     mode='lines',
                     name=f'Baseline ({self.baseline_symbol})',
                     line=dict(color='#ff7f0e', width=1.5, dash='dot'),
-                    hovertemplate='<b>%{x|%Y-%m-%d}</b><br>Baseline: $%{y:,.2f}<extra></extra>'
+                    customdata=list(zip(baseline_pct, baseline_values)),
+                    hovertemplate='<b>%{x|%Y-%m-%d}</b><br>Baseline: $%{y:,.2f}<extra></extra>',
+                    meta={'original_y': baseline_values, 'pct_y': baseline_pct, 'trace_type': 'baseline'}
                 ))
 
             # Legacy BuyHold column support (if exists)
             if 'BuyHold_QQQ_Value' in self._df.columns:
+                buyhold_values = _to_list(self._df['BuyHold_QQQ_Value'])
+                buyhold_pct = [(v / buyhold_values[0] - 1) * 100 for v in buyhold_values]
                 fig.add_trace(go.Scatter(
-                    x=self._df['Date'],
-                    y=self._df['BuyHold_QQQ_Value'],
+                    x=dates,
+                    y=buyhold_values,
                     mode='lines',
                     name='Buy & Hold (QQQ)',
                     line=dict(color='#2ca02c', width=1.5, dash='dash'),
-                    hovertemplate='<b>%{x|%Y-%m-%d}</b><br>Buy & Hold: $%{y:,.2f}<extra></extra>'
+                    customdata=list(zip(buyhold_pct, buyhold_values)),
+                    hovertemplate='<b>%{x|%Y-%m-%d}</b><br>Buy & Hold: $%{y:,.2f}<extra></extra>',
+                    meta={'original_y': buyhold_values, 'pct_y': buyhold_pct, 'trace_type': 'buyhold'}
                 ))
 
         # Configure layout with interactivity
@@ -234,6 +429,7 @@ class EquityPlotter:
                 borderwidth=1
             ),
             xaxis=dict(
+                type='date',  # Explicit date type required for Plotly 3.x CDN with legend placeholders
                 rangeslider=dict(visible=True),
                 rangeselector=dict(
                     buttons=list([
@@ -242,16 +438,342 @@ class EquityPlotter:
                         dict(count=1, label="YTD", step="year", stepmode="todate"),
                         dict(count=1, label="1Y", step="year", stepmode="backward"),
                         dict(step="all", label="All")
-                    ])
+                    ]),
+                    x=0.01,
+                    y=1.12
                 )
-            )
+            ),
+            # Add dropdown for $ vs % mode
+            updatemenus=[
+                dict(
+                    type='dropdown',
+                    direction='down',
+                    x=0.99,
+                    xanchor='right',
+                    y=1.12,
+                    yanchor='top',
+                    showactive=True,
+                    active=0,
+                    buttons=[
+                        dict(
+                            label='Value ($)',
+                            method='skip',  # We handle mode switching via JavaScript
+                            args=[{'mode': 'dollar'}]
+                        ),
+                        dict(
+                            label='Return (%)',
+                            method='skip',  # We handle mode switching via JavaScript
+                            args=[{'mode': 'percent'}]
+                        ),
+                    ],
+                    bgcolor='white',
+                    bordercolor='rgba(0,0,0,0.2)',
+                    font=dict(size=12)
+                )
+            ]
         )
+
+        # JavaScript for:
+        # 1. Dynamic Y-axis auto-scaling when X-axis is zoomed ($ mode)
+        # 2. Mode switching between $ and % display
+        # 3. Percentage normalization on zoom (% mode only) - all curves start at 0%
+        mode_switch_script = """
+        (function() {
+            var gd = document.querySelector('.plotly-graph-div');
+            if (!gd) return;
+            
+            // State management
+            var isUpdatingYAxis = false;
+            var currentMode = 'dollar';  // 'dollar' or 'percent'
+            var dataTraceStartIdx = """ + str(data_trace_start_idx) + """;
+            
+            // Store original data for each trace (populated on first load)
+            var originalData = {};
+            
+            // Initialize original data storage
+            function initOriginalData() {
+                for (var i = dataTraceStartIdx; i < gd.data.length; i++) {
+                    var trace = gd.data[i];
+                    if (trace.x && trace.y && trace.x.length > 0 && trace.x[0] !== null) {
+                        originalData[i] = {
+                            original_y: trace.y.slice(),  // Clone array
+                            // Calculate initial percentage returns
+                            pct_y: trace.y.map(function(v) { 
+                                return (v / trace.y[0] - 1) * 100; 
+                            })
+                        };
+                    }
+                }
+            }
+            
+            // Wait for plot to be ready then initialize
+            setTimeout(initOriginalData, 100);
+            
+            // Get visible X range (returns [startTimestamp, endTimestamp])
+            function getVisibleXRange() {
+                var xaxis = gd._fullLayout.xaxis;
+
+                // Helper to get full range from trace data
+                function getFullRangeFromData() {
+                    for (var i = dataTraceStartIdx; i < gd.data.length; i++) {
+                        if (gd.data[i].x && gd.data[i].x.length > 0 && gd.data[i].x[0] !== null) {
+                            return [
+                                new Date(gd.data[i].x[0]).getTime(),
+                                new Date(gd.data[i].x[gd.data[i].x.length - 1]).getTime()
+                            ];
+                        }
+                    }
+                    return null;
+                }
+
+                // If autorange is true, return full range
+                if (xaxis.autorange) {
+                    return getFullRangeFromData() || [0, Date.now()];
+                }
+
+                // Check if range values are indices (small numbers) or dates
+                // Plotly stores range as indices when showing "all" data on categorical/date axes
+                var r0 = xaxis.range[0];
+                var r1 = xaxis.range[1];
+
+                // If range values are small numbers (likely indices), use full data range
+                // Real timestamps would be > 1e10 (milliseconds since 1970)
+                // Index values are typically small integers or small floats
+                if (typeof r0 === 'number' && typeof r1 === 'number' &&
+                    Math.abs(r0) < 1e9 && Math.abs(r1) < 1e9) {
+                    return getFullRangeFromData() || [0, Date.now()];
+                }
+
+                // Parse as date strings or timestamps
+                return [new Date(r0).getTime(), new Date(r1).getTime()];
+            }
+            
+            // Find first visible index for a trace given X range
+            function findFirstVisibleIndex(trace, x0, x1) {
+                if (!trace.x || trace.x.length === 0 || trace.x[0] === null) return -1;
+                for (var j = 0; j < trace.x.length; j++) {
+                    var xVal = new Date(trace.x[j]).getTime();
+                    if (xVal >= x0 && xVal <= x1) {
+                        return j;
+                    }
+                }
+                return -1;
+            }
+            
+            // Update traces for dollar mode
+            function updateDollarMode() {
+                // Save current x-axis range to restore after update
+                // (showing rangeslider can reset the view)
+                var savedXRange = gd._fullLayout.xaxis.range ? gd._fullLayout.xaxis.range.slice() : null;
+                var wasAutorange = gd._fullLayout.xaxis.autorange;
+
+                var updates = {y: [], hovertemplate: []};
+                var indices = [];
+
+                for (var i = dataTraceStartIdx; i < gd.data.length; i++) {
+                    var trace = gd.data[i];
+                    if (!originalData[i]) continue;
+
+                    indices.push(i);
+                    updates.y.push(originalData[i].original_y);
+
+                    // Update hovertemplate for dollar format
+                    var name = trace.name || 'Value';
+                    if (trace.customdata && trace.customdata[0] && trace.customdata[0].length === 3) {
+                        // Has regime data
+                        updates.hovertemplate.push('<b>%{x|%Y-%m-%d}</b><br>' + name + ': $%{y:,.2f}<br>Regime: %{customdata[0]}<extra></extra>');
+                    } else {
+                        updates.hovertemplate.push('<b>%{x|%Y-%m-%d}</b><br>' + name + ': $%{y:,.2f}<extra></extra>');
+                    }
+                }
+
+                if (indices.length > 0) {
+                    // Use Plotly.update() for ATOMIC trace + layout update
+                    // This prevents intermediate state where xaxis.type gets corrupted
+                    Plotly.update(gd, updates, {
+                        'yaxis.title.text': 'Portfolio Value ($)',
+                        'yaxis.autorange': true,
+                        'xaxis.rangeslider.visible': true,
+                        'xaxis.type': 'date'
+                    }, indices).then(function() {
+                        // Restore the x-axis range after showing rangeslider
+                        // (rangeslider changes can reset the zoom level)
+                        if (savedXRange && !wasAutorange) {
+                            return Plotly.relayout(gd, {'xaxis.range': savedXRange});
+                        }
+                    });
+                }
+            }
+
+            // Update traces for percent mode with normalization to first visible point
+            function updatePercentMode() {
+                var xRange = getVisibleXRange();
+                var x0 = xRange[0];
+                var x1 = xRange[1];
+
+                // Save current x-axis range to restore after update
+                // (hiding rangeslider can reset the view)
+                var savedXRange = gd._fullLayout.xaxis.range ? gd._fullLayout.xaxis.range.slice() : null;
+                var wasAutorange = gd._fullLayout.xaxis.autorange;
+
+                var updates = {y: [], hovertemplate: []};
+                var indices = [];
+
+                for (var i = dataTraceStartIdx; i < gd.data.length; i++) {
+                    var trace = gd.data[i];
+                    if (!originalData[i]) continue;
+
+                    var firstVisibleIdx = findFirstVisibleIndex(trace, x0, x1);
+                    if (firstVisibleIdx === -1) continue;
+
+                    // Normalize all values relative to first visible value
+                    var baseValue = originalData[i].original_y[firstVisibleIdx];
+                    var normalizedPct = originalData[i].original_y.map(function(v) {
+                        return (v / baseValue - 1) * 100;
+                    });
+
+                    indices.push(i);
+                    updates.y.push(normalizedPct);
+
+                    // Update hovertemplate for percent format
+                    var name = trace.name || 'Return';
+                    if (trace.customdata && trace.customdata[0] && trace.customdata[0].length === 3) {
+                        // Has regime data
+                        updates.hovertemplate.push('<b>%{x|%Y-%m-%d}</b><br>' + name + ': %{y:,.2f}%<br>Regime: %{customdata[0]}<extra></extra>');
+                    } else {
+                        updates.hovertemplate.push('<b>%{x|%Y-%m-%d}</b><br>' + name + ': %{y:,.2f}%<extra></extra>');
+                    }
+                }
+
+                if (indices.length > 0) {
+                    isUpdatingYAxis = true;
+
+                    // Use Plotly.update() for ATOMIC trace + layout update
+                    // This prevents intermediate state where xaxis.type gets corrupted
+                    Plotly.update(gd, updates, {
+                        'yaxis.title.text': 'Return (%)',
+                        'yaxis.autorange': true,
+                        'xaxis.rangeslider.visible': false,
+                        'xaxis.type': 'date'
+                    }, indices).then(function() {
+                        // Restore the x-axis range after hiding rangeslider
+                        // (rangeslider changes can reset the zoom level)
+                        if (savedXRange && !wasAutorange) {
+                            return Plotly.relayout(gd, {'xaxis.range': savedXRange});
+                        }
+                    }).then(function() {
+                        isUpdatingYAxis = false;
+                    });
+                }
+            }
+
+            // Handle dropdown selection change
+            gd.on('plotly_buttonclicked', function(eventdata) {
+                // Check if this is our mode dropdown (updatemenus[0])
+                if (eventdata.menu && eventdata.menu._index === 0) {
+                    var newMode = eventdata.active === 0 ? 'dollar' : 'percent';
+                    if (newMode !== currentMode) {
+                        currentMode = newMode;
+                        if (currentMode === 'dollar') {
+                            updateDollarMode();
+                        } else {
+                            updatePercentMode();
+                        }
+                    }
+                }
+            });
+            
+            // Handle zoom/pan events
+            gd.on('plotly_relayout', function(eventdata) {
+                // Skip if this is our own Y-axis update
+                if (isUpdatingYAxis) return;
+                
+                // Check if this is just a Y-axis change (from our update)
+                if (eventdata['yaxis.range'] || eventdata['yaxis.range[0]'] !== undefined) {
+                    // Only Y-axis changed, not X-axis - skip
+                    if (!eventdata['xaxis.range'] && eventdata['xaxis.range[0]'] === undefined && 
+                        !eventdata['xaxis.autorange']) {
+                        return;
+                    }
+                }
+                
+                // Handle autorange (e.g., "All" button or double-click reset)
+                if (eventdata['xaxis.autorange'] === true) {
+                    if (currentMode === 'percent') {
+                        // Re-normalize from full range start
+                        updatePercentMode();
+                    } else {
+                        isUpdatingYAxis = true;
+                        Plotly.relayout(gd, {'yaxis.autorange': true}).then(function() {
+                            isUpdatingYAxis = false;
+                        });
+                    }
+                    return;
+                }
+                
+                // Check for X-axis range change
+                var hasXRangeChange = eventdata['xaxis.range'] || eventdata['xaxis.range[0]'] !== undefined;
+                if (!hasXRangeChange) return;
+                
+                if (currentMode === 'percent') {
+                    // In percent mode, re-normalize all curves to start at 0% from first visible point
+                    updatePercentMode();
+                } else {
+                    // In dollar mode, just auto-scale Y axis
+                    var xRange;
+                    if (eventdata['xaxis.range']) {
+                        xRange = eventdata['xaxis.range'];
+                    } else {
+                        xRange = [eventdata['xaxis.range[0]'], eventdata['xaxis.range[1]']];
+                    }
+                    
+                    var x0 = new Date(xRange[0]).getTime();
+                    var x1 = new Date(xRange[1]).getTime();
+                    
+                    var yMin = Infinity;
+                    var yMax = -Infinity;
+                    
+                    for (var i = 0; i < gd.data.length; i++) {
+                        var trace = gd.data[i];
+                        if (!trace.x || !trace.y || trace.x.length === 0 || trace.x[0] === null) continue;
+                        if (trace.visible === 'legendonly' || trace.visible === false) continue;
+                        
+                        for (var j = 0; j < trace.x.length; j++) {
+                            var xVal = new Date(trace.x[j]).getTime();
+                            if (xVal >= x0 && xVal <= x1) {
+                                var yVal = trace.y[j];
+                                if (typeof yVal === 'number' && !isNaN(yVal)) {
+                                    if (yVal < yMin) yMin = yVal;
+                                    if (yVal > yMax) yMax = yVal;
+                                }
+                            }
+                        }
+                    }
+                    
+                    if (yMin !== Infinity && yMax !== -Infinity && yMin !== yMax) {
+                        var padding = (yMax - yMin) * 0.05;
+                        isUpdatingYAxis = true;
+                        Plotly.relayout(gd, {
+                            'yaxis.range': [yMin - padding, yMax + padding]
+                        }).then(function() {
+                            isUpdatingYAxis = false;
+                        });
+                    }
+                }
+            });
+        })();
+        """
 
         # Write to HTML with CDN Plotly.js for small file size
         output_path = self.output_dir / filename
-        fig.write_html(output_path, include_plotlyjs='cdn')
-
-        logger.info(f"Equity curve plot saved to: {output_path}")
+        
+        if auto_scale_y:
+            fig.write_html(output_path, include_plotlyjs='cdn', post_script=mode_switch_script)
+            logger.info(f"Equity curve plot saved to: {output_path} (with $ vs % toggle and dynamic Y-axis scaling)")
+        else:
+            fig.write_html(output_path, include_plotlyjs='cdn')
+            logger.info(f"Equity curve plot saved to: {output_path}")
+        
         return output_path
 
     def generate_drawdown(
@@ -285,8 +807,8 @@ class EquityPlotter:
 
         # Add portfolio drawdown trace (filled area)
         fig.add_trace(go.Scatter(
-            x=self._df['Date'],
-            y=portfolio_dd,
+            x=_to_list(self._df['Date']),
+            y=_to_list(portfolio_dd),
             mode='lines',
             name='Portfolio Drawdown',
             fill='tozeroy',
@@ -301,8 +823,8 @@ class EquityPlotter:
             if self.baseline_value_col:
                 baseline_dd = self._calculate_drawdown(self._df[self.baseline_value_col])
                 fig.add_trace(go.Scatter(
-                    x=self._df['Date'],
-                    y=baseline_dd,
+                    x=_to_list(self._df['Date']),
+                    y=_to_list(baseline_dd),
                     mode='lines',
                     name=f'Baseline ({self.baseline_symbol}) Drawdown',
                     line=dict(color='#ff7f0e', width=1, dash='dot'),
@@ -313,8 +835,8 @@ class EquityPlotter:
             if 'BuyHold_QQQ_Value' in self._df.columns:
                 buyhold_dd = self._calculate_drawdown(self._df['BuyHold_QQQ_Value'])
                 fig.add_trace(go.Scatter(
-                    x=self._df['Date'],
-                    y=buyhold_dd,
+                    x=_to_list(self._df['Date']),
+                    y=_to_list(buyhold_dd),
                     mode='lines',
                     name='Buy & Hold (QQQ) Drawdown',
                     line=dict(color='#2ca02c', width=1, dash='dash'),
@@ -336,6 +858,7 @@ class EquityPlotter:
                 borderwidth=1
             ),
             xaxis=dict(
+                type='date',  # Explicit date type required for Plotly 3.x CDN
                 rangeslider=dict(visible=True),
                 rangeselector=dict(
                     buttons=list([
@@ -426,8 +949,8 @@ class EquityPlotter:
                 color = colors[idx % len(colors)]
 
                 fig.add_trace(go.Scatter(
-                    x=self.df['Date'],
-                    y=self.df[col],
+                    x=_to_list(self.df['Date']),
+                    y=_to_list(self.df[col]),
                     name=symbol,
                     mode='lines',
                     stackgroup='one',  # Stack areas
@@ -452,6 +975,7 @@ class EquityPlotter:
                 borderwidth=1
             ),
             xaxis=dict(
+                type='date',  # Explicit date type required for Plotly 3.x CDN
                 rangeslider=dict(visible=True),
                 rangeselector=dict(
                     buttons=list([
@@ -502,7 +1026,7 @@ class EquityPlotter:
 
         # Histogram
         fig.add_trace(go.Histogram(
-            x=returns,
+            x=_to_list(returns),
             name='Daily Returns',
             nbinsx=50,
             histnorm='probability density',
@@ -595,8 +1119,8 @@ class EquityPlotter:
         # Top-left: Equity curve
         fig.add_trace(
             go.Scatter(
-                x=self.df['Date'],
-                y=self.df['Portfolio_Total_Value'],
+                x=_to_list(self.df['Date']),
+                y=_to_list(self.df['Portfolio_Total_Value']),
                 mode='lines',
                 name='Portfolio',
                 line=dict(color='#1f77b4', width=2),
@@ -610,8 +1134,8 @@ class EquityPlotter:
         if 'Baseline_QQQ_Value' in self.df.columns:
             fig.add_trace(
                 go.Scatter(
-                    x=self.df['Date'],
-                    y=self.df['Baseline_QQQ_Value'],
+                    x=_to_list(self.df['Date']),
+                    y=_to_list(self.df['Baseline_QQQ_Value']),
                     mode='lines',
                     name='Baseline (QQQ)',
                     line=dict(color='#ff7f0e', width=1.5, dash='dot'),
@@ -625,8 +1149,8 @@ class EquityPlotter:
         portfolio_dd = self._calculate_drawdown(self.df['Portfolio_Total_Value'])
         fig.add_trace(
             go.Scatter(
-                x=self.df['Date'],
-                y=portfolio_dd,
+                x=_to_list(self.df['Date']),
+                y=_to_list(portfolio_dd),
                 mode='lines',
                 name='Portfolio DD',
                 fill='tozeroy',
@@ -656,8 +1180,8 @@ class EquityPlotter:
 
             fig.add_trace(
                 go.Scatter(
-                    x=self.df['Date'],
-                    y=self.df[col],
+                    x=_to_list(self.df['Date']),
+                    y=_to_list(self.df[col]),
                     name=symbol,
                     mode='lines',
                     stackgroup='one',
@@ -675,7 +1199,7 @@ class EquityPlotter:
 
         fig.add_trace(
             go.Histogram(
-                x=returns,
+                x=_to_list(returns),
                 name='Daily Returns',
                 nbinsx=50,
                 histnorm='probability density',

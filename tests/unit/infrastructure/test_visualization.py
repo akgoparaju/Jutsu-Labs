@@ -236,6 +236,32 @@ class TestEquityPlotter:
         assert output_path.exists()
         assert output_path.name == custom_name
 
+    def test_generate_equity_curve_with_auto_scale_y_enabled(self, sample_csv_simple):
+        """Test equity curve generation with dynamic Y-axis scaling enabled (default)."""
+        plotter = EquityPlotter(csv_path=sample_csv_simple)
+        output_path = plotter.generate_equity_curve(auto_scale_y=True)
+
+        assert output_path.exists()
+
+        # Check HTML contains the auto-scale JavaScript
+        with open(output_path, 'r') as f:
+            html_content = f.read()
+            assert 'plotly_relayout' in html_content
+            assert 'isUpdatingYAxis' in html_content
+            assert 'yaxis.range' in html_content
+
+    def test_generate_equity_curve_with_auto_scale_y_disabled(self, sample_csv_simple):
+        """Test equity curve generation with dynamic Y-axis scaling disabled."""
+        plotter = EquityPlotter(csv_path=sample_csv_simple)
+        output_path = plotter.generate_equity_curve(auto_scale_y=False)
+
+        assert output_path.exists()
+
+        # Check HTML does NOT contain the auto-scale JavaScript
+        with open(output_path, 'r') as f:
+            html_content = f.read()
+            assert 'isUpdatingYAxis' not in html_content
+
     def test_generate_drawdown_creates_html(self, sample_csv_full):
         """Test drawdown generation creates HTML file."""
         plotter = EquityPlotter(csv_path=sample_csv_full)
@@ -1016,3 +1042,361 @@ class TestGridSearchPlotterPerformance:
             f"Total plot generation took {total_time:.2f}s (target: <5s)"
         )
         assert len(all_plots) == 4, f"Expected 4 plots, got {len(all_plots)}"
+
+
+# ==============================================================================
+# Regime Overlay Tests
+# ==============================================================================
+
+class TestEquityPlotterRegimeOverlay:
+    """Tests for regime overlay functionality in EquityPlotter."""
+
+    @pytest.fixture
+    def sample_csv_with_regime(self, tmp_path):
+        """Create sample CSV with Regime column."""
+        data = {
+            'Date': pd.date_range('2020-01-01', periods=100, freq='D'),
+            'Portfolio_Total_Value': np.cumsum(np.random.randn(100) * 100) + 10000,
+            'Regime': ['Cell_1'] * 30 + ['Cell_3'] * 40 + ['Cell_5'] * 30,
+            'Trend': ['BullStrong'] * 30 + ['Sideways'] * 40 + ['BearStrong'] * 30,
+            'Vol': ['Low'] * 50 + ['High'] * 50,
+            'Baseline_QQQ_Value': np.cumsum(np.random.randn(100) * 80) + 10000,
+            'Baseline_QQQ_Return_Pct': np.random.randn(100) * 0.02,
+            'Cash': [1000] * 100,
+        }
+        df = pd.DataFrame(data)
+        csv_path = tmp_path / 'portfolio_with_regime.csv'
+        df.to_csv(csv_path, index=False)
+        return csv_path
+
+    @pytest.fixture
+    def sample_csv_without_regime(self, tmp_path):
+        """Create sample CSV without Regime column."""
+        data = {
+            'Date': pd.date_range('2020-01-01', periods=100, freq='D'),
+            'Portfolio_Total_Value': np.cumsum(np.random.randn(100) * 100) + 10000,
+            'Baseline_QQQ_Value': np.cumsum(np.random.randn(100) * 80) + 10000,
+            'Baseline_QQQ_Return_Pct': np.random.randn(100) * 0.02,
+            'Cash': [1000] * 100,
+        }
+        df = pd.DataFrame(data)
+        csv_path = tmp_path / 'portfolio_no_regime.csv'
+        df.to_csv(csv_path, index=False)
+        return csv_path
+
+    def test_regime_data_detection_with_regime(self, sample_csv_with_regime, tmp_path):
+        """Verify _has_regime_data is True when Regime column exists."""
+        plotter = EquityPlotter(
+            csv_path=sample_csv_with_regime,
+            output_dir=tmp_path
+        )
+
+        assert plotter._has_regime_data is True
+
+    def test_regime_data_detection_without_regime(self, sample_csv_without_regime, tmp_path):
+        """Verify _has_regime_data is False when Regime column missing."""
+        plotter = EquityPlotter(
+            csv_path=sample_csv_without_regime,
+            output_dir=tmp_path
+        )
+
+        assert plotter._has_regime_data is False
+
+    def test_regime_overlay_with_regime_data(self, sample_csv_with_regime, tmp_path):
+        """Verify regime overlay is added when Regime column exists."""
+        plotter = EquityPlotter(
+            csv_path=sample_csv_with_regime,
+            output_dir=tmp_path
+        )
+
+        assert plotter._has_regime_data is True
+
+        output_path = plotter.generate_equity_curve(show_regime_overlay=True)
+        assert output_path.exists()
+
+        # Verify HTML contains regime-related content
+        content = output_path.read_text()
+        assert 'Cell 1' in content or 'Bull/Low' in content
+
+    def test_regime_overlay_disabled(self, sample_csv_with_regime, tmp_path):
+        """Verify overlay can be disabled even with Regime data."""
+        plotter = EquityPlotter(
+            csv_path=sample_csv_with_regime,
+            output_dir=tmp_path
+        )
+
+        output_path = plotter.generate_equity_curve(show_regime_overlay=False)
+        assert output_path.exists()
+
+    def test_no_regime_data_graceful_handling(self, sample_csv_without_regime, tmp_path):
+        """Verify no error when Regime column missing."""
+        plotter = EquityPlotter(
+            csv_path=sample_csv_without_regime,
+            output_dir=tmp_path
+        )
+
+        assert plotter._has_regime_data is False
+
+        # Should not raise error
+        output_path = plotter.generate_equity_curve(show_regime_overlay=True)
+        assert output_path.exists()
+
+    def test_get_regime_spans_consolidation(self, sample_csv_with_regime, tmp_path):
+        """Verify regime spans are correctly consolidated."""
+        plotter = EquityPlotter(
+            csv_path=sample_csv_with_regime,
+            output_dir=tmp_path
+        )
+
+        spans = plotter._get_regime_spans()
+
+        # Should have 3 spans based on fixture data (Cell_1, Cell_3, Cell_5)
+        assert len(spans) == 3
+
+        # Verify span structure
+        for start, end, regime in spans:
+            assert isinstance(regime, int)
+            assert 1 <= regime <= 6
+            assert start <= end
+
+    def test_get_regime_spans_returns_empty_without_data(self, sample_csv_without_regime, tmp_path):
+        """Verify _get_regime_spans returns empty list when no Regime column."""
+        plotter = EquityPlotter(
+            csv_path=sample_csv_without_regime,
+            output_dir=tmp_path
+        )
+
+        spans = plotter._get_regime_spans()
+        assert spans == []
+
+    def test_regime_overlay_all_six_cells(self, tmp_path):
+        """Verify all 6 regime cells are handled correctly."""
+        # Create data with all 6 regime cells
+        data = {
+            'Date': pd.date_range('2020-01-01', periods=60, freq='D'),
+            'Portfolio_Total_Value': np.cumsum(np.random.randn(60) * 100) + 10000,
+            'Regime': (
+                ['Cell_1'] * 10 + ['Cell_2'] * 10 + ['Cell_3'] * 10 +
+                ['Cell_4'] * 10 + ['Cell_5'] * 10 + ['Cell_6'] * 10
+            ),
+            'Cash': [1000] * 60,
+        }
+        df = pd.DataFrame(data)
+        csv_path = tmp_path / 'portfolio_all_regimes.csv'
+        df.to_csv(csv_path, index=False)
+
+        plotter = EquityPlotter(csv_path=csv_path, output_dir=tmp_path)
+        spans = plotter._get_regime_spans()
+
+        # Should have 6 spans
+        assert len(spans) == 6
+
+        # Verify all cells represented
+        cells = [regime for _, _, regime in spans]
+        assert sorted(cells) == [1, 2, 3, 4, 5, 6]
+
+        # Generate plot and verify
+        output_path = plotter.generate_equity_curve(show_regime_overlay=True)
+        assert output_path.exists()
+
+    def test_regime_overlay_performance(self, tmp_path):
+        """Verify regime overlay adds <1s overhead for 4000-bar backtest."""
+        import time
+
+        # Generate 4000 bars with regime data
+        np.random.seed(42)
+        regimes = []
+        current_regime = 1
+        for i in range(4000):
+            if i % 200 == 0:  # Change regime every 200 bars
+                current_regime = (current_regime % 6) + 1
+            regimes.append(f'Cell_{current_regime}')
+
+        data = {
+            'Date': pd.date_range('2010-01-01', periods=4000, freq='D'),
+            'Portfolio_Total_Value': np.cumsum(np.random.randn(4000) * 50) + 100000,
+            'Regime': regimes,
+            'Cash': [10000] * 4000,
+        }
+        df = pd.DataFrame(data)
+        csv_path = tmp_path / 'large_portfolio_with_regime.csv'
+        df.to_csv(csv_path, index=False)
+
+        plotter = EquityPlotter(csv_path=csv_path, output_dir=tmp_path)
+
+        # Time with regime overlay
+        start_time = time.time()
+        output_path = plotter.generate_equity_curve(show_regime_overlay=True)
+        with_overlay_time = time.time() - start_time
+
+        assert output_path.exists()
+        assert with_overlay_time < 2.0, (
+            f"Equity curve with overlay took {with_overlay_time:.2f}s (target: <2s)"
+        )
+
+
+class TestEquityPlotterPercentageMode:
+    """Tests for percentage display mode and zoom normalization in EquityPlotter."""
+
+    @pytest.fixture
+    def sample_csv_for_pct(self, tmp_path):
+        """Create sample CSV with known values for percentage calculation verification."""
+        dates = pd.date_range('2020-01-01', periods=100, freq='D')
+        # Portfolio starts at 10000, goes up
+        portfolio = [10000 + i * 50 for i in range(100)]  # 10000 -> 14950
+        # Baseline starts at 10000, goes up slower
+        baseline = [10000 + i * 30 for i in range(100)]  # 10000 -> 12970
+        
+        data = {
+            'Date': dates,
+            'Portfolio_Total_Value': portfolio,
+            'Baseline_QQQ_Value': baseline,
+            'Baseline_QQQ_Return_Pct': [0.003] * 100,
+            'Cash': [1000] * 100,
+        }
+        df = pd.DataFrame(data)
+        csv_path = tmp_path / 'portfolio_for_pct.csv'
+        df.to_csv(csv_path, index=False)
+        return csv_path
+
+    def test_equity_curve_contains_percent_dropdown(self, sample_csv_for_pct, tmp_path):
+        """Verify equity curve HTML contains the $ vs % dropdown menu."""
+        plotter = EquityPlotter(
+            csv_path=sample_csv_for_pct,
+            output_dir=tmp_path
+        )
+        
+        output_path = plotter.generate_equity_curve()
+        assert output_path.exists()
+        
+        content = output_path.read_text()
+        
+        # Verify dropdown button labels are present
+        assert 'Value ($)' in content, "Dollar mode button not found"
+        assert 'Return (%)' in content, "Percent mode button not found"
+        
+        # Verify updatemenus config is present
+        assert 'updatemenus' in content, "Updatemenus config not found"
+
+    def test_equity_curve_contains_mode_switch_script(self, sample_csv_for_pct, tmp_path):
+        """Verify JavaScript for mode switching is included."""
+        plotter = EquityPlotter(
+            csv_path=sample_csv_for_pct,
+            output_dir=tmp_path
+        )
+        
+        output_path = plotter.generate_equity_curve(auto_scale_y=True)
+        content = output_path.read_text()
+        
+        # Key JavaScript functions should be present
+        assert 'currentMode' in content, "Mode state variable not found"
+        assert 'updateDollarMode' in content, "Dollar mode function not found"
+        assert 'updatePercentMode' in content, "Percent mode function not found"
+        assert 'plotly_buttonclicked' in content, "Button click handler not found"
+
+    def test_equity_curve_without_auto_scale_no_script(self, sample_csv_for_pct, tmp_path):
+        """Verify JavaScript is not included when auto_scale_y=False."""
+        plotter = EquityPlotter(
+            csv_path=sample_csv_for_pct,
+            output_dir=tmp_path
+        )
+        
+        output_path = plotter.generate_equity_curve(auto_scale_y=False)
+        content = output_path.read_text()
+        
+        # Mode switch script should not be present
+        assert 'updateDollarMode' not in content
+        assert 'updatePercentMode' not in content
+
+    def test_equity_curve_traces_have_original_data(self, sample_csv_for_pct, tmp_path):
+        """Verify traces contain original dollar values for mode switching."""
+        plotter = EquityPlotter(
+            csv_path=sample_csv_for_pct,
+            output_dir=tmp_path
+        )
+        
+        output_path = plotter.generate_equity_curve()
+        content = output_path.read_text()
+        
+        # First portfolio value should be in the data
+        assert '10000' in content, "Initial portfolio value not found"
+        # Last portfolio value should be in the data (14950)
+        assert '14950' in content, "Final portfolio value not found"
+
+    def test_equity_curve_with_regime_and_pct_mode(self, tmp_path):
+        """Verify percentage mode works together with regime overlay."""
+        dates = pd.date_range('2020-01-01', periods=60, freq='D')
+        data = {
+            'Date': dates,
+            'Portfolio_Total_Value': [10000 + i * 100 for i in range(60)],
+            'Regime': ['Cell_1'] * 30 + ['Cell_3'] * 30,
+            'Cash': [1000] * 60,
+        }
+        df = pd.DataFrame(data)
+        csv_path = tmp_path / 'portfolio_regime_pct.csv'
+        df.to_csv(csv_path, index=False)
+        
+        plotter = EquityPlotter(csv_path=csv_path, output_dir=tmp_path)
+        
+        output_path = plotter.generate_equity_curve(show_regime_overlay=True)
+        assert output_path.exists()
+        
+        content = output_path.read_text()
+        
+        # Both features should be present
+        assert 'Value ($)' in content, "Dollar mode button not found"
+        assert 'Return (%)' in content, "Percent mode button not found"
+        assert 'Cell 1' in content or 'Bull/Low' in content, "Regime labels not found"
+
+    def test_equity_curve_dropdown_position(self, sample_csv_for_pct, tmp_path):
+        """Verify dropdown is positioned correctly (right side of chart)."""
+        plotter = EquityPlotter(
+            csv_path=sample_csv_for_pct,
+            output_dir=tmp_path
+        )
+        
+        output_path = plotter.generate_equity_curve()
+        content = output_path.read_text()
+        
+        # Check for x positioning (should be near 0.99 for right alignment)
+        assert '"x":0.99' in content or '"x": 0.99' in content, "Dropdown not right-aligned"
+
+    def test_equity_curve_performance_with_pct_mode(self, tmp_path):
+        """Verify performance is still acceptable with percentage mode features."""
+        import time
+        
+        np.random.seed(42)
+        data = {
+            'Date': pd.date_range('2010-01-01', periods=4000, freq='D'),
+            'Portfolio_Total_Value': np.cumsum(np.random.randn(4000) * 50) + 100000,
+            'Baseline_QQQ_Value': np.cumsum(np.random.randn(4000) * 40) + 100000,
+            'Baseline_QQQ_Return_Pct': [0.001] * 4000,
+            'Cash': [10000] * 4000,
+        }
+        df = pd.DataFrame(data)
+        csv_path = tmp_path / 'large_portfolio_pct.csv'
+        df.to_csv(csv_path, index=False)
+        
+        plotter = EquityPlotter(csv_path=csv_path, output_dir=tmp_path)
+        
+        start_time = time.time()
+        output_path = plotter.generate_equity_curve()
+        generation_time = time.time() - start_time
+        
+        assert output_path.exists()
+        assert generation_time < 2.0, (
+            f"Equity curve generation took {generation_time:.2f}s (target: <2s)"
+        )
+
+    def test_equity_curve_yaxis_title_in_dollar_mode(self, sample_csv_for_pct, tmp_path):
+        """Verify Y-axis title shows dollar format by default."""
+        plotter = EquityPlotter(
+            csv_path=sample_csv_for_pct,
+            output_dir=tmp_path
+        )
+        
+        output_path = plotter.generate_equity_curve()
+        content = output_path.read_text()
+        
+        # Default title should be dollar format
+        assert 'Portfolio Value ($)' in content, "Dollar Y-axis title not found"
