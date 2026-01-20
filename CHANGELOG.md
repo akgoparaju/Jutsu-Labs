@@ -1,3 +1,52 @@
+#### **Feature: Backtest Dashboard CSV Export** (2026-01-19)
+
+**Added consolidated CSV export for backtest dashboard UI consumption**
+
+**New Output**: When running a backtest, a new `dashboard_{strategy_name}.csv` file is generated alongside existing exports. This single file contains all data needed for the dashboard UI.
+
+**CSV Format**:
+- Comment header lines (`#` prefix) with metadata: strategy name, dates, summary metrics
+- Data rows with 7 columns: Date, Portfolio_Value, Baseline_Value, BuyHold_Value, Regime, Trend, Vol
+- Clean numeric values (no `$`, `%`, commas) for easy API parsing
+
+**Files Created**:
+- `jutsu_engine/performance/dashboard_exporter.py`: New `DashboardCSVExporter` class
+- `config/backtest/`: Directory for storing golden backtest data
+
+**Files Modified**:
+- `jutsu_engine/application/backtest_runner.py`: Added dashboard export call in `run()` method
+
+**Agent**: DASHBOARD_BACKEND_AGENT | **Layer**: Infrastructure/Performance
+
+---
+
+#### **Feature: Sorted Symbol List in `jutsu sync --list`** (2026-01-19)
+
+**Added intelligent sorting to the `jutsu sync --list` command output**
+
+**Sorting Order**:
+1. **Primary**: `$` symbols first (e.g., `$VIX`, `$SPX`, `$DJI`), then regular symbols
+2. **Secondary**: Alphabetical order within each group (A→Z)
+3. **Tertiary**: Timeframe by duration descending: `1D → 15m → 5m → 1m`
+
+**Example Output**:
+```
+$DJI         1D         1979-12-31   2026-01-16         11,505
+$DJI         15m        2025-12-08   2026-01-16            714
+$DJI         5m         2025-12-08   2026-01-16          2,139
+$SPX         1D         ...
+...
+AAPL         1D         1985-01-02   2026-01-16          8,394
+GLD          1D         ...
+```
+
+**Files Modified**:
+- `jutsu_engine/cli/main.py`: Added sorting logic with custom sort key function
+
+**Agent**: CLI_AGENT | **Layer**: Entry Points
+
+---
+
 #### **Fix: Equity Curve Mode Switching - Zoom Preservation & X-Axis Date Type** (2026-01-19)
 
 **Fixed two critical issues with the equity curve $ ↔ % mode switching**

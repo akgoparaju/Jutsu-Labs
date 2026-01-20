@@ -283,6 +283,23 @@ def sync(
                 session.close()
                 return
 
+            # Sort results:
+            # 1. $ symbols first (e.g., $VIX, $SPX), then regular symbols
+            # 2. Within each group, sort alphabetically (A→Z)
+            # 3. For same symbol, sort by timeframe: 1D → 15m → 5m → 1m
+            timeframe_order = {'1D': 0, '15m': 1, '5m': 2, '1m': 3}
+
+            def sort_key(item):
+                symbol = item['symbol']
+                timeframe = item['timeframe']
+                # $ symbols sort first (0), regular symbols second (1)
+                is_special = 0 if symbol.startswith('$') else 1
+                # Get timeframe priority (unknown timeframes go to end)
+                tf_priority = timeframe_order.get(timeframe, 99)
+                return (is_special, symbol.upper(), tf_priority)
+
+            metadata_list.sort(key=sort_key)
+
             # Display in terminal table
             click.echo("=" * 90)
             click.echo(f"{'Symbol':<12} {'Timeframe':<10} {'First Bar':<12} {'Last Bar':<12} {'Total Bars':>12}")

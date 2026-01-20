@@ -807,6 +807,30 @@ class BacktestRunner:
             logger.error(f"Failed to export summary CSV: {e}")
             metrics['summary_csv_path'] = None
 
+        # Export consolidated dashboard CSV (single file for UI consumption)
+        try:
+            from jutsu_engine.performance.dashboard_exporter import DashboardCSVExporter
+
+            dashboard_exporter = DashboardCSVExporter(
+                initial_capital=self.config['initial_capital']
+            )
+            dashboard_csv_path = dashboard_exporter.export_dashboard_csv(
+                daily_snapshots=portfolio.get_daily_snapshots(),
+                results=temp_metrics,
+                baseline=baseline_result,
+                baseline_info=baseline_csv_info,
+                signal_prices=signal_prices,
+                regime_data=regime_data,
+                start_date=self.config['start_date'],
+                output_path=output_dir,
+                strategy_name=strategy.name,
+            )
+            metrics['dashboard_csv_path'] = dashboard_csv_path
+            logger.info(f"Dashboard CSV exported to: {dashboard_csv_path}")
+        except Exception as e:
+            logger.error(f"Failed to export dashboard CSV: {e}")
+            metrics['dashboard_csv_path'] = None
+
         # Add event loop results
         loop_results = event_loop.get_results()
         results = {**metrics, **loop_results}
