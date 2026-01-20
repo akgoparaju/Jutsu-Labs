@@ -29,6 +29,7 @@ import {
   History,
   Settings,
   Shield,
+  BarChart3,
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { useIsDesktop } from '../../hooks/useMediaQuery'
@@ -45,6 +46,7 @@ const navItems: NavItem[] = [
   { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { path: '/decision-tree', icon: GitBranch, label: 'Decision Tree' },
   { path: '/performance', icon: TrendingUp, label: 'Performance' },
+  { path: '/backtest', icon: BarChart3, label: 'Backtest' },
   { path: '/trades', icon: History, label: 'Trade History' },
   { path: '/config', icon: Settings, label: 'Configuration', permission: 'config:write' },
   { path: '/settings', icon: Shield, label: 'Settings' },

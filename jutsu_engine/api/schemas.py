@@ -366,3 +366,77 @@ class ValidationError(BaseModel):
     field: str
     message: str
     value: Optional[Any] = None
+
+
+# ==============================================================================
+# BACKTEST SCHEMAS
+# ==============================================================================
+
+class BacktestSummary(BaseModel):
+    """Backtest summary metrics (all-time)."""
+    strategy_name: Optional[str] = Field(None, description="Strategy identifier")
+    start_date: Optional[str] = Field(None, description="Backtest start date")
+    end_date: Optional[str] = Field(None, description="Backtest end date")
+    initial_capital: Optional[float] = Field(None, description="Starting capital")
+    total_return: Optional[float] = Field(None, description="Total return percentage")
+    annualized_return: Optional[float] = Field(None, description="CAGR percentage")
+    sharpe_ratio: Optional[float] = Field(None, description="Risk-adjusted return")
+    max_drawdown: Optional[float] = Field(None, description="Maximum drawdown percentage")
+    alpha: Optional[float] = Field(None, description="Return ratio vs baseline")
+    baseline_ticker: Optional[str] = Field(None, description="Baseline symbol (e.g., QQQ)")
+
+
+class BacktestDataPoint(BaseModel):
+    """Single timeseries data point for backtest."""
+    date: str = Field(..., description="Date in YYYY-MM-DD format")
+    portfolio: Optional[float] = Field(None, description="Portfolio value")
+    baseline: Optional[float] = Field(None, description="Baseline (QQQ) value")
+    buyhold: Optional[float] = Field(None, description="Buy-and-hold value")
+    regime: Optional[str] = Field(None, description="Regime identifier (e.g., Cell_3)")
+    trend: Optional[str] = Field(None, description="Trend state (BullStrong, Sideways, BearStrong)")
+    vol: Optional[str] = Field(None, description="Volatility state (Low, High)")
+
+
+class BacktestPeriodMetrics(BaseModel):
+    """Calculated metrics for a specific date range."""
+    start_date: Optional[str] = Field(None, description="Period start date")
+    end_date: Optional[str] = Field(None, description="Period end date")
+    days: Optional[int] = Field(None, description="Calendar days in period")
+    period_return: Optional[float] = Field(None, description="Period return percentage")
+    annualized_return: Optional[float] = Field(None, description="Annualized return percentage")
+    baseline_return: Optional[float] = Field(None, description="Baseline return percentage")
+    alpha: Optional[float] = Field(None, description="Alpha (period return - baseline return)")
+
+
+class BacktestRegimePerformance(BaseModel):
+    """Performance metrics for a single regime."""
+    cell: Optional[int] = Field(None, description="Regime cell number (1-6)")
+    regime: str = Field(..., description="Regime identifier")
+    trend: Optional[str] = Field(None, description="Trend state")
+    vol: Optional[str] = Field(None, description="Volatility state")
+    total_return: float = Field(..., description="Total return percentage")
+    annualized_return: Optional[float] = Field(None, description="Annualized return percentage")
+    days: int = Field(..., description="Days in this regime")
+    pct_of_time: float = Field(..., description="Percentage of time in this regime")
+
+
+class BacktestDataResponse(BaseModel):
+    """Full backtest data response."""
+    summary: BacktestSummary
+    timeseries: List[BacktestDataPoint] = []
+    period_metrics: Optional[BacktestPeriodMetrics] = None
+    total_data_points: int = 0
+    filtered_data_points: int = 0
+
+
+class BacktestRegimeResponse(BaseModel):
+    """Regime breakdown response."""
+    regimes: List[BacktestRegimePerformance] = []
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+
+
+class BacktestConfigResponse(BaseModel):
+    """Strategy configuration response."""
+    config: Dict[str, Any] = Field(..., description="Strategy configuration parameters")
+    file_path: str = Field(..., description="Path to config file")

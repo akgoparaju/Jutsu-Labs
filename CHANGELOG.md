@@ -1,3 +1,119 @@
+#### **Fixed: Backtest Dashboard Date Picker - User Input Preserved** (2026-01-20)
+
+Fixed date picker allowing dates from 2010 to be selected without chart overwriting the value.
+
+**Root Cause**: When user typed a date (e.g., 2010-01-01), the chart's `handleVisibleRangeChange` callback would fire and overwrite `viewStartDate` with the chart's actual visible range (e.g., 2017), because the chart couldn't display meaningful data before 2017.
+
+**Fix**: Added `isUserTypingDateRef` flag to prevent chart from overwriting user's explicit date input for 500ms after typing.
+
+**Files Modified**:
+- `dashboard/src/pages/v2/BacktestV2.tsx`: Added `isUserTypingDateRef` flag, updated date input onChange handlers
+
+**Agent**: DASHBOARD_FRONTEND_AGENT
+
+---
+
+#### **Fixed: Backtest Dashboard UI - Button Position, Date Range, and Chart Interaction** (2026-01-20)
+
+Fixed three UI issues in the backtest dashboard:
+
+1. **Toggle Buttons Repositioned**: Moved "% Return" and "$ Value" display mode buttons from page header to directly above the equity curve chart where they logically belong.
+
+2. **Date Range Extended to 2010**: Date input min/max bounds now use summary dates (full backtest range: 2010-01-01 to present) instead of timeseries dates (which were limited to filtered data range).
+
+3. **Prevented Page Refresh on Chart Interaction**: Separated "view dates" (visual chart zoom, updates date inputs but no refetch) from "filter dates" (API query parameters). Chart zoom/pan no longer triggers API refetch or page scroll.
+
+**Technical Changes**:
+- Added `filterStartDate`/`filterEndDate` for API queries (only updates on explicit date input changes)
+- Added `viewStartDate`/`viewEndDate` for chart visual state (updates on chart zoom, no API call)
+- Added `isChartInteractionRef` flag to prevent feedback loops
+- Changed `dateBounds` to use `summary.start_date`/`summary.end_date` for full date range
+
+**Files Modified**:
+- `dashboard/src/pages/v2/BacktestV2.tsx`: State separation, button repositioning, date bounds fix
+
+**Agent**: DASHBOARD_FRONTEND_AGENT
+
+---
+
+#### **Fixed: Backtest Dashboard UI Issues** (2026-01-20)
+
+Fixed multiple issues in the backtest dashboard UI:
+
+1. **Equity Curve Chart Blank**: Fixed chart recreation race condition caused by `handleVisibleRangeChange` in useEffect dependency array. Used ref wrapper pattern to decouple callback changes from chart lifecycle.
+
+2. **Alpha vs QQQ Incorrect (7.14% → 14.78%)**: Changed alpha calculation from total return difference to CAGR difference (Portfolio CAGR - Baseline CAGR).
+
+3. **Baseline CAGR Showing 0.00%**: Fixed period metrics to correctly calculate and display baseline CAGR for selected date range.
+
+4. **Baseline Ann. Missing in Regime Table**: Regime breakdown now displays baseline annualized returns per regime.
+
+**Files Modified**:
+- `jutsu_engine/api/routes/backtest.py`: CAGR-based alpha calculation, added `baseline_cagr` to summary
+- `dashboard/src/pages/v2/BacktestV2.tsx`: Chart init fix using ref wrapper, footer null check
+
+**Agent**: DASHBOARD_FRONTEND_AGENT, DASHBOARD_BACKEND_AGENT
+
+---
+
+#### **Fixed: Backtest Dashboard CSV Parsing Error** (2026-01-19)
+
+Fixed "Internal server error" when accessing backtest dashboard API endpoints.
+
+**Root Cause**: The `_parse_dashboard_csv()` function used `f.tell()` and `f.seek()` after iterating through a file with a `for` loop, which Python disables.
+
+**Fix**: Refactored to read all lines into memory first, then process using `io.StringIO` for CSV parsing.
+
+**Files Modified**:
+- `jutsu_engine/api/routes/backtest.py`: Fixed `_parse_dashboard_csv()` function, added `import io`
+
+---
+
+#### **Feature: Backtest Dashboard UI - Full Implementation** (2026-01-19)
+
+**Implemented complete Backtest Results page in the dashboard UI**
+
+This feature adds a new "Backtest" tab to the dashboard that displays golden backtest results with interactive visualizations. The page is accessible to all authenticated users, with admin-only access to strategy configuration.
+
+**Backend API** (`jutsu_engine/api/routes/backtest.py`):
+- `GET /api/backtest/data`: Returns summary + timeseries data with date filtering
+- `GET /api/backtest/config`: Returns strategy config.yaml (admin only)
+- `GET /api/backtest/regime-breakdown`: Returns regime performance for date range
+
+**Frontend Components** (`dashboard/src/pages/v2/BacktestV2.tsx`):
+- Header with strategy name and display mode toggle ($ Value / % Return)
+- All-Time Metrics row: Initial Capital, Total Return, CAGR, Sharpe, Max DD, Alpha
+- Date Range Selector with bidirectional chart sync
+- Period Metrics row (when date range selected)
+- Equity Curve chart using lightweight-charts with zoom/pan
+- Regime Performance table (desktop) and cards (mobile)
+- Collapsible Strategy Config pane (admin only)
+
+**Key Features**:
+1. **Bidirectional Sync**: Chart zoom/pan updates date inputs; date inputs zoom chart
+2. **Display Modes**: Toggle between absolute $ values and % returns
+3. **Responsive Design**: Mobile cards for regime table, added to MoreV2 menu
+4. **Admin Config Pane**: Collapsible pane showing strategy parameters
+
+**Files Created**:
+- `jutsu_engine/api/routes/backtest.py`: Backend API routes
+- `dashboard/src/pages/v2/BacktestV2.tsx`: Main page component
+
+**Files Modified**:
+- `jutsu_engine/api/schemas.py`: Added 7 backtest Pydantic schemas
+- `jutsu_engine/api/routes/__init__.py`: Export backtest_router
+- `jutsu_engine/api/main.py`: Register backtest router
+- `dashboard/src/api/client.ts`: Added backtest API client + types
+- `dashboard/src/pages/v2/index.ts`: Export BacktestV2
+- `dashboard/src/App.tsx`: Added /backtest route
+- `dashboard/src/components/navigation/CollapsibleSidebar.tsx`: Added Backtest nav item
+- `dashboard/src/pages/v2/MoreV2.tsx`: Added Backtest to mobile menu
+- `docs/backtest_dashboard_ui_spec.md`: Marked all phases complete
+
+**Agent**: DASHBOARD_ORCHESTRATOR | **Layer**: Infrastructure/Dashboard
+
+---
+
 #### **Feature: Backtest Dashboard CSV Export** (2026-01-19)
 
 **Added consolidated CSV export for backtest dashboard UI consumption**

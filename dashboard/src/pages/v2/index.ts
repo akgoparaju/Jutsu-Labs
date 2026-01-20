@@ -1,7 +1,7 @@
 /**
  * V2 Pages - Barrel Export
  *
- * @version 1.0.0
+ * @version 1.1.0
  * @part Responsive UI - Phase 2
  */
 
@@ -12,3 +12,4 @@ export { default as TradesV2 } from './TradesV2'
 export { default as ConfigV2 } from './ConfigV2'
 export { default as SettingsV2 } from './SettingsV2'
 export { default as MoreV2 } from './MoreV2'
+export { default as BacktestV2 } from './BacktestV2'

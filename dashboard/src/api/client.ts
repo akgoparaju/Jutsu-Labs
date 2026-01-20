@@ -413,6 +413,82 @@ export interface ValidateInvitationResponse {
   expires_at: string
 }
 
+// Backtest Types
+export interface BacktestSummary {
+  strategy_name?: string
+  start_date?: string
+  end_date?: string
+  initial_capital?: number
+  total_return?: number
+  annualized_return?: number
+  sharpe_ratio?: number
+  max_drawdown?: number
+  alpha?: number
+  baseline_ticker?: string
+  baseline_total_return?: number
+}
+
+export interface BacktestDataPoint {
+  date: string
+  portfolio?: number
+  baseline?: number
+  buyhold?: number
+  regime?: string
+  trend?: string
+  vol?: string
+}
+
+export interface BacktestPeriodMetrics {
+  start_date?: string
+  end_date?: string
+  days?: number
+  period_return?: number
+  annualized_return?: number
+  baseline_return?: number
+  baseline_annualized?: number
+  alpha?: number
+}
+
+export interface BacktestRegimePerformance {
+  cell?: number
+  regime: string
+  trend?: string
+  vol?: string
+  total_return: number
+  annualized_return?: number
+  baseline_annualized?: number
+  days: number
+  pct_of_time: number
+}
+
+export interface BacktestDataResponse {
+  summary: BacktestSummary
+  timeseries: BacktestDataPoint[]
+  period_metrics?: BacktestPeriodMetrics
+  total_data_points: number
+  filtered_data_points: number
+}
+
+export interface BacktestRegimeResponse {
+  regimes: BacktestRegimePerformance[]
+  start_date?: string
+  end_date?: string
+}
+
+export interface BacktestConfigResponse {
+  config: Record<string, unknown>
+  file_path: string
+}
+
+// Backtest API
+export const backtestApi = {
+  getData: (params?: { start_date?: string; end_date?: string }) =>
+    api.get<BacktestDataResponse>('/backtest/data', { params }),
+  getConfig: () => api.get<BacktestConfigResponse>('/backtest/config'),
+  getRegimeBreakdown: (params?: { start_date?: string; end_date?: string }) =>
+    api.get<BacktestRegimeResponse>('/backtest/regime-breakdown', { params }),
+}
+
 // User Management API
 export const usersApi = {
   // Admin-only endpoints (under /users)

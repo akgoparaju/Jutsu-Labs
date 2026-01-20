@@ -26,6 +26,7 @@ import {
   ConfigV2,
   SettingsV2,
   MoreV2,
+  BacktestV2,
 } from './pages/v2'
 
 function App() {
@@ -44,6 +45,7 @@ function App() {
             <Route path="decision-tree" element={<DecisionTreeV2 />} />
             <Route path="trades" element={<TradesV2 />} />
             <Route path="performance" element={<PerformanceV2 />} />
+            <Route path="backtest" element={<BacktestV2 />} />
             <Route path="config" element={
               <RequirePermission permission="config:write" redirectTo="/">
                 <ConfigV2 />

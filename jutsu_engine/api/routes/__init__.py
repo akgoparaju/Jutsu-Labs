@@ -14,6 +14,7 @@ Contains all FastAPI route modules:
 - indicators: Current indicator values
 - users: User management (admin-only)
 - invitations: Invitation acceptance (public)
+- backtest: Backtest results display
 """
 
 from jutsu_engine.api.routes.auth import router as auth_router
@@ -28,6 +29,7 @@ from jutsu_engine.api.routes.control import router as control_router
 from jutsu_engine.api.routes.indicators import router as indicators_router
 from jutsu_engine.api.routes.users import router as users_router
 from jutsu_engine.api.routes.invitations import router as invitations_router
+from jutsu_engine.api.routes.backtest import router as backtest_router
 
 __all__ = [
     'auth_router',
@@ -42,4 +44,5 @@ __all__ = [
     'indicators_router',
     'users_router',
     'invitations_router',
+    'backtest_router',
 ]

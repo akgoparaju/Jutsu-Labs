@@ -9,7 +9,7 @@
  */
 
 import { NavLink } from 'react-router-dom'
-import { Settings, Shield } from 'lucide-react'
+import { Settings, Shield, BarChart3 } from 'lucide-react'
 import { ResponsiveCard, ResponsiveText } from '../../components/ui'
 import { useAuth } from '../../contexts/AuthContext'
 
@@ -22,6 +22,12 @@ interface MenuItem {
 }
 
 const menuItems: MenuItem[] = [
+  {
+    path: '/backtest',
+    icon: BarChart3,
+    label: 'Backtest Results',
+    description: 'View golden backtest performance and metrics',
+  },
   {
     path: '/config',
     icon: Settings,

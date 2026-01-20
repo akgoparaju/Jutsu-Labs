@@ -1,0 +1,7 @@
+Regime,Trend,Vol,Days,QQQ_Total_Return,QQQ_Daily_Avg,QQQ_Annualized,Strategy_Total_Return,Strategy_Daily_Avg,Strategy_Annualized
+Cell_1,BullStrong,Low,1444,4.2937,0.002973,0.7493,10.7855,0.007469,1.8822
+Cell_2,BullStrong,High,70,0.0487,0.000695,0.1753,0.0017,2.5e-05,0.0063
+Cell_3,Sideways,Low,1987,3.8902,0.001958,0.4934,3.256,0.001639,0.4129
+Cell_4,Sideways,High,547,-0.1243,-0.000227,-0.0573,0.5056,0.000924,0.2329
+Cell_5,BearStrong,Low,46,-0.0527,-0.001145,-0.2886,0.0635,0.001381,0.3481
+Cell_6,BearStrong,High,132,-0.0195,-0.000148,-0.0372,0.1023,0.000775,0.1953
