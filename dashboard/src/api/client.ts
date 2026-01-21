@@ -266,13 +266,13 @@ export const tradesApi = {
 }
 
 export const performanceApi = {
-  getPerformance: (params?: { mode?: string; days?: number; start_date?: string }) =>
+  getPerformance: (params?: { mode?: string; days?: number; start_date?: string; strategy_id?: string }) =>
     api.get<PerformanceResponse>('/performance', { params }),
-  getEquityCurve: (params?: { mode?: string; days?: number; start_date?: string }) =>
+  getEquityCurve: (params?: { mode?: string; days?: number; start_date?: string; strategy_id?: string }) =>
     api.get('/performance/equity-curve', { params }),
-  getDrawdown: (params?: { mode?: string }) =>
+  getDrawdown: (params?: { mode?: string; strategy_id?: string }) =>
     api.get('/performance/drawdown', { params }),
-  getRegimeBreakdown: (params?: { mode?: string; days?: number; start_date?: string }) =>
+  getRegimeBreakdown: (params?: { mode?: string; days?: number; start_date?: string; strategy_id?: string }) =>
     api.get('/performance/regime-breakdown', { params }),
 }
 
@@ -483,11 +483,76 @@ export interface BacktestConfigResponse {
 
 // Backtest API
 export const backtestApi = {
-  getData: (params?: { start_date?: string; end_date?: string }) =>
+  getStrategies: () => api.get<BacktestStrategiesResponse>('/backtest/strategies'),
+  getData: (params?: { start_date?: string; end_date?: string; strategy_id?: string }) =>
     api.get<BacktestDataResponse>('/backtest/data', { params }),
-  getConfig: () => api.get<BacktestConfigResponse>('/backtest/config'),
-  getRegimeBreakdown: (params?: { start_date?: string; end_date?: string }) =>
+  getConfig: (params?: { strategy_id?: string }) =>
+    api.get<BacktestConfigResponse>('/backtest/config', { params }),
+  getRegimeBreakdown: (params?: { start_date?: string; end_date?: string; strategy_id?: string }) =>
     api.get<BacktestRegimeResponse>('/backtest/regime-breakdown', { params }),
+}
+
+// Strategy Types
+export interface StrategyInfo {
+  id: string
+  display_name: string
+  strategy_class: string
+  is_primary: boolean
+  is_active: boolean
+  paper_trading: boolean
+  description?: string
+  config_file?: string
+}
+
+export interface StrategyStatus {
+  display_name: string
+  is_primary: boolean
+  paper_trading: boolean
+  last_run?: string
+  vol_state?: number | string
+  trend_state?: string
+  account_equity?: number
+  position_count?: number
+}
+
+export interface StrategiesListResponse {
+  strategies: StrategyInfo[]
+  primary_id?: string
+  execution_order: string[]
+  settings: {
+    isolate_failures: boolean
+    execution_timeout: number
+    shared_data_fetch: boolean
+  }
+}
+
+export interface StrategiesStatusResponse {
+  strategies: Record<string, StrategyStatus>
+  primary_id?: string
+}
+
+export interface BacktestStrategyInfo {
+  strategy_id: string
+  strategy_name: string
+  file_path: string
+  last_modified: number
+}
+
+export interface BacktestStrategiesResponse {
+  strategies: BacktestStrategyInfo[]
+  count: number
+}
+
+// Strategies API
+export const strategiesApi = {
+  getStrategies: (params?: { active_only?: boolean }) =>
+    api.get<StrategiesListResponse>('/strategies', { params }),
+  getStatus: () => api.get<StrategiesStatusResponse>('/strategies/status'),
+  getStrategy: (strategyId: string) =>
+    api.get<StrategyInfo>(`/strategies/${strategyId}`),
+  getStrategyState: (strategyId: string) =>
+    api.get(`/strategies/${strategyId}/state`),
+  getPrimaryState: () => api.get('/strategies/primary/state'),
 }
 
 // User Management API

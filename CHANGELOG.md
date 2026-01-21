@@ -1,3 +1,38 @@
+#### **Feature: Multi-Strategy Engine with UI Support** (2026-01-21)
+
+Implemented comprehensive multi-strategy trading engine allowing parallel strategy execution, comparison, and switching through the dashboard UI.
+
+**Architecture**:
+- **Strategy Registry Pattern**: Central registry (`jutsu_engine/strategies/registry.py`) for strategy definitions
+- **Database Schema**: Added `strategy_id` column to `performance_snapshots` and `live_trades` tables
+- **Frontend Context**: Global `StrategyContext` for strategy state management across all pages
+
+**Backend Changes**:
+- New API endpoints: `GET /api/strategies`, `GET /api/strategies/{id}`
+- Strategy filtering on performance and trades endpoints via `?strategy_id=` parameter
+- Database migration: `20260120_0001_add_strategy_id_columns.py`
+
+**Frontend Changes**:
+- `StrategyContext.tsx`: React Context for global strategy state with localStorage persistence
+- `StrategySelector.tsx`: Reusable dropdown component with optional comparison mode
+- Integration on Dashboard, Performance, and Trade History pages
+- TanStack Query keys include `strategy_id` for automatic refetch on strategy change
+
+**Default Strategies**:
+- `v3_5b`: Hierarchical Adaptive v3.5b (current production)
+- `v3_5d`: Hierarchical Adaptive v3.5d with Exit Confirmation
+
+**Bug Fix**:
+- Fixed `DatabaseDataHandler` interface mismatch in `data_refresh.py` that prevented API startup
+- Created `_get_historical_data()` method using direct SQLAlchemy queries
+
+**Files Modified**:
+- Backend: `registry.py`, `strategies.py`, `performance.py`, `trades.py`, `data_refresh.py`
+- Frontend: `StrategyContext.tsx`, `StrategySelector.tsx`, `DashboardV2.tsx`, `PerformanceV2.tsx`, `TradesV2.tsx`, `client.ts`
+- Database: `20260120_0001_add_strategy_id_columns.py`
+
+---
+
 #### **Fix: Scheduler Self-Healing Architecture** (2026-01-21)
 
 Implemented permanent fix for scheduler not starting when database is temporarily unavailable.

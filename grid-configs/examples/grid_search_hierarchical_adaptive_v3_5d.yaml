@@ -68,7 +68,7 @@ symbol_sets:
 # Fixed settings applied to ALL backtests
 base_config:
   # Date range - Full history (2010-2025)
-  start_date: "2025-12-04"
+  start_date: "2010-01-01"
   end_date: "2026-01-20"
 
   # Market data
@@ -95,7 +95,7 @@ parameters:
   # Enable/disable toggle (2 values)
   # false = backward compatible with v3.5b (immediate exits)
   # true = enable N-day confirmation lag
-  cell1_exit_confirmation_enabled: [true, false]  # 2 values - OPTIMIZE
+  cell1_exit_confirmation_enabled: [true]  # 2 values - OPTIMIZE
 
   # Confirmation days (5 values)
   # Number of consecutive days T_norm must stay below threshold before exit

@@ -21,6 +21,8 @@ import { createChart, IChartApi, ISeriesApi, LineData, TickMarkType, Time } from
 import { ResponsiveCard, ResponsiveText, ResponsiveGrid, MetricCard } from '../../components/ui'
 import { useIsMobileOrSmaller, useIsTablet } from '../../hooks/useMediaQuery'
 import { useAuth } from '../../contexts/AuthContext'
+import { useStrategy } from '../../contexts/StrategyContext'
+import StrategySelector from '../../components/StrategySelector'
 
 // Helper functions
 function formatPercent(value: number | null | undefined, decimals = 2): string {
@@ -34,6 +36,7 @@ function BacktestV2() {
   const isTablet = useIsTablet()
   const { user } = useAuth()
   const isAdmin = user?.role === 'admin'
+  const { selectedStrategy } = useStrategy()
 
   // State for date range filtering (actual API filter - only changes on explicit user input)
   const [filterStartDate, setFilterStartDate] = useState<string>('')
@@ -68,26 +71,28 @@ function BacktestV2() {
 
   // Fetch backtest data - only use filter dates (not view dates from chart zoom)
   const { data: backtestData, isLoading: isLoadingData } = useQuery({
-    queryKey: ['backtest-data', filterStartDate, filterEndDate],
+    queryKey: ['backtest-data', filterStartDate, filterEndDate, selectedStrategy],
     queryFn: () => backtestApi.getData({
       start_date: filterStartDate || undefined,
       end_date: filterEndDate || undefined,
+      strategy_id: selectedStrategy,
     }).then(res => res.data),
   })
 
   // Fetch regime breakdown - only use filter dates
   const { data: regimeData } = useQuery({
-    queryKey: ['backtest-regime', filterStartDate, filterEndDate],
+    queryKey: ['backtest-regime', filterStartDate, filterEndDate, selectedStrategy],
     queryFn: () => backtestApi.getRegimeBreakdown({
       start_date: filterStartDate || undefined,
       end_date: filterEndDate || undefined,
+      strategy_id: selectedStrategy,
     }).then(res => res.data),
   })
 
   // Fetch config (admin only)
   const { data: configData } = useQuery({
-    queryKey: ['backtest-config'],
-    queryFn: () => backtestApi.getConfig().then(res => res.data),
+    queryKey: ['backtest-config', selectedStrategy],
+    queryFn: () => backtestApi.getConfig({ strategy_id: selectedStrategy }).then(res => res.data),
     enabled: isAdmin,
   })
 
@@ -442,18 +447,23 @@ function BacktestV2() {
   return (
     <div className="space-y-4 sm:space-y-6">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
-          <ResponsiveText variant="h1" as="h2" className="text-white flex items-center gap-2">
-            <TrendingUp className="w-6 h-6 text-blue-400" />
-            Backtest Results
-          </ResponsiveText>
-          {summary?.strategy_name && (
-            <ResponsiveText variant="small" className="text-gray-400 mt-1">
-              Strategy: {summary.strategy_name}
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <ResponsiveText variant="h1" as="h2" className="text-white flex items-center gap-2">
+              <TrendingUp className="w-6 h-6 text-blue-400" />
+              Backtest Results
             </ResponsiveText>
-          )}
+            {summary?.strategy_name && (
+              <ResponsiveText variant="small" className="text-gray-400 mt-1">
+                Strategy: {summary.strategy_name}
+              </ResponsiveText>
+            )}
+          </div>
         </div>
+
+        {/* Strategy Selector */}
+        <StrategySelector showCompare={false} compact={isMobile} />
       </div>
 
       {/* All-Time Metrics (Row 1) */}

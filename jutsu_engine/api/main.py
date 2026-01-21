@@ -51,6 +51,7 @@ from jutsu_engine.api.routes import (
     users_router,
     invitations_router,
     backtest_router,
+    strategies_router,
 )
 
 # ==============================================================================
@@ -473,6 +474,7 @@ def create_app(
     app.include_router(users_router)  # User management (admin-only)
     app.include_router(invitations_router)  # Invitation acceptance (public)
     app.include_router(backtest_router)  # Backtest results display
+    app.include_router(strategies_router)  # Live trading strategies management
 
     # WebSocket endpoint for live updates
     @app.websocket("/ws")

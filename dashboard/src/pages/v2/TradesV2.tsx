@@ -14,11 +14,14 @@ import { ExecuteTradeModal } from '../../components/ExecuteTradeModal'
 import { ResponsiveCard, ResponsiveText, ResponsiveGrid, MetricCard } from '../../components/ui'
 import { useIsMobileOrSmaller } from '../../hooks/useMediaQuery'
 import { useAuth } from '../../contexts/AuthContext'
+import { useStrategy } from '../../contexts/StrategyContext'
+import StrategySelector from '../../components/StrategySelector'
 
 function TradesV2() {
   const queryClient = useQueryClient()
   const isMobile = useIsMobileOrSmaller()
   const { hasPermission } = useAuth()
+  const { getStrategyDisplayName } = useStrategy()
   const [page, setPage] = useState(1)
   const [pageSize] = useState(20)
   const [filters, setFilters] = useState({
@@ -75,26 +78,31 @@ function TradesV2() {
   return (
     <div className="space-y-4 sm:space-y-6">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <ResponsiveText variant="h1" as="h2" className="text-white">
-          Trade History
-        </ResponsiveText>
-        <div className="flex gap-2 sm:gap-3">
-          {hasPermission('trades:execute') && (
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <ResponsiveText variant="h1" as="h2" className="text-white">
+            Trade History
+          </ResponsiveText>
+          <div className="flex gap-2 sm:gap-3">
+            {hasPermission('trades:execute') && (
+              <button
+                onClick={() => setShowTradeModal(true)}
+                className="flex-1 sm:flex-none px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors font-medium min-h-[44px]"
+              >
+                Execute Trade
+              </button>
+            )}
             <button
-              onClick={() => setShowTradeModal(true)}
-              className="flex-1 sm:flex-none px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors font-medium min-h-[44px]"
+              onClick={handleExport}
+              className="flex-1 sm:flex-none px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors min-h-[44px]"
             >
-              Execute Trade
+              Export CSV
             </button>
-          )}
-          <button
-            onClick={handleExport}
-            className="flex-1 sm:flex-none px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors min-h-[44px]"
-          >
-            Export CSV
-          </button>
+          </div>
         </div>
+
+        {/* Strategy Selector */}
+        <StrategySelector showCompare={false} compact={isMobile} />
       </div>
 
       {/* Execute Trade Modal */}

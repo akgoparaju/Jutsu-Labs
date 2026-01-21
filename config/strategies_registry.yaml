@@ -1,0 +1,94 @@
+# ==============================================================================
+# STRATEGY REGISTRY - Multi-Strategy Engine Configuration
+# ==============================================================================
+# Version: 1.0
+# Created: 2026-01-20
+# Purpose: Central registry of all active strategies for parallel execution
+#
+# This file defines:
+# - Which strategies are available for execution
+# - Which strategy is the primary (protected) strategy
+# - Execution order for strategy runs
+# - Configuration file paths for each strategy
+#
+# ==============================================================================
+
+version: "1.0"
+
+# ==============================================================================
+# STRATEGY DEFINITIONS
+# ==============================================================================
+# Each strategy has:
+#   - display_name: Human-readable name shown in dashboard
+#   - strategy_class: Python class name in jutsu_engine/strategies/
+#   - config_file: Path to strategy-specific configuration
+#   - is_primary: If true, failures in other strategies won't affect this one
+#   - is_active: If false, strategy won't be executed
+#   - paper_trading: If true, runs in paper trading mode
+#   - description: Brief description of strategy characteristics
+# ==============================================================================
+
+strategies:
+  v3_5b:
+    display_name: "Hierarchical Adaptive v3.5b"
+    strategy_class: "Hierarchical_Adaptive_v3_5b"
+    config_file: "config/strategies/v3_5b.yaml"
+    is_primary: true
+    is_active: true
+    paper_trading: true
+    description: "Golden config with Treasury Overlay. Active paper trading since Dec 2025."
+
+  v3_5d:
+    display_name: "Hierarchical Adaptive v3.5d"
+    strategy_class: "Hierarchical_Adaptive_v3_5d"
+    config_file: "config/strategies/v3_5d.yaml"
+    is_primary: false
+    is_active: true
+    paper_trading: true
+    description: "Cell 1 Exit Confirmation feature. Prevents premature exits during brief pullbacks."
+
+# ==============================================================================
+# EXECUTION ORDER
+# ==============================================================================
+# Strategies are executed in this order. Primary strategy should be first
+# to ensure it completes even if secondary strategies fail.
+# ==============================================================================
+
+execution_order:
+  - v3_5b  # Primary - always runs first
+  - v3_5d  # Secondary - runs after primary completes
+
+# ==============================================================================
+# GLOBAL SETTINGS
+# ==============================================================================
+
+settings:
+  # If true, secondary strategy failures don't affect primary
+  isolate_failures: true
+
+  # Maximum time (seconds) to wait for a single strategy execution
+  execution_timeout: 300
+
+  # If true, log detailed execution timing for each strategy
+  detailed_timing_logs: true
+
+  # Shared data fetching (all strategies use same market data)
+  shared_data_fetch: true
+
+# ==============================================================================
+# NOTES
+# ==============================================================================
+# Adding a new strategy:
+# 1. Create strategy class in jutsu_engine/strategies/
+# 2. Create config file in config/strategies/
+# 3. Create state directory in state/strategies/
+# 4. Add entry to this registry
+# 5. Add to execution_order
+# 6. Restart scheduler service
+#
+# Promoting a strategy to primary:
+# 1. Set is_primary: false on current primary
+# 2. Set is_primary: true on new primary
+# 3. Update execution_order to put new primary first
+# 4. Restart scheduler service
+# ==============================================================================

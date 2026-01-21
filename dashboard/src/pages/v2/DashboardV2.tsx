@@ -21,7 +21,10 @@ import { SchwabTokenBanner } from '../../components/SchwabTokenBanner'
 import { PositionsDisplay } from '../../components/PositionsDisplay'
 import { performanceApi } from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
+import { useStrategy } from '../../contexts/StrategyContext'
+import StrategySelector from '../../components/StrategySelector'
 import { ResponsiveCard, ResponsiveGrid, ResponsiveText, MetricCard } from '../../components/ui'
+import { useIsMobileOrSmaller } from '../../hooks/useMediaQuery'
 import clsx from 'clsx'
 
 // Time range types for dashboard
@@ -108,6 +111,8 @@ function DashboardV2() {
   const switchMode = useSwitchMode()
   const queryClient = useQueryClient()
   const { hasPermission } = useAuth()
+  const { selectedStrategy } = useStrategy()
+  const isMobile = useIsMobileOrSmaller()
 
   // Time range state for portfolio metrics
   const [timeRange, setTimeRange] = useState<DashboardTimeRange>('90d')
@@ -117,10 +122,11 @@ function DashboardV2() {
 
   // Fetch performance data for baseline values
   const { data: performanceData } = useQuery({
-    queryKey: ['performance', '', queryParams.days, queryParams.start_date],
+    queryKey: ['performance', '', queryParams.days, queryParams.start_date, selectedStrategy],
     queryFn: () => performanceApi.getPerformance({
       days: queryParams.days,
-      start_date: queryParams.start_date
+      start_date: queryParams.start_date,
+      strategy_id: selectedStrategy,
     }).then(res => res.data),
     refetchInterval: 30000,
   })
@@ -219,18 +225,23 @@ function DashboardV2() {
   return (
     <div className="space-y-4 sm:space-y-6">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <ResponsiveText variant="h1" as="h2">
-          Jutsu Trader
-        </ResponsiveText>
-        {hasPermission('trades:execute') && (
-          <button
-            onClick={() => setShowTradeModal(true)}
-            className="px-4 py-2.5 sm:py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors font-medium text-sm sm:text-base touch-target"
-          >
-            Execute Trade
-          </button>
-        )}
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <ResponsiveText variant="h1" as="h2">
+            Jutsu Trader
+          </ResponsiveText>
+          {hasPermission('trades:execute') && (
+            <button
+              onClick={() => setShowTradeModal(true)}
+              className="px-4 py-2.5 sm:py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors font-medium text-sm sm:text-base touch-target"
+            >
+              Execute Trade
+            </button>
+          )}
+        </div>
+
+        {/* Strategy Selector */}
+        <StrategySelector showCompare={false} compact={isMobile} />
       </div>
 
       {/* Schwab Token Status Banner - Admin Only */}

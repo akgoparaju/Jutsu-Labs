@@ -41,7 +41,7 @@ router = APIRouter(prefix="/api/performance", tags=["performance"])
         500: {"model": ErrorResponse, "description": "Internal server error"}
     },
     summary="Get performance metrics",
-    description="Returns current performance metrics and historical snapshots."
+    description="Returns current performance metrics and historical snapshots. Supports filtering by strategy_id for multi-strategy dashboards."
 )
 async def get_performance(
     db: Session = Depends(get_db),
@@ -49,6 +49,7 @@ async def get_performance(
     mode: Optional[str] = Query(None, description="Filter by mode"),
     days: int = Query(90, ge=0, description="Days of history (0 for all data)"),
     start_date: Optional[str] = Query(None, description="Start date (ISO format) for custom range"),
+    strategy_id: Optional[str] = Query(None, description="Filter by strategy ID (default: primary or 'v3_5b')"),
     _auth: bool = Depends(verify_credentials),
 ) -> PerformanceResponse:
     """
@@ -62,10 +63,23 @@ async def get_performance(
     try:
         effective_mode = mode or engine_state.mode
 
+        # Determine effective strategy_id (default to 'v3_5b' for backward compatibility)
+        effective_strategy_id = strategy_id or 'v3_5b'
+
+        # Build base filter for strategy
+        def add_strategy_filter(query, model):
+            """Add strategy_id filter if the column exists and has data."""
+            if hasattr(model, 'strategy_id'):
+                return query.filter(model.strategy_id == effective_strategy_id)
+            return query
+
         # Get latest snapshot for current metrics
-        latest = db.query(PerformanceSnapshot).filter(
+        latest_query = db.query(PerformanceSnapshot).filter(
             PerformanceSnapshot.mode == effective_mode
-        ).order_by(desc(PerformanceSnapshot.timestamp)).first()
+        )
+        if hasattr(PerformanceSnapshot, 'strategy_id'):
+            latest_query = latest_query.filter(PerformanceSnapshot.strategy_id == effective_strategy_id)
+        latest = latest_query.order_by(desc(PerformanceSnapshot.timestamp)).first()
 
         # Calculate date range
         end_date = datetime.now(timezone.utc)
@@ -88,7 +102,10 @@ async def get_performance(
         history_filters = [PerformanceSnapshot.mode == effective_mode]
         if filter_start_date:
             history_filters.append(PerformanceSnapshot.timestamp >= filter_start_date)
-        
+        # Add strategy_id filter if column exists
+        if hasattr(PerformanceSnapshot, 'strategy_id'):
+            history_filters.append(PerformanceSnapshot.strategy_id == effective_strategy_id)
+
         history_query = db.query(PerformanceSnapshot).filter(
             and_(*history_filters)
         ).order_by(PerformanceSnapshot.timestamp)
@@ -96,10 +113,14 @@ async def get_performance(
         history = history_query.all()
 
         # Calculate trade statistics
+        trade_filters = [LiveTrade.mode == effective_mode]
+        if hasattr(LiveTrade, 'strategy_id'):
+            trade_filters.append(LiveTrade.strategy_id == effective_strategy_id)
+
         trade_stats = db.query(
             func.count(LiveTrade.id).label('total'),
         ).filter(
-            LiveTrade.mode == effective_mode
+            and_(*trade_filters)
         ).first()
 
         total_trades = trade_stats.total if trade_stats else 0
@@ -114,8 +135,11 @@ async def get_performance(
         total_round_trips = 0
 
         # Get all trades ordered by timestamp for P&L matching
+        all_trades_filters = [LiveTrade.mode == effective_mode]
+        if hasattr(LiveTrade, 'strategy_id'):
+            all_trades_filters.append(LiveTrade.strategy_id == effective_strategy_id)
         all_trades = db.query(LiveTrade).filter(
-            LiveTrade.mode == effective_mode
+            and_(*all_trades_filters)
         ).order_by(LiveTrade.timestamp).all()
 
         # Track open positions by symbol (FIFO queue of BUY trades)
@@ -161,19 +185,25 @@ async def get_performance(
             win_rate_value = winning_trades / total_round_trips
 
         # Get high water mark for accurate drawdown
+        hwm_filters = [PerformanceSnapshot.mode == effective_mode]
+        if hasattr(PerformanceSnapshot, 'strategy_id'):
+            hwm_filters.append(PerformanceSnapshot.strategy_id == effective_strategy_id)
         hwm_result = db.query(
             func.max(PerformanceSnapshot.total_equity)
         ).filter(
-            PerformanceSnapshot.mode == effective_mode
+            and_(*hwm_filters)
         ).first()
 
         high_water_mark = float(hwm_result[0]) if hwm_result and hwm_result[0] else None
 
         # Get max drawdown from all snapshots (historical maximum)
+        max_dd_filters = [PerformanceSnapshot.mode == effective_mode]
+        if hasattr(PerformanceSnapshot, 'strategy_id'):
+            max_dd_filters.append(PerformanceSnapshot.strategy_id == effective_strategy_id)
         max_dd_result = db.query(
             func.max(PerformanceSnapshot.drawdown)
         ).filter(
-            PerformanceSnapshot.mode == effective_mode
+            and_(*max_dd_filters)
         ).first()
 
         max_drawdown = float(max_dd_result[0]) if max_dd_result and max_dd_result[0] else None
@@ -207,9 +237,14 @@ async def get_performance(
                     sharpe_ratio = (mean_return / std_dev) * math.sqrt(252)
 
         # Query current positions for holdings breakdown
-        positions = db.query(Position).filter(
+        position_filters = [
             Position.mode == effective_mode,
             Position.quantity != 0  # Only show non-zero positions
+        ]
+        if hasattr(Position, 'strategy_id'):
+            position_filters.append(Position.strategy_id == effective_strategy_id)
+        positions = db.query(Position).filter(
+            and_(*position_filters)
         ).all()
 
         # Calculate holdings breakdown
@@ -257,14 +292,19 @@ async def get_performance(
         # Query scheduler snapshots for authoritative regime data
         # Architecture Decision (2026-01-14): Regime is ONLY written by scheduler
         # Refresh snapshots have NULL regime fields (correct behavior)
+        scheduler_filters = [
+            PerformanceSnapshot.mode == effective_mode,
+            PerformanceSnapshot.snapshot_source == 'scheduler',
+        ]
+        if hasattr(PerformanceSnapshot, 'strategy_id'):
+            scheduler_filters.append(PerformanceSnapshot.strategy_id == effective_strategy_id)
         scheduler_snapshots = db.query(
             PerformanceSnapshot.timestamp,
             PerformanceSnapshot.strategy_cell,
             PerformanceSnapshot.trend_state,
             PerformanceSnapshot.vol_state,
         ).filter(
-            PerformanceSnapshot.mode == effective_mode,
-            PerformanceSnapshot.snapshot_source == 'scheduler',
+            and_(*scheduler_filters)
         ).order_by(PerformanceSnapshot.timestamp).all()
 
         # Build regime lookup by date (latest scheduler snapshot per day)
@@ -340,6 +380,7 @@ async def get_equity_curve(
     mode: Optional[str] = Query(None, description="Filter by mode"),
     days: int = Query(90, ge=0, description="Days of history (0 for all data)"),
     start_date: Optional[str] = Query(None, description="Start date (ISO format) for custom range"),
+    strategy_id: Optional[str] = Query(None, description="Filter by strategy ID (default: primary or 'v3_5b')"),
     _auth: bool = Depends(verify_credentials),
 ) -> dict:
     """
@@ -349,10 +390,11 @@ async def get_equity_curve(
     """
     try:
         effective_mode = mode or engine_state.mode
+        effective_strategy_id = strategy_id or 'v3_5b'
 
         end_date = datetime.now(timezone.utc)
         filter_start_date = None
-        
+
         if start_date:
             # Custom start date provided (for YTD or custom range)
             try:
@@ -370,6 +412,8 @@ async def get_equity_curve(
         query_filters = [PerformanceSnapshot.mode == effective_mode]
         if filter_start_date:
             query_filters.append(PerformanceSnapshot.timestamp >= filter_start_date)
+        if hasattr(PerformanceSnapshot, 'strategy_id'):
+            query_filters.append(PerformanceSnapshot.strategy_id == effective_strategy_id)
 
         # Query all snapshots for P/L data (value, return, baseline)
         # Latest per day wins for financial data (refresh snapshots update P/L)
@@ -440,6 +484,7 @@ async def get_drawdown_analysis(
     db: Session = Depends(get_db),
     engine_state: EngineState = Depends(get_engine_state),
     mode: Optional[str] = Query(None, description="Filter by mode"),
+    strategy_id: Optional[str] = Query(None, description="Filter by strategy ID (default: primary or 'v3_5b')"),
     _auth: bool = Depends(verify_credentials),
 ) -> dict:
     """
@@ -452,14 +497,18 @@ async def get_drawdown_analysis(
     """
     try:
         effective_mode = mode or engine_state.mode
+        effective_strategy_id = strategy_id or 'v3_5b'
 
         # Get all snapshots ordered by time
+        dd_filters = [PerformanceSnapshot.mode == effective_mode]
+        if hasattr(PerformanceSnapshot, 'strategy_id'):
+            dd_filters.append(PerformanceSnapshot.strategy_id == effective_strategy_id)
         snapshots = db.query(
             PerformanceSnapshot.timestamp,
             PerformanceSnapshot.total_equity,
             PerformanceSnapshot.drawdown,
         ).filter(
-            PerformanceSnapshot.mode == effective_mode
+            and_(*dd_filters)
         ).order_by(PerformanceSnapshot.timestamp).all()
 
         if not snapshots:
@@ -532,6 +581,7 @@ async def get_regime_breakdown(
     mode: Optional[str] = Query(None, description="Filter by mode"),
     days: int = Query(0, ge=0, description="Days of history (0 for all data)"),
     start_date: Optional[str] = Query(None, description="Start date (ISO format) for custom range"),
+    strategy_id: Optional[str] = Query(None, description="Filter by strategy ID (default: primary or 'v3_5b')"),
     _auth: bool = Depends(verify_credentials),
 ) -> dict:
     """
@@ -541,8 +591,9 @@ async def get_regime_breakdown(
     Supports time range filtering via days or start_date parameters.
     """
     try:
-        logger.info(f"Regime breakdown request: mode={mode}, days={days}, start_date={start_date}")
+        logger.info(f"Regime breakdown request: mode={mode}, days={days}, start_date={start_date}, strategy_id={strategy_id}")
         effective_mode = mode or engine_state.mode
+        effective_strategy_id = strategy_id or 'v3_5b'
 
         # Calculate date range (same logic as get_performance)
         end_date = datetime.now(timezone.utc)
@@ -570,6 +621,8 @@ async def get_regime_breakdown(
         ]
         if filter_start_date:
             base_filters.append(PerformanceSnapshot.timestamp >= filter_start_date)
+        if hasattr(PerformanceSnapshot, 'strategy_id'):
+            base_filters.append(PerformanceSnapshot.strategy_id == effective_strategy_id)
 
         # Get return stats by cell with trend_state and vol_state
         # Use a subquery to get the most common trend/vol state per cell
@@ -599,6 +652,8 @@ async def get_regime_breakdown(
             ]
             if filter_start_date:
                 cell_filter.append(PerformanceSnapshot.timestamp >= filter_start_date)
+            if hasattr(PerformanceSnapshot, 'strategy_id'):
+                cell_filter.append(PerformanceSnapshot.strategy_id == effective_strategy_id)
 
             regime_sample = db.query(
                 PerformanceSnapshot.trend_state,
@@ -615,14 +670,17 @@ async def get_regime_breakdown(
         # Get trade stats by cell including win/loss calculation
         # A "winning" trade needs to be calculated from matched BUY/SELL pairs
         # For now, we'll calculate based on profitable SELL trades
+        trade_stat_filters = [
+            LiveTrade.mode == effective_mode,
+            LiveTrade.strategy_cell.isnot(None)
+        ]
+        if hasattr(LiveTrade, 'strategy_id'):
+            trade_stat_filters.append(LiveTrade.strategy_id == effective_strategy_id)
         trade_stats = db.query(
             LiveTrade.strategy_cell,
             func.count(LiveTrade.id).label('trades'),
         ).filter(
-            and_(
-                LiveTrade.mode == effective_mode,
-                LiveTrade.strategy_cell.isnot(None)
-            )
+            and_(*trade_stat_filters)
         ).group_by(
             LiveTrade.strategy_cell
         ).all()
@@ -638,6 +696,8 @@ async def get_regime_breakdown(
         ]
         if filter_start_date:
             win_filters.append(PerformanceSnapshot.timestamp >= filter_start_date)
+        if hasattr(PerformanceSnapshot, 'strategy_id'):
+            win_filters.append(PerformanceSnapshot.strategy_id == effective_strategy_id)
 
         # Count unique winning dates (not rows) for accurate win rate
         win_stats = db.query(

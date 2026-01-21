@@ -1,0 +1,127 @@
+# ==============================================================================
+# STRATEGY CONFIGURATION: Hierarchical Adaptive v3.5d
+# ==============================================================================
+# Version: 1.0
+# Created: 2026-01-20
+# Status: SECONDARY - Parallel paper trading comparison
+# Description: Cell 1 Exit Confirmation feature
+#
+# v3.5d extends v3.5b with the Cell 1 Exit Confirmation feature which
+# requires T_norm to stay below bull threshold for N consecutive days
+# before exiting Cell 1 (BullStrong + Low Vol). This reduces whipsaw
+# behavior during brief pullbacks.
+# ==============================================================================
+
+strategy_id: "v3_5d"
+version: "1.0"
+
+# ==============================================================================
+# STRATEGY CONFIGURATION
+# ==============================================================================
+strategy:
+  name: "Hierarchical_Adaptive_v3_5d"
+
+  parameters:
+    # ------------------------------------------------------------------
+    # KALMAN TREND PARAMETERS (6 parameters)
+    # ------------------------------------------------------------------
+    measurement_noise: 3000.0
+    process_noise_1: 0.01
+    process_noise_2: 0.01
+    osc_smoothness: 15
+    strength_smoothness: 15
+    T_max: 50.0
+
+    # ------------------------------------------------------------------
+    # STRUCTURAL TREND PARAMETERS (4 parameters)
+    # ------------------------------------------------------------------
+    sma_fast: 40
+    sma_slow: 140
+    t_norm_bull_thresh: 0.05
+    t_norm_bear_thresh: -0.3
+
+    # ------------------------------------------------------------------
+    # VOLATILITY Z-SCORE PARAMETERS (4 parameters)
+    # ------------------------------------------------------------------
+    realized_vol_window: 21
+    vol_baseline_window: 200
+    upper_thresh_z: 1.0
+    lower_thresh_z: 0.2
+
+    # ------------------------------------------------------------------
+    # VOL-CRUSH OVERRIDE (2 parameters)
+    # ------------------------------------------------------------------
+    vol_crush_threshold: -0.15
+    vol_crush_lookback: 5
+
+    # ------------------------------------------------------------------
+    # ALLOCATION PARAMETERS (1 parameter)
+    # ------------------------------------------------------------------
+    leverage_scalar: 1.0
+
+    # ------------------------------------------------------------------
+    # INSTRUMENT TOGGLES (2 parameters)
+    # ------------------------------------------------------------------
+    use_inverse_hedge: false
+    w_PSQ_max: 0.5
+
+    # ------------------------------------------------------------------
+    # TREASURY OVERLAY PARAMETERS (5 parameters)
+    # ------------------------------------------------------------------
+    allow_treasury: true
+    bond_sma_fast: 20
+    bond_sma_slow: 60
+    max_bond_weight: 0.4
+    treasury_trend_symbol: "TLT"
+
+    # ------------------------------------------------------------------
+    # REBALANCING CONTROL (1 parameter)
+    # ------------------------------------------------------------------
+    rebalance_threshold: 0.025
+
+    # ------------------------------------------------------------------
+    # EXECUTION TIMING (1 parameter)
+    # ------------------------------------------------------------------
+    execution_time: "15min_after_open"
+
+    # ------------------------------------------------------------------
+    # SYMBOL CONFIGURATION (6 parameters)
+    # ------------------------------------------------------------------
+    signal_symbol: "QQQ"
+    core_long_symbol: "QQQ"
+    leveraged_long_symbol: "TQQQ"
+    inverse_hedge_symbol: "PSQ"
+    bull_bond_symbol: "TMF"
+    bear_bond_symbol: "TMV"
+
+    # ------------------------------------------------------------------
+    # v3.5d SPECIFIC: CELL 1 EXIT CONFIRMATION (2 parameters)
+    # ------------------------------------------------------------------
+    # When enabled, requires T_norm to stay below bull threshold for
+    # N consecutive days before exiting Cell 1 to Cell 3 (Sideways).
+    # This reduces whipsaw behavior during brief pullbacks.
+    cell1_exit_confirmation_enabled: true
+    cell1_exit_confirmation_days: 2
+
+# ==============================================================================
+# EXECUTION SETTINGS
+# ==============================================================================
+execution:
+  rebalance_threshold_pct: 5.0
+  max_slippage_pct: 0.5
+  slippage_warning_pct: 0.3
+  slippage_abort_pct: 1.0
+
+# ==============================================================================
+# STATE MANAGEMENT
+# ==============================================================================
+state:
+  file_path: "state/strategies/v3_5d/state.json"
+  backup_enabled: true
+  backup_path: "state/strategies/v3_5d/backups/"
+
+# ==============================================================================
+# PORTFOLIO SETTINGS
+# ==============================================================================
+portfolio:
+  initial_capital: 10000

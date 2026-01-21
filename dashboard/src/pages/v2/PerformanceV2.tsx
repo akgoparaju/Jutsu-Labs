@@ -13,6 +13,8 @@ import { performanceApi } from '../../api/client'
 import { createChart, IChartApi, ISeriesApi, LineData, TickMarkType } from 'lightweight-charts'
 import { ResponsiveCard, ResponsiveText, ResponsiveGrid, MetricCard } from '../../components/ui'
 import { useIsMobileOrSmaller, useIsTablet } from '../../hooks/useMediaQuery'
+import { useStrategy } from '../../contexts/StrategyContext'
+import StrategySelector from '../../components/StrategySelector'
 
 // Time range options
 type TimeRange = '30d' | '90d' | 'ytd' | '1y' | 'all' | 'custom'
@@ -90,6 +92,7 @@ function calculateCalendarDays(history: Array<{ timestamp?: string }>): number {
 function PerformanceV2() {
   const isMobile = useIsMobileOrSmaller()
   const isTablet = useIsTablet()
+  const { selectedStrategy, getStrategyDisplayName } = useStrategy()
   const [mode, setMode] = useState('')
   const [timeRange, setTimeRange] = useState<TimeRange>('90d')
   const [showCustomModal, setShowCustomModal] = useState(false)
@@ -110,29 +113,32 @@ function PerformanceV2() {
   const [chartReady, setChartReady] = useState(false)
 
   const { data: performance, isLoading } = useQuery({
-    queryKey: ['performance', mode, timeRange, queryParams],
+    queryKey: ['performance', mode, timeRange, queryParams, selectedStrategy],
     queryFn: () => performanceApi.getPerformance({
       mode: mode || undefined,
       days: queryParams.days,
       start_date: queryParams.start_date,
+      strategy_id: selectedStrategy,
     }).then(res => res.data),
   })
 
   const { data: equityCurve } = useQuery({
-    queryKey: ['equityCurve', mode, timeRange, queryParams],
+    queryKey: ['equityCurve', mode, timeRange, queryParams, selectedStrategy],
     queryFn: () => performanceApi.getEquityCurve({
       mode: mode || undefined,
       days: queryParams.days,
       start_date: queryParams.start_date,
+      strategy_id: selectedStrategy,
     }).then(res => res.data),
   })
 
   const { data: regimeBreakdown } = useQuery({
-    queryKey: ['regimeBreakdown', mode, timeRange, queryParams],
+    queryKey: ['regimeBreakdown', mode, timeRange, queryParams, selectedStrategy],
     queryFn: () => performanceApi.getRegimeBreakdown({
       mode: mode || undefined,
       days: queryParams.days,
       start_date: queryParams.start_date,
+      strategy_id: selectedStrategy,
     }).then(res => res.data),
   })
 
@@ -367,41 +373,46 @@ function PerformanceV2() {
   return (
     <div className="space-y-4 sm:space-y-6">
       {/* Header & Controls */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <ResponsiveText variant="h1" as="h2" className="text-white">
-          Performance
-        </ResponsiveText>
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <ResponsiveText variant="h1" as="h2" className="text-white">
+            Performance
+          </ResponsiveText>
 
-        <div className="flex flex-col xs:flex-row gap-2 sm:gap-4">
-          <select
-            value={mode}
-            onChange={(e) => setMode(e.target.value)}
-            className="px-3 py-2 bg-slate-700 rounded-lg border border-slate-600 min-h-[44px]"
-          >
-            <option value="">All Modes</option>
-            <option value="offline_mock">Paper Trading</option>
-            <option value="online_live">Live Trading</option>
-          </select>
+          <div className="flex flex-col xs:flex-row gap-2 sm:gap-4">
+            <select
+              value={mode}
+              onChange={(e) => setMode(e.target.value)}
+              className="px-3 py-2 bg-slate-700 rounded-lg border border-slate-600 min-h-[44px]"
+            >
+              <option value="">All Modes</option>
+              <option value="offline_mock">Paper Trading</option>
+              <option value="online_live">Live Trading</option>
+            </select>
 
-          <select
-            value={timeRange}
-            onChange={(e) => {
-              const value = e.target.value as TimeRange
-              if (value === 'custom') {
-                setShowCustomModal(true)
-              }
-              setTimeRange(value)
-            }}
-            className="px-3 py-2 bg-slate-700 rounded-lg border border-slate-600 min-h-[44px]"
-          >
-            <option value="30d">Last 30 Days</option>
-            <option value="90d">Last 90 Days</option>
-            <option value="ytd">Year to Date</option>
-            <option value="1y">Last Year</option>
-            <option value="all">All Time</option>
-            <option value="custom">Custom Range...</option>
-          </select>
+            <select
+              value={timeRange}
+              onChange={(e) => {
+                const value = e.target.value as TimeRange
+                if (value === 'custom') {
+                  setShowCustomModal(true)
+                }
+                setTimeRange(value)
+              }}
+              className="px-3 py-2 bg-slate-700 rounded-lg border border-slate-600 min-h-[44px]"
+            >
+              <option value="30d">Last 30 Days</option>
+              <option value="90d">Last 90 Days</option>
+              <option value="ytd">Year to Date</option>
+              <option value="1y">Last Year</option>
+              <option value="all">All Time</option>
+              <option value="custom">Custom Range...</option>
+            </select>
+          </div>
         </div>
+
+        {/* Strategy Selector */}
+        <StrategySelector showCompare={false} compact={isMobile} />
       </div>
 
       {/* Key Metrics */}

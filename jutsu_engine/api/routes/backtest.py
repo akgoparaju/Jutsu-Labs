@@ -28,15 +28,31 @@ router = APIRouter(prefix="/api/backtest", tags=["backtest"])
 BACKTEST_DATA_DIR = Path("config/backtest")
 
 
-def _find_dashboard_csv() -> Optional[Path]:
+def _find_dashboard_csv(strategy_id: Optional[str] = None) -> Optional[Path]:
     """
     Find the dashboard CSV file in the config/backtest directory.
+
+    Args:
+        strategy_id: Optional strategy ID to find specific CSV (e.g., 'v3_5b')
+                    If None, returns the most recently modified dashboard CSV.
 
     Returns:
         Path to dashboard CSV file, or None if not found
     """
     if not BACKTEST_DATA_DIR.exists():
         return None
+
+    # If strategy_id specified, look for strategy-specific CSV first
+    if strategy_id:
+        # Try exact match: dashboard_v3_5b.csv or dashboard_Hierarchical_Adaptive_v3_5b.csv
+        exact_match = BACKTEST_DATA_DIR / f"dashboard_{strategy_id}.csv"
+        if exact_match.exists():
+            return exact_match
+
+        # Try pattern match with strategy_id in filename
+        for csv_file in BACKTEST_DATA_DIR.glob("dashboard_*.csv"):
+            if strategy_id in csv_file.stem:
+                return csv_file
 
     # Look for dashboard_*.csv files
     csv_files = list(BACKTEST_DATA_DIR.glob("dashboard_*.csv"))
@@ -61,6 +77,44 @@ def _extract_strategy_name(csv_path: Path) -> Optional[str]:
     if filename.startswith("dashboard_"):
         return filename[len("dashboard_"):]
     return None
+
+
+def _list_available_strategies() -> List[Dict[str, str]]:
+    """
+    List all available backtest strategy CSVs.
+
+    Returns:
+        List of dictionaries with strategy_id and file_path
+    """
+    if not BACKTEST_DATA_DIR.exists():
+        return []
+
+    strategies = []
+    for csv_file in BACKTEST_DATA_DIR.glob("dashboard_*.csv"):
+        strategy_name = _extract_strategy_name(csv_file)
+        if strategy_name:
+            # Extract strategy_id from name (e.g., 'v3_5b' from 'Hierarchical_Adaptive_v3_5b')
+            # Strategy ID is typically the last part after the last underscore that starts with 'v'
+            parts = strategy_name.split('_')
+            strategy_id = None
+            for part in reversed(parts):
+                if part.startswith('v') and any(c.isdigit() for c in part):
+                    strategy_id = '_'.join(parts[parts.index(part):])
+                    break
+
+            if not strategy_id:
+                strategy_id = strategy_name
+
+            strategies.append({
+                'strategy_id': strategy_id,
+                'strategy_name': strategy_name,
+                'file_path': str(csv_file),
+                'last_modified': csv_file.stat().st_mtime,
+            })
+
+    # Sort by last modified (most recent first)
+    strategies.sort(key=lambda x: x['last_modified'], reverse=True)
+    return strategies
 
 
 def _find_config_for_strategy(strategy_name: Optional[str]) -> Optional[Path]:
@@ -482,6 +536,35 @@ def _calculate_regime_breakdown(
 
 
 @router.get(
+    "/strategies",
+    responses={
+        500: {"model": ErrorResponse, "description": "Internal server error"}
+    },
+    summary="List available backtest strategies",
+    description="Returns list of available backtest data files by strategy."
+)
+async def list_backtest_strategies(
+    _auth: bool = Depends(verify_credentials),
+) -> Dict[str, Any]:
+    """
+    List available backtest strategies.
+
+    Returns:
+    - strategies: List of available backtest strategy CSVs
+    - count: Number of available strategies
+    """
+    try:
+        strategies = _list_available_strategies()
+        return {
+            'strategies': strategies,
+            'count': len(strategies),
+        }
+    except Exception as e:
+        logger.error(f"List backtest strategies error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get(
     "/data",
     responses={
         404: {"model": ErrorResponse, "description": "Backtest data not found"},
@@ -493,6 +576,7 @@ def _calculate_regime_breakdown(
 async def get_backtest_data(
     start_date: Optional[str] = Query(None, description="Filter start date (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="Filter end date (YYYY-MM-DD)"),
+    strategy_id: Optional[str] = Query(None, description="Strategy ID (e.g., 'v3_5b'). Default: most recent backtest."),
     _auth: bool = Depends(verify_credentials),
 ) -> Dict[str, Any]:
     """
@@ -502,14 +586,19 @@ async def get_backtest_data(
     - summary: All-time metrics (total return, CAGR, Sharpe, max DD, alpha)
     - timeseries: Daily portfolio values with regime data
     - period_metrics: Calculated metrics for the selected date range
+    - strategy_id: The strategy ID for this backtest data
     """
     try:
-        csv_path = _find_dashboard_csv()
+        csv_path = _find_dashboard_csv(strategy_id)
         if not csv_path:
+            detail = f"No backtest data found for strategy '{strategy_id}'." if strategy_id else "No backtest data found. Please run a backtest with dashboard export enabled."
             raise HTTPException(
                 status_code=404,
-                detail="No backtest data found. Please run a backtest with dashboard export enabled."
+                detail=detail
             )
+
+        # Extract the actual strategy name from the found file
+        strategy_name = _extract_strategy_name(csv_path)
 
         # Parse CSV file
         data = _parse_dashboard_csv(csv_path)
@@ -534,6 +623,8 @@ async def get_backtest_data(
             'period_metrics': period_metrics,
             'total_data_points': len(data['timeseries']),
             'filtered_data_points': len(timeseries),
+            'strategy_name': strategy_name,
+            'strategy_id': strategy_id or strategy_name,
         }
 
     except HTTPException:
@@ -554,6 +645,7 @@ async def get_backtest_data(
     description="Returns the strategy configuration YAML file. Admin access required."
 )
 async def get_backtest_config(
+    strategy_id: Optional[str] = Query(None, description="Strategy ID (e.g., 'v3_5b'). Default: most recent backtest."),
     current_user = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """
@@ -574,7 +666,7 @@ async def get_backtest_config(
             )
 
         # Find current dashboard CSV and extract strategy name
-        csv_path = _find_dashboard_csv()
+        csv_path = _find_dashboard_csv(strategy_id)
         strategy_name = _extract_strategy_name(csv_path) if csv_path else None
 
         # Find matching config file
@@ -615,6 +707,7 @@ async def get_backtest_config(
 async def get_regime_breakdown(
     start_date: Optional[str] = Query(None, description="Filter start date (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="Filter end date (YYYY-MM-DD)"),
+    strategy_id: Optional[str] = Query(None, description="Strategy ID (e.g., 'v3_5b'). Default: most recent backtest."),
     _auth: bool = Depends(verify_credentials),
 ) -> Dict[str, Any]:
     """
@@ -627,12 +720,15 @@ async def get_regime_breakdown(
     - Percentage of time in regime
     """
     try:
-        csv_path = _find_dashboard_csv()
+        csv_path = _find_dashboard_csv(strategy_id)
         if not csv_path:
+            detail = f"No backtest data found for strategy '{strategy_id}'." if strategy_id else "No backtest data found."
             raise HTTPException(
                 status_code=404,
-                detail="No backtest data found."
+                detail=detail
             )
+
+        strategy_name = _extract_strategy_name(csv_path)
 
         # Parse CSV file
         data = _parse_dashboard_csv(csv_path)
@@ -648,6 +744,8 @@ async def get_regime_breakdown(
             'regimes': regimes,
             'start_date': start_date or (data['timeseries'][0]['date'] if data['timeseries'] else None),
             'end_date': end_date or (data['timeseries'][-1]['date'] if data['timeseries'] else None),
+            'strategy_name': strategy_name,
+            'strategy_id': strategy_id or strategy_name,
         }
 
     except HTTPException:

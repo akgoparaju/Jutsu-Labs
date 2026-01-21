@@ -1,0 +1,66 @@
+timestamp: '2026-01-20 22:49:09'
+execution_type: grid_search
+strategy:
+  name: Hierarchical_Adaptive_v3_5d
+  parameters:
+    measurement_noise: 3000.0
+    process_noise_1: 0.01
+    process_noise_2: 0.01
+    osc_smoothness: 10
+    strength_smoothness: 15
+    T_max: 50.0
+    symmetric_volume_adjustment: true
+    double_smoothing: false
+    sma_fast: 40
+    sma_slow: 140
+    t_norm_bull_thresh: 0.05
+    t_norm_bear_thresh: -0.3
+    realized_vol_window: 21
+    vol_baseline_window: 200
+    upper_thresh_z: 1.0
+    lower_thresh_z: 0.2
+    vol_crush_threshold: -0.15
+    vol_crush_lookback: 5
+    leverage_scalar: 1.0
+    use_inverse_hedge: false
+    w_PSQ_max: 0.5
+    allow_treasury: true
+    bond_sma_fast: 20
+    bond_sma_slow: 60
+    max_bond_weight: 0.4
+    treasury_trend_symbol: TLT
+    cell1_exit_confirmation_enabled: true
+    cell1_exit_confirmation_days: 5
+    rebalance_threshold: 0.025
+    execution_time: close
+    signal_symbol: QQQ
+    core_long_symbol: QQQ
+    leveraged_long_symbol: TQQQ
+    inverse_hedge_symbol: PSQ
+    bull_bond_symbol: TMF
+    bear_bond_symbol: TMV
+    name: Hierarchical_Adaptive_v3_5d
+backtest_config:
+  symbols:
+  - QQQ
+  - TQQQ
+  - PSQ
+  - TLT
+  - TMF
+  - TMV
+  timeframe: 1D
+  start_date: '2010-01-01'
+  end_date: '2026-01-20'
+  initial_capital: 10000.0
+  commission_per_share: 0.01
+  slippage_percent: 0.001
+warmup:
+  required_bars: 221
+  warmup_enabled: true
+  warmup_end_date: '2010-01-01'
+results_summary:
+  total_return: 86.5512824495791
+  sharpe_ratio: 1.110151979417879
+  max_drawdown: -0.2684093335886508
+  total_trades: 263
+  win_rate: 0.33079847908745247

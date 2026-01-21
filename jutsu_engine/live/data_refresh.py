@@ -32,6 +32,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
+import pandas as pd
+
 from sqlalchemy import create_engine, desc, func
 from sqlalchemy.orm import sessionmaker, Session
 
@@ -40,6 +42,7 @@ from jutsu_engine.data.models import (
     Position,
     DataMetadata,
     SystemState,
+    MarketData,
 )
 from jutsu_engine.live.mode import TradingMode
 from jutsu_engine.live.market_calendar import (
@@ -500,58 +503,93 @@ class DashboardDataRefresher:
         
         return updated_positions
     
+    def _get_historical_data(self, symbol: str, lookback: int = 250) -> Optional[pd.DataFrame]:
+        """
+        Get historical market data for a symbol from the database.
+
+        Args:
+            symbol: Stock ticker symbol (e.g., 'QQQ', 'TLT')
+            lookback: Number of bars to retrieve
+
+        Returns:
+            DataFrame with OHLCV data, or None if no data found
+        """
+        session = self._get_session()
+
+        try:
+            # Query MarketData for the symbol, ordered by timestamp desc
+            rows = session.query(MarketData).filter(
+                MarketData.symbol == symbol,
+                MarketData.timeframe == '1D',
+                MarketData.is_valid == True,
+            ).order_by(desc(MarketData.timestamp)).limit(lookback).all()
+
+            if not rows:
+                return None
+
+            # Convert to DataFrame, reverse to get chronological order
+            data = [{
+                'timestamp': row.timestamp,
+                'open': float(row.open),
+                'high': float(row.high),
+                'low': float(row.low),
+                'close': float(row.close),
+                'volume': row.volume,
+            } for row in reversed(rows)]
+
+            return pd.DataFrame(data)
+
+        except Exception as e:
+            logger.warning(f"Error fetching historical data for {symbol}: {e}")
+            return None
+
     def calculate_indicators(
         self,
         prices: Optional[Dict[str, Decimal]] = None,
     ) -> Dict[str, Any]:
         """
         Calculate strategy indicators from current market data.
-        
+
         This calculates indicators WITHOUT running the full strategy
         signal generation. Useful for displaying current market state.
-        
+
         Args:
             prices: Optional current prices (will fetch if not provided)
-            
+
         Returns:
             Dictionary of indicator values
         """
         indicators: Dict[str, Any] = {}
-        
+
         try:
             # Get market data from database
-            from jutsu_engine.data.handlers.database import DatabaseDataHandler
+            qqq_df = self._get_historical_data('QQQ', lookback=250)
+            tlt_df = self._get_historical_data('TLT', lookback=250)
 
-            db_handler = DatabaseDataHandler(db_path=self._db_path)
-            
-            # Get QQQ data for main indicators
-            qqq_df = db_handler.get_historical_data('QQQ', lookback=250)
-            tlt_df = db_handler.get_historical_data('TLT', lookback=250)
-            
             if qqq_df is not None and len(qqq_df) > 0:
                 # Calculate basic indicators
                 from jutsu_engine.indicators import sma, ema, atr
-                
+
                 close_prices = qqq_df['close'].values
-                
+
                 # Moving averages
                 sma_20 = sma.calculate_sma(close_prices, 20)
                 sma_50 = sma.calculate_sma(close_prices, 50)
                 ema_12 = ema.calculate_ema(close_prices, 12)
                 ema_26 = ema.calculate_ema(close_prices, 26)
-                
+
                 # MACD
                 macd_line = ema_12[-1] - ema_26[-1] if len(ema_12) > 0 and len(ema_26) > 0 else None
-                
+
                 # ATR
                 high = qqq_df['high'].values
                 low = qqq_df['low'].values
                 atr_14 = atr.calculate_atr(high, low, close_prices, 14)
-                
+
                 # Trend state (simplified)
                 last_close = float(close_prices[-1])
                 trend = 'Bullish' if last_close > sma_50[-1] else 'Bearish' if last_close < sma_50[-1] else 'Sideways'
-                
+
                 indicators.update({
                     'qqq_price': last_close,
                     'sma_20': float(sma_20[-1]) if len(sma_20) > 0 else None,
@@ -560,22 +598,23 @@ class DashboardDataRefresher:
                     'atr_14': float(atr_14[-1]) if len(atr_14) > 0 else None,
                     'trend': trend,
                 })
-            
+
             if tlt_df is not None and len(tlt_df) > 0:
+                from jutsu_engine.indicators import sma
                 tlt_close = float(tlt_df['close'].iloc[-1])
                 tlt_sma_50 = sma.calculate_sma(tlt_df['close'].values, 50)
-                
+
                 indicators.update({
                     'tlt_price': tlt_close,
                     'tlt_sma_50': float(tlt_sma_50[-1]) if len(tlt_sma_50) > 0 else None,
                     'bond_trend': 'Up' if tlt_close > tlt_sma_50[-1] else 'Down',
                 })
-            
+
             logger.info(f"Calculated {len(indicators)} indicators")
-            
+
         except Exception as e:
             logger.warning(f"Error calculating indicators: {e}")
-        
+
         return indicators
     
     def save_performance_snapshot(

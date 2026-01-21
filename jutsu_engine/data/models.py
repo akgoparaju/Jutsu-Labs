@@ -215,12 +215,17 @@ class LiveTrade(Base):
     reason = Column(String(50))  # 'Rebalance', 'Signal Change', etc.
     mode = Column(String(20), nullable=False)  # 'offline_mock' or 'online_live'
 
+    # Multi-strategy support (added 2026-01-20)
+    # Identifies which strategy generated this trade
+    strategy_id = Column(String(50), default='v3_5b')  # e.g., 'v3_5b', 'v3_5d'
+
     # Metadata
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     __table_args__ = (
         Index('idx_live_trades_mode_ts', 'mode', 'timestamp'),
         Index('idx_live_trades_symbol_mode', 'symbol', 'mode'),
+        Index('idx_live_trades_strategy', 'strategy_id', 'timestamp'),
     )
 
     def __repr__(self):
@@ -320,16 +325,22 @@ class PerformanceSnapshot(Base):
 
     mode = Column(String(20), nullable=False)  # 'offline_mock' or 'online_live'
 
+    # Multi-strategy support (added 2026-01-20)
+    # Identifies which strategy this snapshot belongs to
+    strategy_id = Column(String(50), default='v3_5b')  # e.g., 'v3_5b', 'v3_5d'
+
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     __table_args__ = (
         Index('idx_perf_snapshot_mode_ts', 'mode', 'timestamp'),
-        UniqueConstraint('mode', 'timestamp', name='uix_perf_snapshot_mode_ts'),
+        Index('idx_perf_snapshots_strategy', 'strategy_id', 'timestamp'),
+        # Updated unique constraint to include strategy_id for multi-strategy support
+        UniqueConstraint('mode', 'strategy_id', 'timestamp', name='uix_perf_snapshot_mode_strategy_ts'),
     )
 
     def __repr__(self):
         return (
-            f"<PerformanceSnapshot(equity={self.total_equity}, "
+            f"<PerformanceSnapshot(equity={self.total_equity}, strategy={self.strategy_id}, "
             f"return={self.daily_return}%, mode={self.mode}, ts={self.timestamp})>"
         )
 

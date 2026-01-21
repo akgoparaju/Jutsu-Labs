@@ -1,5 +1,6 @@
 import { Routes, Route } from 'react-router-dom'
 import { AuthProvider } from './contexts/AuthContext'
+import { StrategyProvider } from './contexts/StrategyContext'
 import ProtectedRoute from './components/ProtectedRoute'
 import RequirePermission from './components/RequirePermission'
 import Layout from './components/Layout'
@@ -32,7 +33,8 @@ import {
 function App() {
   return (
     <AuthProvider>
-      <Routes>
+      <StrategyProvider>
+        <Routes>
         {/* Public routes: Login and Accept Invitation */}
         <Route path="/login" element={<Login />} />
         <Route path="/accept-invitation" element={<AcceptInvitation />} />
@@ -69,7 +71,8 @@ function App() {
             <Route path="settings" element={<Settings />} />
           </Route>
         </Route>
-      </Routes>
+        </Routes>
+      </StrategyProvider>
     </AuthProvider>
   )
 }

@@ -131,6 +131,29 @@ except ImportError:
     RecoveryManager = None
     RecoveryAction = None
 
+# Multi-Strategy Engine imports
+try:
+    from jutsu_engine.live.strategy_registry import StrategyRegistry, StrategyConfig
+except ImportError:
+    StrategyRegistry = None
+    StrategyConfig = None
+
+try:
+    from jutsu_engine.live.multi_state_manager import MultiStrategyStateManager
+except ImportError:
+    MultiStrategyStateManager = None
+
+try:
+    from jutsu_engine.live.multi_strategy_runner import (
+        MultiStrategyRunner,
+        StrategyExecutionResult,
+        MultiExecutionResult
+    )
+except ImportError:
+    MultiStrategyRunner = None
+    StrategyExecutionResult = None
+    MultiExecutionResult = None
+
 __all__ = [
     # Core (v2.0)
     'TradingMode',
@@ -162,4 +185,11 @@ __all__ = [
     # Phase 5
     'RecoveryManager',
     'RecoveryAction',
+    # Multi-Strategy Engine
+    'StrategyRegistry',
+    'StrategyConfig',
+    'MultiStrategyStateManager',
+    'MultiStrategyRunner',
+    'StrategyExecutionResult',
+    'MultiExecutionResult',
 ]
