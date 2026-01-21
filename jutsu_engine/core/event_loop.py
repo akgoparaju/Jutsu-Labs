@@ -22,6 +22,8 @@ from typing import List, Dict, Optional
 from decimal import Decimal
 from datetime import date, datetime, timezone
 
+import pytz
+
 from jutsu_engine.data.handlers.base import DataHandler
 from jutsu_engine.core.strategy_base import Strategy
 from jutsu_engine.portfolio.simulator import PortfolioSimulator
@@ -122,6 +124,37 @@ class EventLoop:
             f"EventLoop initialized with strategy: {strategy.name}"
         )
 
+    def _get_trading_date(self, timestamp: datetime) -> date:
+        """
+        Extract NYSE trading date from timestamp using Eastern Time.
+
+        This method ensures date change detection uses the same trading date
+        logic as the CSV exporters. Without this, timezone mismatches between
+        database timestamps (PST) and market timezone (ET) cause:
+        - Duplicate Friday entries (two snapshots mapping to same trading date)
+        - Missing Monday entries (Monday's trading date gets skipped)
+
+        Schwab API convention: daily bar timestamps vary by symbol:
+        - Some symbols: 06:00 UTC (01:00 ET) - same calendar day
+        - Some symbols: 22:00 PST (01:00 ET next day) - different calendar day
+
+        Using .date() on these timestamps gives different calendar days,
+        but they represent the same NYSE trading day. This method normalizes
+        to the correct trading date.
+
+        Args:
+            timestamp: Bar timestamp (may be timezone-aware or naive)
+
+        Returns:
+            date: NYSE trading date in Eastern Time
+        """
+        ts = timestamp
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        et = pytz.timezone('America/New_York')
+        ts_et = ts.astimezone(et)
+        return ts_et.date()
+
     def _in_warmup_phase(self, current_date: datetime) -> bool:
         """
         Check if current bar is in warmup phase.
@@ -204,7 +237,10 @@ class EventLoop:
             # before update_market_value() overwrites _latest_prices with new day's data.
             # Without this fix, snapshots for day N incorrectly use day N+1's prices,
             # causing a 1-day forward shift that breaks beta/correlation calculations.
-            current_date = bar.timestamp.date()
+            # Use trading date (ET) for date change detection, not local calendar date
+            # This prevents timezone mismatches between PST timestamps and ET trading dates
+            # which caused duplicate Fridays and missing Mondays in CSV exports
+            current_date = self._get_trading_date(bar.timestamp)
             if self._last_snapshot_date is not None and current_date != self._last_snapshot_date:
                 # All bars for previous date are now processed
                 # Record snapshot NOW while portfolio still has previous day's prices
@@ -273,7 +309,8 @@ class EventLoop:
                 qqq_bar = self.current_bars.get(signal_symbol)
 
                 if qqq_bar:
-                    regime_date = bar.timestamp.date()
+                    # Use trading date (ET) for consistency with snapshot date detection
+                    regime_date = self._get_trading_date(bar.timestamp)
 
                     # When date changes, record the PREVIOUS day's regime data
                     # This ensures we capture final portfolio value after all trades

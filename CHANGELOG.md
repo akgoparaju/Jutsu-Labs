@@ -1,3 +1,73 @@
+#### **Data: V3.5D Paper Trade Backfill** (2026-01-21)
+
+Retroactively generated and inserted paper trade performance data for Hierarchical_Adaptive_v3_5d strategy.
+
+**Tasks Completed**:
+1. **Holiday Data Cleanup**: Deleted Jan 19, 2026 data (MLK Day) from v3.5b - market was closed
+2. **V3.5D Backfill**: Generated 26 paper trade snapshots from Dec 4, 2025 to Jan 21, 2026
+
+**Data Generation Method**:
+- Used backtest returns from `config/backtest/dashboard_Hierarchical_Adaptive_v3_5d.csv`
+- Applied returns to $10,000 initial capital (matching v3.5b start)
+- Generated positions based on regime allocations (Cell 1: 60/40, Cell 3: 20/80)
+- Used actual market prices from database
+
+**V3.5D Performance Summary**:
+| Metric | Value |
+|--------|-------|
+| Initial Capital | $10,000.00 |
+| Final Equity | $9,489.48 |
+| Total Return | -5.11% |
+| Max Drawdown | -9.60% |
+
+**Database Changes**:
+- Deleted: 1 row (ID 204) for Jan 19, 2026 from v3_5b
+- Inserted: 26 rows (IDs 219-244) for v3_5d strategy
+
+**Files Referenced**:
+- `config/backtest/dashboard_Hierarchical_Adaptive_v3_5d.csv`
+- `config/backtest/config_Hierarchical_Adaptive_v3_5d.yaml`
+
+---
+
+#### **Fix: EventLoop Snapshot Date Timezone Mismatch** (2026-01-21)
+
+Fixed critical bug causing 861 duplicate dates (93% Fridays) and missing Mondays in backtest CSV exports.
+
+**Problem**:
+- Backtest CSV had duplicate Friday entries (each Friday appeared twice)
+- Monday dates were completely missing from output
+- Pattern: Friday duplicate → Tuesday (skipping Monday)
+- Dashboard UI broken due to duplicate date parsing errors
+
+**Root Cause**:
+- Timezone mismatch between EventLoop date detection and CSV exporter
+- EventLoop used `bar.timestamp.date()` → extracts **PST calendar date** (from database)
+- CSV exporter used `_get_trading_date()` → converts to **ET trading date**
+- Bars at `22:00 PST Jan 7` and `06:00 PST Jan 8` both represent **Friday Jan 8** in NYSE time
+- But `.date()` saw them as different days (Jan 7 vs Jan 8), triggering two snapshots
+- Both snapshots mapped to same trading date (Jan 8) in exporter → duplicate Friday
+- Monday's trading date was skipped in this process
+
+**Solution**:
+- Added `_get_trading_date()` helper to EventLoop that converts timestamps to ET before extracting date
+- Updated snapshot date change detection (line 243)
+- Updated regime date change detection (line 313)
+- Now uses consistent trading date logic across EventLoop and exporters
+
+**Files Modified**:
+- `jutsu_engine/core/event_loop.py`: Added `import pytz`, `_get_trading_date()` method, updated 2 date comparisons
+
+**Verification**:
+| Metric | Before | After |
+|--------|--------|-------|
+| Total rows | 4143 | 4030 |
+| Unique dates | 3282 | 4030 |
+| Duplicates | 861 | 0 |
+| Mondays present | 0 | 748 |
+
+---
+
 #### **Feature: Multi-Strategy Engine with UI Support** (2026-01-21)
 
 Implemented comprehensive multi-strategy trading engine allowing parallel strategy execution, comparison, and switching through the dashboard UI.
