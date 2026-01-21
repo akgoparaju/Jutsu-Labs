@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone
 
+import pytz
+
 from jutsu_engine.utils.logging_config import get_logger
 
 logger = get_logger('DASHBOARD_EXPORT')
@@ -59,6 +61,26 @@ class DashboardCSVExporter:
             initial_capital: Starting capital for baseline calculations
         """
         self.initial_capital = initial_capital
+        self._et = pytz.timezone('America/New_York')
+
+    def _get_trading_date(self, timestamp: datetime) -> str:
+        """
+        Extract NYSE trading date from timestamp using Eastern Time.
+
+        Schwab convention: daily bar timestamp is 06:00 UTC = 01:00 ET same day.
+        Without ET conversion, Pacific timezone would show previous calendar day.
+
+        Args:
+            timestamp: The timestamp from a trading bar
+
+        Returns:
+            Date string in YYYY-MM-DD format representing NYSE trading date
+        """
+        ts = timestamp
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        ts_et = ts.astimezone(self._et)
+        return ts_et.strftime("%Y-%m-%d")
 
     def export_dashboard_csv(
         self,
@@ -211,14 +233,14 @@ class DashboardCSVExporter:
             if signal_prices:
                 # Get first price for buy-and-hold calculation
                 first_snapshot = filtered_snapshots[0]
-                first_date_str = first_snapshot['timestamp'].strftime('%Y-%m-%d')
+                first_date_str = self._get_trading_date(first_snapshot['timestamp'])
                 if first_date_str in signal_prices:
                     buyhold_start_price = signal_prices[first_date_str]
                     buyhold_shares = self.initial_capital / buyhold_start_price
 
             for snapshot in filtered_snapshots:
                 timestamp = snapshot['timestamp']
-                date_str = timestamp.strftime('%Y-%m-%d')
+                date_str = self._get_trading_date(timestamp)
                 date_obj = timestamp.date() if hasattr(timestamp, 'date') else timestamp
 
                 # Portfolio value

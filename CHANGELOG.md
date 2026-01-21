@@ -1,3 +1,125 @@
+#### **Fix: CSV Exporter Date Off-by-One Day** (2026-01-20)
+
+Fixed issue where grid search and backtest CSV exports showed dates 1 day earlier than expected.
+
+**Problem**:
+- Start date configured as `2025-12-04` → CSV showed `2025-12-03`
+- End date configured as `2026-01-20` → CSV showed `2026-01-19` (MLK Day holiday)
+
+**Root Cause**:
+- Schwab API stores daily bar timestamps at `06:00 UTC` (not market close at 20:00 UTC)
+- In Eastern Time: `06:00 UTC → 01:00 ET` → same calendar day ✓
+- In Pacific Time: `06:00 UTC → 22:00 PT previous day` → wrong calendar day ✗
+- CSV exporters used `timestamp.strftime("%Y-%m-%d")` without timezone conversion
+
+**Solution**:
+- Added `_get_trading_date()` helper method that converts to ET before extracting date
+- Applied to both `portfolio_exporter.py` (4 locations) and `dashboard_exporter.py` (2 locations)
+
+**Files Modified**:
+- `jutsu_engine/performance/portfolio_exporter.py`: Added pytz import, ET timezone, helper method
+- `jutsu_engine/performance/dashboard_exporter.py`: Added pytz import, ET timezone, helper method
+
+**Verification**:
+- Grid search CSV now shows correct dates matching YAML config
+- Start date: 2025-12-04 ✓, End date: 2026-01-20 ✓
+
+---
+
+#### **Fix: Duplicate Daily Bars and Data Sync Timezone Issues** (2026-01-20)
+
+Fixed two related issues causing duplicate database rows and missing trading day data.
+
+**Issue 1: Duplicate Daily Bar Rows**
+- **Problem**: Each trading day had 2 rows with different timestamps (21:00 vs 22:00 PST)
+- **Root Cause**: Syncs during market hours saved partial data at 21:00 PST (05:00 UTC),
+  while post-close syncs saved complete data at 22:00 PST (06:00 UTC)
+- **Impact**: 211 duplicate trading days across all symbols
+
+**Issue 2: Missing Friday Data in Backtest**
+- **Problem**: Friday Jan 16 data appeared missing from backtest
+- **Root Cause**: Data existed but duplicates caused confusion in data retrieval
+
+**Solution**:
+1. **Database Cleanup**: Removed 211 duplicate rows, keeping highest-volume rows (complete data)
+2. **Duplicate Prevention**: Modified `_store_bar()` in `data_sync.py` to check for existing bars
+   by trading date (in ET) instead of exact timestamp for daily bars
+3. **Timestamp Update**: When a bar for the same trading date exists, update it (including timestamp)
+   rather than creating a duplicate
+
+**Files Modified**:
+- `jutsu_engine/application/data_sync.py`: Updated `_store_bar()` with trading-date-based lookup
+
+**Verification**:
+- Sync now shows "0 stored, 1 updated" for existing trading dates
+- Backtest runs through 2026-01-20 with all trading days included
+
+---
+
+#### **Fix: Holiday Filter Timezone Bug Causing Data Loss** (2026-01-20)
+
+Fixed critical bug where daily bar data near market holidays was incorrectly filtered out due to timezone mismatch in trading date extraction.
+
+**Problem**:
+- Schwab API returns timestamps in UTC (e.g., `2026-01-20 06:00:00 UTC`)
+- Database stores as PST (e.g., `2026-01-19 21:00:00 PST`) - same moment, different representation
+- `_is_market_holiday()` used raw PST date instead of converting to ET first
+- For Jan 20, 2026 data: timestamp `21:00 PST` → raw date Jan 19 → MLK Day → filtered out!
+
+**Root Cause**:
+- NYSE trading dates are defined in Eastern Time, not PST
+- `21:00 PST = 00:00 ET next day` → actual trading date is Jan 20, not Jan 19
+- Code incorrectly used local timestamp date for daily bars instead of ET conversion
+
+**Solution**:
+- Modified `_is_market_holiday()` in both `database.py` and `data_sync.py`
+- Now always converts timestamps to Eastern Time before extracting trading date
+- Example: `2026-01-19 21:00:00 PST` → `2026-01-20 00:00:00 ET` → trading date Jan 20 ✓
+
+**Files Modified**:
+- `jutsu_engine/data/handlers/database.py`: Fixed `_is_market_holiday()` function
+- `jutsu_engine/application/data_sync.py`: Fixed `_is_market_holiday()` function
+
+**Impact**: Backtest now correctly includes all trading days including those adjacent to holidays.
+
+---
+
+#### **New Strategy: Hierarchical Adaptive v3.5d - Cell 1 Exit Confirmation** (2026-01-20)
+
+Added new v3.5d strategy with Cell 1 Exit Confirmation Lag feature to prevent premature exits during brief pullbacks.
+
+**Feature**: Cell 1 Exit Confirmation Lag
+- Requires T_norm to stay below bull threshold for N consecutive days before exiting Cell 1
+- Prevents whipsaw exits during temporary dips in otherwise bullish trends
+- Counter resets when T_norm recovers above threshold
+- Immediate exit still allowed for BearStrong transitions (crash protection)
+- VolState changes (Cell 1 → Cell 2) are immediate (bypass confirmation)
+
+**New Parameters**:
+- `cell1_exit_confirmation_enabled`: Boolean toggle (default: False for backward compatibility)
+- `cell1_exit_confirmation_days`: Consecutive days required (default: 2, range: 1-10)
+
+**Implementation**:
+- New method `_apply_cell1_exit_confirmation()` called after trend classification
+- State variable `_cell1_exit_pending_days` tracks consecutive days below threshold
+- Inherits all v3.5b features (Treasury Overlay, Vol-Crush Override, Hysteresis)
+
+**Golden Config Defaults**: v3.5d uses optimized defaults from v3.5b Golden Config:
+- `sma_fast=40`, `sma_slow=140` (vs v3.5b: 50, 200)
+- `t_norm_bull_thresh=0.2` (vs v3.5b: 0.3)
+- `lower_thresh_z=0.2` (vs v3.5b: 0.0)
+- `vol_crush_threshold=-0.15` (vs v3.5b: -0.20)
+
+**Files Added**:
+- `jutsu_engine/strategies/Hierarchical_Adaptive_v3_5d.py`: Strategy implementation (~1100 lines)
+- `tests/unit/strategies/test_hierarchical_adaptive_v3_5d.py`: Unit tests (71 tests, all passing)
+- `grid-configs/examples/grid_search_hierarchical_adaptive_v3_5d.yaml`: Grid search config
+- `jutsu_engine/strategies/Strategy-docs/Hierarchical_Adaptive_v3_5d.md`: Feature specification
+
+**Agent**: STRATEGY_AGENT
+
+---
+
 #### **Documentation: Updated Hierarchical Adaptive v3.5b Golden Strategy Documentation** (2026-01-20)
 
 Updated the Golden Strategy documentation to accurately reflect the Golden Config settings.

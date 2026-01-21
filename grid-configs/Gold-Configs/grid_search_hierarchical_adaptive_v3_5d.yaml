@@ -1,0 +1,244 @@
+# Grid Search Configuration for Hierarchical Adaptive v3.5d
+# =========================================================
+# Grid Search: ~10 runs (focused on Cell 1 Exit Confirmation feature)
+# Validates v3.5d Cell 1 Exit Confirmation Lag design
+#
+# v3.5d Changes from v3.5b:
+# -------------------------
+# 1. CELL 1 EXIT CONFIRMATION LAG (NEW FEATURE):
+#    - v3.5b: Immediate regime transitions when T_norm crosses threshold
+#    - v3.5d: Optional N-day confirmation before exiting Cell 1
+#    - Purpose: Prevent premature exits during brief pullbacks
+#    - Only affects exits FROM Cell 1 due to T_norm dropping (not VolState changes)
+#
+# 2. GOLDEN CONFIG DEFAULTS:
+#    - v3.5d uses optimized defaults from v3.5b Golden Config
+#    - sma_fast=40, sma_slow=140 (vs v3.5b: 50, 200)
+#    - t_norm_bull_thresh=0.2 (vs v3.5b: 0.3)
+#    - lower_thresh_z=0.2 (vs v3.5b: 0.0)
+#    - vol_crush_threshold=-0.15 (vs v3.5b: -0.20)
+#
+# Cell 1 Exit Confirmation Logic:
+# -------------------------------
+# When currently in Cell 1 (BullStrong + Low Vol):
+#   IF T_norm drops below t_norm_bull_thresh:
+#     - Without feature: Immediately exit to Cell 3 (Sideways)
+#     - With feature: Increment counter, stay in Cell 1
+#     - Exit only when counter >= cell1_exit_confirmation_days
+#   IF T_norm recovers above threshold:
+#     - Counter resets to 0
+#   IF VolState changes to High:
+#     - Move to Cell 2 immediately (no confirmation needed)
+#   IF T_norm drops to BearStrong:
+#     - Exit immediately (bypass confirmation for bear)
+#
+# Expected Benefits:
+# - Reduces whipsaw exits during brief pullbacks
+# - Maintains Cell 1 "Kill Zone" exposure longer during minor corrections
+# - Better captures sustained bull trends with temporary T_norm dips
+#
+# Grid Search Strategy:
+# ---------------------
+# Focus: Cell 1 Exit Confirmation effectiveness
+# - Test enabled vs disabled (backward compatibility check)
+# - Test confirmation days: 1, 2, 3, 4, 5
+# - Fix all other parameters at Golden Config values
+#
+# Total Combinations: 2 (enabled) × 5 (days) = 10 runs
+# Estimated Runtime: ~5-10 minutes
+
+# Strategy to optimize
+strategy: "Hierarchical_Adaptive_v3_5d"
+
+# Symbol Sets
+# -----------
+# Same as v3.5b - 6 symbols for equity + Treasury Overlay
+symbol_sets:
+  - name: "QQQ_TQQQ_PSQ_Bonds"
+    signal_symbol: "QQQ"                # Kalman + SMA + vol calculations
+    core_long_symbol: "QQQ"             # 1x base allocation
+    leveraged_long_symbol: "TQQQ"       # 3x leveraged overlay
+    inverse_hedge_symbol: "PSQ"         # -1x inverse (optional, disabled by default)
+    treasury_trend_symbol: "TLT"        # 20+ Year Treasury (bond trend signal)
+    bull_bond_symbol: "TMF"             # 3x Bull Bonds (deflation/safety)
+    bear_bond_symbol: "TMV"             # 3x Bear Bonds (inflation/rate shock)
+
+# Base Configuration
+# ------------------
+# Fixed settings applied to ALL backtests
+base_config:
+  # Date range - Full history (2010-2025)
+  start_date: "2010-01-01"
+  end_date: "2025-12-31"
+
+  # Market data
+  timeframe: "1D"
+
+  # Portfolio settings
+  initial_capital: 10000   # $10,000 starting capital
+  commission: 0.0          # $0.00 per trade
+  slippage: 0.0005         # 0.05% per trade
+
+# Parameters to Optimize
+# ----------------------
+# Grid Search: Cell 1 Exit Confirmation Feature
+# Focus on the new v3.5d feature, fix all v3.5b parameters at Golden Config
+#
+# Total combinations: 2 (enabled) × 5 (days) = 10 runs
+
+parameters:
+  # ===========================================================================
+  # CELL 1 EXIT CONFIRMATION PARAMETERS (GRID-SEARCH - 10 combinations)
+  # ===========================================================================
+  # v3.5d NEW FEATURE: Exit confirmation lag for Cell 1
+
+  # Enable/disable toggle (2 values)
+  # false = backward compatible with v3.5b (immediate exits)
+  # true = enable N-day confirmation lag
+  cell1_exit_confirmation_enabled: [true]  # 2 values - OPTIMIZE
+
+  # Confirmation days (5 values)
+  # Number of consecutive days T_norm must stay below threshold before exit
+  # Range: [1, 2, 3, 4, 5] as specified in v3.5d design doc
+  # 1 = minimal lag (1-day confirmation)
+  # 5 = maximum lag (5-day confirmation)
+  cell1_exit_confirmation_days: [5]   # 5 values - OPTIMIZE
+
+  # ===========================================================================
+  # KALMAN TREND PARAMETERS (Fixed at Golden Config)
+  # ===========================================================================
+  measurement_noise: [3000]
+  process_noise_1: [0.01]
+  process_noise_2: [0.01]
+  osc_smoothness: [10]
+  strength_smoothness: [15]
+  T_max: [50.0]
+  symmetric_volume_adjustment: [true]
+  double_smoothing: [false]
+
+  # ===========================================================================
+  # SMA STRUCTURE PARAMETERS (Fixed at Golden Config)
+  # ===========================================================================
+  sma_fast: [40]       # Golden Config default
+  sma_slow: [140]      # Golden Config default
+
+  # ===========================================================================
+  # TREND CLASSIFICATION THRESHOLDS (Fixed at Golden Config)
+  # ===========================================================================
+  t_norm_bull_thresh: [0.05]    # Golden Config default (was 0.3 in v3.5b)
+  t_norm_bear_thresh: [-0.3]
+
+  # ===========================================================================
+  # VOLATILITY Z-SCORE PARAMETERS (Fixed at Golden Config)
+  # ===========================================================================
+  realized_vol_window: [21]
+  vol_baseline_window: [200]
+  upper_thresh_z: [1.0]
+  lower_thresh_z: [0.2]        # Golden Config default (was 0.0 in v3.5b)
+
+  # ===========================================================================
+  # VOL-CRUSH OVERRIDE PARAMETERS (Fixed at Golden Config)
+  # ===========================================================================
+  vol_crush_threshold: [-0.15]  # Golden Config default (was -0.20 in v3.5b)
+  vol_crush_lookback: [5]
+
+  # ===========================================================================
+  # ALLOCATION PARAMETERS (Fixed at Golden Config)
+  # ===========================================================================
+  leverage_scalar: [1.0]
+  use_inverse_hedge: [false]
+  w_PSQ_max: [0.5]
+
+  # ===========================================================================
+  # TREASURY OVERLAY PARAMETERS (Fixed at Golden Config)
+  # ===========================================================================
+  allow_treasury: [true]
+  bond_sma_fast: [20]
+  bond_sma_slow: [60]
+  max_bond_weight: [0.4]
+  treasury_trend_symbol: ["TLT"]
+  bull_bond_symbol: ["TMF"]
+  bear_bond_symbol: ["TMV"]
+
+  # ===========================================================================
+  # REBALANCING (Fixed at Golden Config)
+  # ===========================================================================
+  rebalance_threshold: [0.025]
+
+# Optional Constraints
+# --------------------
+max_combinations: 250
+checkpoint_interval: 50
+
+# Expected Output
+# ---------------
+# output/grid_search_Hierarchical_Adaptive_v3_5d_YYYYMMDD_HHMMSS/
+# ├── summary_comparison.csv   # Metrics for all 10 runs
+# ├── run_config.csv          # Parameter mapping
+# ├── parameters.yaml         # Copy of this config
+# ├── README.txt             # Summary statistics
+# └── run_XXXX/              # Individual runs
+#     ├── portfolio_daily.csv
+#     ├── trades.csv
+#     └── summary.csv
+
+# Usage
+# -----
+# jutsu grid-search --config grid-configs/examples/grid_search_hierarchical_adaptive_v3_5d.yaml
+#
+# After completion:
+# 1. Review summary_comparison.csv for top performers
+# 2. Compare enabled vs disabled (backward compatibility check)
+# 3. Analyze optimal confirmation days:
+#    - Does 2-day lag beat immediate exits?
+#    - Is 5-day too long (misses legitimate exits)?
+# 4. Review Cell 1 dwell time changes
+# 5. Check performance in pullback scenarios
+
+# v3.5d SPECIFIC ANALYSIS:
+# -----------------------
+# CELL 1 EXIT CONFIRMATION VALIDATION:
+# - [ ] Backward compatibility: disabled config matches v3.5b baseline?
+# - [ ] Optimal days: Which confirmation period performs best?
+# - [ ] Pullback capture: Does lag improve returns during brief dips?
+# - [ ] Bear protection: Does BearStrong bypass work correctly?
+# - [ ] Whipsaw reduction: Fewer Cell 1 exits with lag enabled?
+#
+# PERFORMANCE COMPARISON (v3.5d vs v3.5b):
+# - [ ] Total return: v3.5d with lag ≥ v3.5b baseline?
+# - [ ] Max drawdown: v3.5d maintains protection during true bears?
+# - [ ] Sharpe ratio: Risk-adjusted improvement with exit confirmation?
+# - [ ] Cell 1 time: More time in Kill Zone with lag?
+# - [ ] Win rate: Better exit timing reduces losing trades?
+#
+# PARAMETER SENSITIVITY ANALYSIS:
+# - [ ] 1-day: Minimal benefit, essentially no lag
+# - [ ] 2-day: Filters 1-day noise, spec default
+# - [ ] 3-day: Moderate filtering
+# - [ ] 4-day: Significant filtering
+# - [ ] 5-day: Maximum filtering, risk of delayed exits
+#
+# RISK ANALYSIS:
+# - [ ] Does lag cause missed exits during actual trend reversals?
+# - [ ] Does VolState → Cell 2 transition still work immediately?
+# - [ ] Does BearStrong bypass protect capital in crashes?
+# - [ ] Counter reset on recovery working correctly?
+#
+# DECISION CRITERIA:
+# ✅ SUCCESS: Exit confirmation improves returns without hurting drawdown
+# ⚠️  INVESTIGATE: Mixed results, optimal days unclear
+# ❌ ROLLBACK: Exit confirmation hurts performance, stay with v3.5b
+
+# Phase 2 Planning (If Exit Confirmation Validates)
+# -------------------------------------------------
+# PHASE 2A: Combined Optimization
+# - Fix winning cell1_exit_confirmation_days from this grid
+# - Optimize regime boundary params (if not already optimal):
+#   - t_norm_bull_thresh: [0.15, 0.2, 0.25]
+#   - Interaction with exit confirmation lag
+#
+# PHASE 2B: Entry Confirmation (Future Feature)
+# - If exit confirmation works well, consider entry confirmation:
+#   - cell1_entry_confirmation_enabled
+#   - cell1_entry_confirmation_days
+# - Would require T_norm to stay above threshold for N days before entering Cell 1

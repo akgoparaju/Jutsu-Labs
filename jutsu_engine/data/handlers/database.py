@@ -61,8 +61,8 @@ def _is_market_holiday(timestamp: datetime) -> bool:
     Check if timestamp falls on a market holiday (NYSE closed).
 
     Defensive filter for read-side data quality protection.
-    For daily bars (time >= 20:00 or <= 04:00), uses date directly.
-    For intraday bars, converts to ET to get correct trading date.
+    Always converts to Eastern Time to get the correct NYSE trading date,
+    since NYSE trading dates are defined in ET.
 
     Args:
         timestamp: datetime to check
@@ -74,16 +74,13 @@ def _is_market_holiday(timestamp: datetime) -> bool:
     import pandas_market_calendars as mcal
     from datetime import date, time, timezone
 
-    # For daily bars, use date directly (avoid ET conversion issue)
-    ts_time = timestamp.time()
-    if ts_time >= time(20, 0) or ts_time <= time(4, 0):
-        trading_date = timestamp.date()
-    else:
-        et = pytz.timezone('America/New_York')
-        if timestamp.tzinfo is None:
-            timestamp = timestamp.replace(tzinfo=timezone.utc)
-        ts_et = timestamp.astimezone(et)
-        trading_date = ts_et.date()
+    # Always convert to Eastern Time to get correct NYSE trading date
+    # Example: 2026-01-19 21:00:00 PST = 2026-01-20 00:00:00 ET → trading date Jan 20
+    et = pytz.timezone('America/New_York')
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    ts_et = timestamp.astimezone(et)
+    trading_date = ts_et.date()
 
     # Skip weekend check (handled by _is_weekend)
     if trading_date.weekday() >= 5:

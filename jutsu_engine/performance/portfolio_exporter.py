@@ -20,7 +20,8 @@ from decimal import Decimal
 from typing import List, Dict, Optional, Any
 from pathlib import Path
 import csv
-from datetime import datetime
+from datetime import datetime, timezone
+import pytz
 
 from jutsu_engine.utils.logging_config import get_performance_logger
 
@@ -55,7 +56,28 @@ class PortfolioCSVExporter:
             exporter = PortfolioCSVExporter(Decimal('100000'))
         """
         self.initial_capital = initial_capital
+        # Eastern timezone for NYSE trading date extraction
+        self._et = pytz.timezone('America/New_York')
         logger.info(f"PortfolioCSVExporter initialized with initial capital: ${initial_capital:,.2f}")
+
+    def _get_trading_date(self, timestamp: datetime) -> str:
+        """
+        Extract NYSE trading date from timestamp using Eastern Time.
+
+        Schwab convention: daily bar timestamp is 06:00 UTC = 01:00 ET same day.
+        Without ET conversion, Pacific timezone would show previous calendar day.
+
+        Args:
+            timestamp: Bar timestamp (may be naive UTC or timezone-aware)
+
+        Returns:
+            Trading date string in YYYY-MM-DD format
+        """
+        ts = timestamp
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        ts_et = ts.astimezone(self._et)
+        return ts_et.strftime("%Y-%m-%d")
 
     def export_daily_portfolio_csv(
         self,
@@ -268,7 +290,7 @@ class PortfolioCSVExporter:
         regime_lookup = {}
         if regime_data:
             for regime_bar in regime_data:
-                date_str = regime_bar['timestamp'].strftime("%Y-%m-%d")
+                date_str = self._get_trading_date(regime_bar['timestamp'])
                 regime_lookup[date_str] = regime_bar
             logger.debug(f"Built regime lookup map with {len(regime_lookup)} entries")
 
@@ -320,7 +342,7 @@ class PortfolioCSVExporter:
 
         # Calculate buy-and-hold initial shares (if signal prices provided)
         if signal_prices and daily_snapshots:
-            first_date = daily_snapshots[0]['timestamp'].strftime("%Y-%m-%d")
+            first_date = self._get_trading_date(daily_snapshots[0]['timestamp'])
             first_signal_price = signal_prices.get(first_date)
 
             if first_signal_price and first_signal_price > 0:
@@ -416,7 +438,8 @@ class PortfolioCSVExporter:
             List of formatted string values for CSV row
         """
         # Fixed columns
-        date = snapshot['timestamp'].strftime("%Y-%m-%d")
+        # Extract NYSE trading date using Eastern Time (market timezone)
+        date = self._get_trading_date(snapshot['timestamp'])
         total_value = snapshot['total_value']
 
         # Start building row with date
@@ -490,7 +513,7 @@ class PortfolioCSVExporter:
         # to prevent column shift when buyhold_initial_shares is None
         if signal_prices:
             if buyhold_initial_shares is not None:
-                date_str = snapshot['timestamp'].strftime("%Y-%m-%d")
+                date_str = self._get_trading_date(snapshot['timestamp'])
                 current_signal_price = signal_prices.get(date_str)
 
                 if current_signal_price:

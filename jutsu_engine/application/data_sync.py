@@ -90,12 +90,11 @@ def _is_market_holiday(timestamp: datetime) -> bool:
     Check if timestamp falls on a market holiday (NYSE closed).
 
     Uses NYSE calendar to determine if the trading date is a holiday.
-    
-    For daily bars, the date in the timestamp IS the trading date (regardless
-    of timezone). For intraday bars, we use the date after converting to ET.
-    
-    Note: Daily bars from Schwab come with timestamp like 22:00 PST which is
-    01:00 ET the next day - we must NOT use the ET-converted date for these.
+    Always converts to Eastern Time to get the correct NYSE trading date,
+    since NYSE trading dates are defined in ET.
+
+    Example: A daily bar stored as 2026-01-19 21:00:00 PST represents
+    trading on Jan 20, since 21:00 PST = 00:00 ET the next day.
 
     Args:
         timestamp: datetime to check (should be timezone-aware)
@@ -107,23 +106,13 @@ def _is_market_holiday(timestamp: datetime) -> bool:
     import pandas_market_calendars as mcal
     from datetime import date, time
 
-    # For daily bars, use the date directly from the timestamp
-    # Daily bars have time at market close (typically 16:00 ET = 22:00 PST)
-    # Converting late-night PST to ET would give the NEXT day, which is wrong
-    # 
-    # Heuristic: If time is after 20:00 local or before 04:00 local, it's likely
-    # a daily bar and we should use the date as-is. Otherwise, convert to ET.
-    ts_time = timestamp.time()
-    if ts_time >= time(20, 0) or ts_time <= time(4, 0):
-        # Likely a daily bar - use date directly
-        trading_date = timestamp.date()
-    else:
-        # Intraday bar - convert to ET to get correct trading date
-        et = pytz.timezone('America/New_York')
-        if timestamp.tzinfo is None:
-            timestamp = timestamp.replace(tzinfo=timezone.utc)
-        ts_et = timestamp.astimezone(et)
-        trading_date = ts_et.date()
+    # Always convert to Eastern Time to get correct NYSE trading date
+    # Example: 2026-01-19 21:00:00 PST = 2026-01-20 00:00:00 ET → trading date Jan 20
+    et = pytz.timezone('America/New_York')
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    ts_et = timestamp.astimezone(et)
+    trading_date = ts_et.date()
 
     # Skip weekend check (handled by _is_weekend)
     if trading_date.weekday() >= 5:
@@ -530,6 +519,10 @@ class DataSync:
         """
         Store or update a single bar in database.
 
+        For daily bars, uses trading date (in ET) to find existing bars to prevent
+        duplicates when Schwab returns different timestamps for the same trading day
+        (e.g., 21:00 PST during market hours vs 22:00 PST after close).
+
         Args:
             symbol: Stock ticker symbol
             timeframe: Bar timeframe
@@ -538,6 +531,9 @@ class DataSync:
         Returns:
             Tuple of (stored, updated) booleans
         """
+        import pytz
+        from sqlalchemy import func
+
         # Ensure timestamp is timezone-aware (UTC) before database operations
         # Schwab API may return offset-naive datetime
         bar_timestamp = bar_data['timestamp']
@@ -546,22 +542,49 @@ class DataSync:
 
         logger.debug(f"Storing bar: {symbol} {timeframe} {bar_timestamp} (tzinfo={bar_timestamp.tzinfo})")
 
-        # Check if bar already exists
-        existing_bar = (
-            self.session.query(MarketData)
-            .filter(
-                and_(
-                    MarketData.symbol == symbol,
-                    MarketData.timeframe == timeframe,
-                    MarketData.timestamp == bar_timestamp,
+        existing_bar = None
+
+        if timeframe == '1D':
+            # For daily bars, find existing bar by trading date (in ET) to prevent duplicates
+            # when timestamps differ (21:00 vs 22:00 PST for same trading day)
+            et = pytz.timezone('America/New_York')
+            bar_et = bar_timestamp.astimezone(et)
+            trading_date = bar_et.date()
+
+            # Find any existing bar for this trading date
+            existing_bar = (
+                self.session.query(MarketData)
+                .filter(
+                    and_(
+                        MarketData.symbol == symbol,
+                        MarketData.timeframe == timeframe,
+                        func.date(
+                            func.timezone('America/New_York', MarketData.timestamp)
+                        ) == trading_date,
+                    )
                 )
+                .first()
             )
-            .first()
-        )
+            if existing_bar:
+                logger.debug(f"Found existing daily bar for trading date {trading_date} at {existing_bar.timestamp}")
+        else:
+            # For intraday bars, use exact timestamp match
+            existing_bar = (
+                self.session.query(MarketData)
+                .filter(
+                    and_(
+                        MarketData.symbol == symbol,
+                        MarketData.timeframe == timeframe,
+                        MarketData.timestamp == bar_timestamp,
+                    )
+                )
+                .first()
+            )
 
         if existing_bar:
-            # Update existing bar
+            # Update existing bar - update timestamp too in case it changed (21:00 → 22:00)
             logger.debug(f"Found existing bar at {existing_bar.timestamp}, updating")
+            existing_bar.timestamp = bar_timestamp  # Update to latest timestamp
             existing_bar.open = bar_data['open']
             existing_bar.high = bar_data['high']
             existing_bar.low = bar_data['low']
