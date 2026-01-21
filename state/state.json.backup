@@ -1,0 +1,19 @@
+{
+  "last_run": "2026-01-15T05:19:37.734933+00:00",
+  "vol_state": 0,
+  "trend_state": "Sideways",
+  "current_positions": {
+    "TQQQ": 38,
+    "QQQ": 13
+  },
+  "account_equity": 10162.5375,
+  "last_allocation": {
+    "TQQQ": 0.2,
+    "QQQ": 0.8
+  },
+  "metadata": {
+    "created_at": null,
+    "version": "1.0"
+  },
+  "initial_qqq_price": 622.94
+}
