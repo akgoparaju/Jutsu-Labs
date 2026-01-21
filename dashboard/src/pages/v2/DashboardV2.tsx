@@ -1,15 +1,16 @@
 /**
- * DashboardV2 - Fully Responsive Dashboard
+ * DashboardV2 - Fully Responsive Dashboard with Multi-Strategy Support
  *
  * Responsive version of the main dashboard with:
  * - Mobile-first design patterns
  * - Card view for positions on mobile
  * - Responsive grids that adapt to screen size
  * - Touch-optimized controls
+ * - Multi-strategy comparison for key metrics
  * - ALL permission checks preserved from v1
  *
- * @version 2.0.0
- * @part Responsive UI - Phase 3
+ * @version 2.1.0
+ * @part Responsive UI - Phase 3 + Multi-Strategy Comparison
  */
 
 import { useStatus, useRegime, useIndicators, useStartEngine, useStopEngine, useSwitchMode } from '../../hooks/useStatus'
@@ -22,7 +23,15 @@ import { PositionsDisplay } from '../../components/PositionsDisplay'
 import { performanceApi } from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
 import { useStrategy } from '../../contexts/StrategyContext'
-import StrategySelector from '../../components/StrategySelector'
+import { StrategyMultiSelector } from '../../components/StrategyMultiSelector'
+import { useMultiStrategyPerformanceData } from '../../hooks/useMultiStrategyData'
+import {
+  STRATEGY_COLORS,
+  BASELINE_STYLE,
+  STRATEGY_COLOR_HEX,
+  getPatternIndicator,
+  StrategyStyle,
+} from '../../constants/strategyColors'
 import { ResponsiveCard, ResponsiveGrid, ResponsiveText, MetricCard } from '../../components/ui'
 import { useIsMobileOrSmaller } from '../../hooks/useMediaQuery'
 import clsx from 'clsx'
@@ -102,6 +111,41 @@ function calculateCalendarDays(history: Array<{ timestamp?: string }>): number {
   return Math.floor(diffMs / (1000 * 60 * 60 * 24)) + 1
 }
 
+// Helper to format metric values
+function formatMetricValue(value: number | null | undefined, format: 'percent' | 'currency' | 'number'): string {
+  if (value === null || value === undefined) return '—'
+
+  switch (format) {
+    case 'percent':
+      return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`
+    case 'currency':
+      return `$${value.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+    case 'number':
+      return value.toFixed(2)
+    default:
+      return String(value)
+  }
+}
+
+// Find best value in comparison
+function findBestValue(values: Record<string, number | null | undefined>, higherIsBetter = true): string | null {
+  let bestId: string | null = null
+  let bestValue: number | null = null
+
+  Object.entries(values).forEach(([id, value]) => {
+    if (value === null || value === undefined) return
+    if (bestValue === null) {
+      bestId = id
+      bestValue = value
+    } else if (higherIsBetter ? value > bestValue : value < bestValue) {
+      bestId = id
+      bestValue = value
+    }
+  })
+
+  return bestId
+}
+
 function DashboardV2() {
   const { data: status, isLoading: statusLoading } = useStatus()
   const { data: regime } = useRegime()
@@ -111,8 +155,22 @@ function DashboardV2() {
   const switchMode = useSwitchMode()
   const queryClient = useQueryClient()
   const { hasPermission } = useAuth()
-  const { selectedStrategy } = useStrategy()
+  const { compareStrategies, getStrategyDisplayName } = useStrategy()
   const isMobile = useIsMobileOrSmaller()
+
+  // Use compareStrategies for multi-strategy or default to first
+  const selectedStrategies = compareStrategies.length > 0 ? compareStrategies : []
+  const primaryStrategy = selectedStrategies[0]
+  const isComparisonMode = selectedStrategies.length > 1
+
+  // Build strategy styles for comparison
+  const strategyStyles = useMemo(() => {
+    const styles: Record<string, StrategyStyle> = {}
+    selectedStrategies.forEach((id, index) => {
+      styles[id] = STRATEGY_COLORS[index] || STRATEGY_COLORS[0]
+    })
+    return styles
+  }, [selectedStrategies])
 
   // Time range state for portfolio metrics
   const [timeRange, setTimeRange] = useState<DashboardTimeRange>('90d')
@@ -120,16 +178,24 @@ function DashboardV2() {
   // Calculate query params based on time range
   const queryParams = useMemo(() => getTimeRangeParams(timeRange), [timeRange])
 
-  // Fetch performance data for baseline values
+  // Fetch single strategy performance data
   const { data: performanceData } = useQuery({
-    queryKey: ['performance', '', queryParams.days, queryParams.start_date, selectedStrategy],
+    queryKey: ['performance', '', queryParams.days, queryParams.start_date, primaryStrategy],
     queryFn: () => performanceApi.getPerformance({
       days: queryParams.days,
       start_date: queryParams.start_date,
-      strategy_id: selectedStrategy,
+      strategy_id: primaryStrategy,
     }).then(res => res.data),
     refetchInterval: 30000,
+    enabled: selectedStrategies.length === 1,
   })
+
+  // Multi-strategy performance data
+  const { data: multiPerformanceData, isLoading: isMultiLoading } = useMultiStrategyPerformanceData(
+    selectedStrategies,
+    { mode: undefined, days: queryParams.days, start_date: queryParams.start_date },
+    selectedStrategies.length > 1
+  )
 
   // Get latest baseline from most recent snapshot
   const latestSnapshot = performanceData?.history?.[performanceData.history.length - 1]
@@ -240,8 +306,8 @@ function DashboardV2() {
           )}
         </div>
 
-        {/* Strategy Selector */}
-        <StrategySelector showCompare={false} compact={isMobile} />
+        {/* Strategy Multi-Selector */}
+        <StrategyMultiSelector compact={isMobile} />
       </div>
 
       {/* Schwab Token Status Banner - Admin Only */}
@@ -253,6 +319,357 @@ function DashboardV2() {
         onClose={() => setShowTradeModal(false)}
         onSuccess={handleTradeSuccess}
       />
+
+      {/* Multi-Strategy Comparison - Key Metrics */}
+      {isComparisonMode && (
+        <ResponsiveCard padding="md">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+            <ResponsiveText variant="h2" as="h3">
+              Strategy Comparison
+            </ResponsiveText>
+
+            {/* Time Range Buttons */}
+            <div className="flex bg-slate-700/50 rounded-lg p-1 overflow-x-auto">
+              {(['90d', 'ytd', '1y', 'all'] as DashboardTimeRange[]).map((range) => (
+                <button
+                  key={range}
+                  onClick={() => setTimeRange(range)}
+                  className={clsx(
+                    'px-2.5 sm:px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-all whitespace-nowrap',
+                    'min-h-[36px] touch-target',
+                    timeRange === range
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'text-gray-400 hover:text-white hover:bg-slate-600/50'
+                  )}
+                >
+                  {range === '90d' ? '90D' : range === 'ytd' ? 'YTD' : range === '1y' ? '1Y' : 'All'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {isMultiLoading ? (
+            <div className="flex items-center justify-center h-32">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-400"></div>
+            </div>
+          ) : isMobile ? (
+            // Mobile Card View
+            <div className="space-y-3">
+              {selectedStrategies.map((strategyId, index) => {
+                const perfData = multiPerformanceData?.[strategyId]
+                const style = strategyStyles[strategyId]
+                const history = perfData?.history || []
+                const lastSnapshot = history[history.length - 1]
+                const firstSnapshot = history[0]
+                const calendarDays = calculateCalendarDays(history)
+
+                // Calculate period return
+                let periodReturn = 0
+                if (history.length > 0 && timeRange === 'all') {
+                  periodReturn = lastSnapshot?.cumulative_return ?? 0
+                } else if (history.length > 1) {
+                  periodReturn = calculatePeriodReturn(
+                    lastSnapshot?.cumulative_return ?? 0,
+                    firstSnapshot?.cumulative_return ?? 0
+                  )
+                }
+                const annualizedReturn = calculateAnnualizedReturn(periodReturn, calendarDays)
+
+                return (
+                  <div
+                    key={strategyId}
+                    className="bg-slate-700/30 rounded-lg p-4"
+                    style={{ borderLeft: `4px solid ${style?.color || STRATEGY_COLOR_HEX[0]}` }}
+                  >
+                    <div className="flex items-center gap-2 mb-3">
+                      <div
+                        className="w-3 h-3 rounded-full"
+                        style={{ backgroundColor: style?.color || STRATEGY_COLOR_HEX[0] }}
+                      />
+                      <span className="text-xs text-gray-500 font-mono">
+                        {getPatternIndicator(index)}
+                      </span>
+                      <span className="font-medium text-white">
+                        {getStrategyDisplayName(strategyId).replace('Hierarchical Adaptive ', '')}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3 text-sm">
+                      <div>
+                        <span className="text-gray-400 block">Total Equity</span>
+                        <span className="text-white font-medium">
+                          {formatMetricValue(perfData?.current?.total_equity, 'currency')}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-gray-400 block">{getTimeRangeLabel(timeRange)} Return</span>
+                        <span className={`font-medium ${periodReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {formatMetricValue(periodReturn, 'percent')}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-gray-400 block">CAGR</span>
+                        <span className={`font-medium ${annualizedReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {formatMetricValue(annualizedReturn, 'percent')}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-gray-400 block">Sharpe</span>
+                        <span className="text-white font-medium">
+                          {formatMetricValue(perfData?.current?.sharpe_ratio, 'number')}
+                        </span>
+                      </div>
+                      <div className="col-span-2">
+                        <span className="text-gray-400 block">Max Drawdown</span>
+                        <span className="text-red-400 font-medium">
+                          {formatMetricValue(perfData?.current?.max_drawdown, 'percent')}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+
+              {/* Baseline Card */}
+              <div
+                className="bg-slate-700/30 rounded-lg p-4"
+                style={{ borderLeft: `4px solid ${BASELINE_STYLE.color}` }}
+              >
+                <div className="flex items-center gap-2 mb-3">
+                  <div
+                    className="w-3 h-3 rounded-full"
+                    style={{ backgroundColor: BASELINE_STYLE.color }}
+                  />
+                  <span className="font-medium text-gray-400">QQQ Baseline</span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <span className="text-gray-400 block">{getTimeRangeLabel(timeRange)} Return</span>
+                    <span className={`font-medium ${periodMetrics.periodBaselineReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {formatMetricValue(periodMetrics.periodBaselineReturn, 'percent')}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block">CAGR</span>
+                    <span className={`font-medium ${periodMetrics.baselineAnnualizedReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {formatMetricValue(periodMetrics.baselineAnnualizedReturn, 'percent')}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            // Desktop Table View
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-slate-700">
+                    <th className="text-left py-3 px-4 text-gray-400 font-medium">Metric</th>
+                    {selectedStrategies.map((strategyId, index) => (
+                      <th key={strategyId} className="text-center py-3 px-4">
+                        <div className="flex items-center justify-center gap-2">
+                          <div
+                            className="w-3 h-3 rounded-full"
+                            style={{ backgroundColor: strategyStyles[strategyId]?.color || STRATEGY_COLOR_HEX[0] }}
+                          />
+                          <span className="text-xs text-gray-500 font-mono">
+                            {getPatternIndicator(index)}
+                          </span>
+                          <span className="text-gray-200 font-medium">
+                            {getStrategyDisplayName(strategyId).replace('Hierarchical Adaptive ', '')}
+                          </span>
+                        </div>
+                      </th>
+                    ))}
+                    <th className="text-center py-3 px-4">
+                      <div className="flex items-center justify-center gap-2">
+                        <div
+                          className="w-3 h-3 rounded-full"
+                          style={{ backgroundColor: BASELINE_STYLE.color }}
+                        />
+                        <span className="text-gray-400">QQQ</span>
+                      </div>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {/* Total Equity Row */}
+                  {(() => {
+                    const values: Record<string, number | null | undefined> = {}
+                    selectedStrategies.forEach((id) => {
+                      values[id] = multiPerformanceData?.[id]?.current?.total_equity
+                    })
+                    const bestId = findBestValue(values, true)
+
+                    return (
+                      <tr className="border-b border-slate-700/50">
+                        <td className="py-3 px-4 text-gray-300">Total Equity</td>
+                        {selectedStrategies.map((strategyId) => {
+                          const value = values[strategyId]
+                          const isBest = strategyId === bestId
+                          return (
+                            <td key={strategyId} className={`py-3 px-4 text-center text-gray-200 ${isBest ? 'font-bold' : ''}`}>
+                              {formatMetricValue(value, 'currency')}
+                              {isBest && ' ★'}
+                            </td>
+                          )
+                        })}
+                        <td className="py-3 px-4 text-center text-gray-400">—</td>
+                      </tr>
+                    )
+                  })()}
+
+                  {/* Period Return Row */}
+                  {(() => {
+                    const values: Record<string, number | null | undefined> = {}
+                    selectedStrategies.forEach((id) => {
+                      const perfData = multiPerformanceData?.[id]
+                      const history = perfData?.history || []
+                      if (history.length > 0) {
+                        const lastSnapshot = history[history.length - 1]
+                        const firstSnapshot = history[0]
+                        if (timeRange === 'all') {
+                          values[id] = lastSnapshot?.cumulative_return ?? 0
+                        } else if (history.length > 1) {
+                          values[id] = calculatePeriodReturn(
+                            lastSnapshot?.cumulative_return ?? 0,
+                            firstSnapshot?.cumulative_return ?? 0
+                          )
+                        }
+                      }
+                    })
+                    const bestId = findBestValue(values, true)
+
+                    return (
+                      <tr className="border-b border-slate-700/50">
+                        <td className="py-3 px-4 text-gray-300">{getTimeRangeLabel(timeRange)} Return</td>
+                        {selectedStrategies.map((strategyId) => {
+                          const value = values[strategyId]
+                          const isBest = strategyId === bestId
+                          return (
+                            <td key={strategyId} className={`py-3 px-4 text-center ${
+                              isBest ? 'font-bold' : ''
+                            } ${value !== null && value !== undefined && value >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatMetricValue(value, 'percent')}
+                              {isBest && ' ★'}
+                            </td>
+                          )
+                        })}
+                        <td className={`py-3 px-4 text-center ${
+                          periodMetrics.periodBaselineReturn >= 0 ? 'text-green-400' : 'text-red-400'
+                        }`}>
+                          {formatMetricValue(periodMetrics.periodBaselineReturn, 'percent')}
+                        </td>
+                      </tr>
+                    )
+                  })()}
+
+                  {/* CAGR Row */}
+                  {(() => {
+                    const values: Record<string, number | null | undefined> = {}
+                    selectedStrategies.forEach((id) => {
+                      const perfData = multiPerformanceData?.[id]
+                      const history = perfData?.history || []
+                      if (history.length > 0) {
+                        const lastSnapshot = history[history.length - 1]
+                        const firstSnapshot = history[0]
+                        const calendarDays = calculateCalendarDays(history)
+                        let periodReturn = 0
+                        if (timeRange === 'all') {
+                          periodReturn = lastSnapshot?.cumulative_return ?? 0
+                        } else if (history.length > 1) {
+                          periodReturn = calculatePeriodReturn(
+                            lastSnapshot?.cumulative_return ?? 0,
+                            firstSnapshot?.cumulative_return ?? 0
+                          )
+                        }
+                        values[id] = calculateAnnualizedReturn(periodReturn, calendarDays)
+                      }
+                    })
+                    const bestId = findBestValue(values, true)
+
+                    return (
+                      <tr className="border-b border-slate-700/50">
+                        <td className="py-3 px-4 text-gray-300">CAGR</td>
+                        {selectedStrategies.map((strategyId) => {
+                          const value = values[strategyId]
+                          const isBest = strategyId === bestId
+                          return (
+                            <td key={strategyId} className={`py-3 px-4 text-center ${
+                              isBest ? 'font-bold' : ''
+                            } ${value !== null && value !== undefined && value >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatMetricValue(value, 'percent')}
+                              {isBest && ' ★'}
+                            </td>
+                          )
+                        })}
+                        <td className={`py-3 px-4 text-center ${
+                          periodMetrics.baselineAnnualizedReturn >= 0 ? 'text-green-400' : 'text-red-400'
+                        }`}>
+                          {formatMetricValue(periodMetrics.baselineAnnualizedReturn, 'percent')}
+                        </td>
+                      </tr>
+                    )
+                  })()}
+
+                  {/* Sharpe Ratio Row */}
+                  {(() => {
+                    const values: Record<string, number | null | undefined> = {}
+                    selectedStrategies.forEach((id) => {
+                      values[id] = multiPerformanceData?.[id]?.current?.sharpe_ratio
+                    })
+                    const bestId = findBestValue(values, true)
+
+                    return (
+                      <tr className="border-b border-slate-700/50">
+                        <td className="py-3 px-4 text-gray-300">Sharpe Ratio</td>
+                        {selectedStrategies.map((strategyId) => {
+                          const value = values[strategyId]
+                          const isBest = strategyId === bestId
+                          return (
+                            <td key={strategyId} className={`py-3 px-4 text-center text-gray-200 ${isBest ? 'font-bold' : ''}`}>
+                              {formatMetricValue(value, 'number')}
+                              {isBest && ' ★'}
+                            </td>
+                          )
+                        })}
+                        <td className="py-3 px-4 text-center text-gray-400">—</td>
+                      </tr>
+                    )
+                  })()}
+
+                  {/* Max Drawdown Row */}
+                  {(() => {
+                    const values: Record<string, number | null | undefined> = {}
+                    selectedStrategies.forEach((id) => {
+                      values[id] = multiPerformanceData?.[id]?.current?.max_drawdown
+                    })
+                    const bestId = findBestValue(values, false) // Lower is better
+
+                    return (
+                      <tr className="border-b border-slate-700/50">
+                        <td className="py-3 px-4 text-gray-300">Max Drawdown</td>
+                        {selectedStrategies.map((strategyId) => {
+                          const value = values[strategyId]
+                          const isBest = strategyId === bestId
+                          return (
+                            <td key={strategyId} className={`py-3 px-4 text-center text-red-400 ${isBest ? 'font-bold' : ''}`}>
+                              {formatMetricValue(value, 'percent')}
+                              {isBest && ' ★'}
+                            </td>
+                          )
+                        })}
+                        <td className="py-3 px-4 text-center text-gray-400">—</td>
+                      </tr>
+                    )
+                  })()}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </ResponsiveCard>
+      )}
 
       {/* 1. Engine Control - Admin Only */}
       {hasPermission('engine:control') && (
@@ -348,8 +765,8 @@ function DashboardV2() {
         </ResponsiveCard>
       )}
 
-      {/* 2. Portfolio Returns - Responsive Grid */}
-      {status?.portfolio && (
+      {/* 2. Portfolio Returns - Responsive Grid (Single Strategy View Only) */}
+      {status?.portfolio && !isComparisonMode && (
         <ResponsiveCard padding="md">
           {/* Header with Time Range Selector */}
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">

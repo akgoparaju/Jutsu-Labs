@@ -1,20 +1,29 @@
 /**
- * PerformanceV2 - Responsive Performance Page
+ * PerformanceV2 - Responsive Performance Page with Multi-Strategy Support
  *
  * Fully responsive performance dashboard with charts, metrics, and tables.
+ * Supports comparison of up to 3 strategies with overlaid equity curves.
  *
- * @version 2.0.0
- * @part Responsive UI - Phase 4
+ * @version 2.1.0
+ * @part Responsive UI - Phase 4 + Multi-Strategy Comparison
  */
 
 import { useQuery } from '@tanstack/react-query'
 import { useState, useEffect, useRef, useMemo } from 'react'
-import { performanceApi } from '../../api/client'
+import { performanceApi, PerformanceSnapshot } from '../../api/client'
 import { createChart, IChartApi, ISeriesApi, LineData, TickMarkType } from 'lightweight-charts'
 import { ResponsiveCard, ResponsiveText, ResponsiveGrid, MetricCard } from '../../components/ui'
 import { useIsMobileOrSmaller, useIsTablet } from '../../hooks/useMediaQuery'
 import { useStrategy } from '../../contexts/StrategyContext'
-import StrategySelector from '../../components/StrategySelector'
+import { StrategyMultiSelector } from '../../components/StrategyMultiSelector'
+import { useMultiStrategyPerformanceData } from '../../hooks/useMultiStrategyData'
+import {
+  STRATEGY_COLORS,
+  BASELINE_STYLE,
+  STRATEGY_COLOR_HEX,
+  getPatternIndicator,
+  StrategyStyle,
+} from '../../constants/strategyColors'
 
 // Time range options
 type TimeRange = '30d' | '90d' | 'ytd' | '1y' | 'all' | 'custom'
@@ -26,7 +35,7 @@ interface TimeRangeParams {
 
 function getTimeRangeParams(timeRange: TimeRange, customStartDate?: string, _customEndDate?: string): TimeRangeParams {
   const now = new Date()
-  
+
   switch (timeRange) {
     case '30d':
       return { days: 30 }
@@ -89,59 +98,268 @@ function calculateCalendarDays(history: Array<{ timestamp?: string }>): number {
   return Math.floor(diffMs / (1000 * 60 * 60 * 24)) + 1
 }
 
+// Helper to format metric values
+function formatMetricValue(value: number | null | undefined, format: 'percent' | 'currency' | 'number'): string {
+  if (value === null || value === undefined) return '—'
+
+  switch (format) {
+    case 'percent':
+      return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`
+    case 'currency':
+      return `$${value.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+    case 'number':
+      return value.toFixed(2)
+    default:
+      return String(value)
+  }
+}
+
+// Find best value in comparison
+function findBestValue(values: Record<string, number | null | undefined>, higherIsBetter = true): string | null {
+  let bestId: string | null = null
+  let bestValue: number | null = null
+
+  Object.entries(values).forEach(([id, value]) => {
+    if (value === null || value === undefined) return
+    if (bestValue === null) {
+      bestId = id
+      bestValue = value
+    } else if (higherIsBetter ? value > bestValue : value < bestValue) {
+      bestId = id
+      bestValue = value
+    }
+  })
+
+  return bestId
+}
+
+// Comparison Row Component for Multi-Strategy Tables
+interface ComparisonRowProps {
+  label: string
+  values: Record<string, number | null | undefined>
+  strategyStyles: Record<string, StrategyStyle>
+  format: 'percent' | 'currency' | 'number'
+  higherIsBetter?: boolean
+  baselineValue?: number | null
+  strategyOrder: string[]
+}
+
+function ComparisonRow({
+  label,
+  values,
+  strategyStyles: _strategyStyles,
+  format,
+  higherIsBetter = true,
+  baselineValue,
+  strategyOrder,
+}: ComparisonRowProps) {
+  // Note: _strategyStyles available for future color-coded cell backgrounds
+  const bestId = findBestValue(values, higherIsBetter)
+
+  return (
+    <tr className="border-b border-slate-700/50">
+      <td className="py-3 px-4 text-gray-300">{label}</td>
+      {strategyOrder.map((strategyId) => {
+        const value = values[strategyId]
+        const isBest = strategyId === bestId
+        return (
+          <td
+            key={strategyId}
+            className={`py-3 px-4 text-center ${
+              isBest ? 'font-bold' : ''
+            } ${
+              format === 'percent'
+                ? value !== null && value !== undefined && value >= 0
+                  ? 'text-green-400'
+                  : 'text-red-400'
+                : 'text-gray-200'
+            }`}
+          >
+            {formatMetricValue(value, format)}
+            {isBest && ' ★'}
+          </td>
+        )
+      })}
+      {baselineValue !== undefined && (
+        <td className="py-3 px-4 text-center text-gray-400">
+          {formatMetricValue(baselineValue, format)}
+        </td>
+      )}
+    </tr>
+  )
+}
+
+// Mobile Comparison Card Component
+interface MobileComparisonCardProps {
+  strategyName: string
+  style: StrategyStyle
+  metrics: {
+    periodReturn?: number | null
+    annualized?: number | null
+    sharpe?: number | null
+    maxDrawdown?: number | null
+    totalEquity?: number | null
+  }
+  rank?: number
+}
+
+function MobileComparisonCard({
+  strategyName,
+  style,
+  metrics,
+  rank,
+}: MobileComparisonCardProps) {
+  return (
+    <ResponsiveCard padding="md">
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div
+              className="w-3 h-3 rounded-full"
+              style={{ backgroundColor: style.color }}
+            />
+            <span className="text-gray-500 text-xs font-mono">{style.patternDesc}</span>
+            <span className="font-medium text-white">{strategyName}</span>
+          </div>
+          {rank === 1 && (
+            <span className="text-amber-400">★</span>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 text-sm">
+          <div>
+            <span className="text-gray-400 block">Total Equity</span>
+            <span className="text-white font-medium">
+              {formatMetricValue(metrics.totalEquity, 'currency')}
+            </span>
+          </div>
+          <div>
+            <span className="text-gray-400 block">Period Return</span>
+            <span className={`font-medium ${
+              (metrics.periodReturn ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
+            }`}>
+              {formatMetricValue(metrics.periodReturn, 'percent')}
+            </span>
+          </div>
+          <div>
+            <span className="text-gray-400 block">Annualized</span>
+            <span className={`font-medium ${
+              (metrics.annualized ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
+            }`}>
+              {formatMetricValue(metrics.annualized, 'percent')}
+            </span>
+          </div>
+          <div>
+            <span className="text-gray-400 block">Sharpe</span>
+            <span className="text-white font-medium">
+              {formatMetricValue(metrics.sharpe, 'number')}
+            </span>
+          </div>
+          <div className="col-span-2">
+            <span className="text-gray-400 block">Max Drawdown</span>
+            <span className="text-red-400 font-medium">
+              {formatMetricValue(metrics.maxDrawdown, 'percent')}
+            </span>
+          </div>
+        </div>
+      </div>
+    </ResponsiveCard>
+  )
+}
+
 function PerformanceV2() {
   const isMobile = useIsMobileOrSmaller()
   const isTablet = useIsTablet()
-  const { selectedStrategy, getStrategyDisplayName } = useStrategy()
+  const {
+    selectedStrategies,
+    getStrategyDisplayName,
+    getStyleForStrategyIndex,
+    baselineStyle,
+  } = useStrategy()
   const [mode, setMode] = useState('')
   const [timeRange, setTimeRange] = useState<TimeRange>('90d')
   const [showCustomModal, setShowCustomModal] = useState(false)
   const [customStartDate, setCustomStartDate] = useState('')
   const [customEndDate, setCustomEndDate] = useState('')
 
-  const queryParams = useMemo(() => 
+  // Single strategy dropdown for regime table in comparison mode
+  const [regimeStrategyId, setRegimeStrategyId] = useState<string>(selectedStrategies[0] || '')
+
+  // Update regime strategy when selection changes
+  useEffect(() => {
+    if (selectedStrategies.length > 0 && !selectedStrategies.includes(regimeStrategyId)) {
+      setRegimeStrategyId(selectedStrategies[0])
+    }
+  }, [selectedStrategies, regimeStrategyId])
+
+  const queryParams = useMemo(() =>
     getTimeRangeParams(timeRange, customStartDate, customEndDate),
     [timeRange, customStartDate, customEndDate]
   )
 
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
-  const seriesRef = useRef<ISeriesApi<'Line'> | null>(null)
+  // Track series by strategy ID for multi-strategy support
+  const strategySeriesRef = useRef<Map<string, ISeriesApi<'Line'>>>(new Map())
   const baselineSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
-  // Track chart readiness to trigger data update when chart is initialized
-  // Fixes race condition where equityCurve data loads before chart is ready
+  // Track chart readiness
   const [chartReady, setChartReady] = useState(false)
 
-  const { data: performance, isLoading } = useQuery({
-    queryKey: ['performance', mode, timeRange, queryParams, selectedStrategy],
+  // Determine if we're in comparison mode
+  const isComparisonMode = selectedStrategies.length > 1
+
+  // Single strategy data (for non-comparison mode)
+  const { data: singlePerformance, isLoading: isSingleLoading } = useQuery({
+    queryKey: ['performance', mode, timeRange, queryParams, selectedStrategies[0]],
     queryFn: () => performanceApi.getPerformance({
       mode: mode || undefined,
       days: queryParams.days,
       start_date: queryParams.start_date,
-      strategy_id: selectedStrategy,
+      strategy_id: selectedStrategies[0],
     }).then(res => res.data),
+    enabled: selectedStrategies.length === 1,
   })
 
-  const { data: equityCurve } = useQuery({
-    queryKey: ['equityCurve', mode, timeRange, queryParams, selectedStrategy],
+  const { data: singleEquityCurve } = useQuery({
+    queryKey: ['equityCurve', mode, timeRange, queryParams, selectedStrategies[0]],
     queryFn: () => performanceApi.getEquityCurve({
       mode: mode || undefined,
       days: queryParams.days,
       start_date: queryParams.start_date,
-      strategy_id: selectedStrategy,
+      strategy_id: selectedStrategies[0],
     }).then(res => res.data),
+    enabled: selectedStrategies.length === 1,
   })
 
+  // Multi-strategy data
+  const { data: multiPerformanceData, isLoading: isMultiLoading } = useMultiStrategyPerformanceData(
+    selectedStrategies,
+    { mode: mode || undefined, days: queryParams.days, start_date: queryParams.start_date },
+    selectedStrategies.length > 1
+  )
+
+  // Regime breakdown for single strategy view (or dropdown selection in comparison)
+  const targetRegimeStrategy = isComparisonMode ? regimeStrategyId : selectedStrategies[0]
   const { data: regimeBreakdown } = useQuery({
-    queryKey: ['regimeBreakdown', mode, timeRange, queryParams, selectedStrategy],
+    queryKey: ['regimeBreakdown', mode, timeRange, queryParams, targetRegimeStrategy],
     queryFn: () => performanceApi.getRegimeBreakdown({
       mode: mode || undefined,
       days: queryParams.days,
       start_date: queryParams.start_date,
-      strategy_id: selectedStrategy,
+      strategy_id: targetRegimeStrategy,
     }).then(res => res.data),
+    enabled: !!targetRegimeStrategy,
   })
 
+  // Combined loading state
+  const isLoading = isComparisonMode ? isMultiLoading : isSingleLoading
+
+  // Get performance data based on mode
+  const performance = isComparisonMode
+    ? (multiPerformanceData?.[selectedStrategies[0]] ?? null)
+    : singlePerformance
+
+  // Period metrics calculation for single strategy
   const periodMetrics = useMemo(() => {
     if (!performance?.history || performance.history.length === 0) {
       return { periodReturn: 0, periodBaselineReturn: 0, periodAlpha: 0, annualizedReturn: 0, calendarDays: 0 }
@@ -183,13 +401,69 @@ function PerformanceV2() {
     }
   }, [performance?.history, timeRange])
 
+  // Multi-strategy period metrics
+  const multiPeriodMetrics = useMemo(() => {
+    if (!isComparisonMode || !multiPerformanceData) return null
+
+    const metricsMap: Record<string, {
+      periodReturn: number
+      annualized: number
+      baselineReturn: number
+      alpha: number
+      calendarDays: number
+    }> = {}
+
+    selectedStrategies.forEach((strategyId) => {
+      const perfData = multiPerformanceData?.[strategyId]
+      if (!perfData?.history || perfData.history.length === 0) {
+        metricsMap[strategyId] = { periodReturn: 0, annualized: 0, baselineReturn: 0, alpha: 0, calendarDays: 0 }
+        return
+      }
+
+      const firstSnapshot = perfData.history[0]
+      const lastSnapshot = perfData.history[perfData.history.length - 1]
+      const calendarDays = calculateCalendarDays(perfData.history)
+
+      if (timeRange === 'all') {
+        const cumReturn = lastSnapshot.cumulative_return ?? 0
+        const baselineReturn = lastSnapshot.baseline_return ?? 0
+        const annualized = calculateAnnualizedReturn(cumReturn, calendarDays)
+        metricsMap[strategyId] = {
+          periodReturn: cumReturn,
+          annualized,
+          baselineReturn,
+          alpha: cumReturn - baselineReturn,
+          calendarDays
+        }
+      } else {
+        const periodReturn = calculatePeriodReturn(
+          lastSnapshot.cumulative_return ?? 0,
+          firstSnapshot.cumulative_return ?? 0
+        )
+        const baselineReturn = calculatePeriodReturn(
+          lastSnapshot.baseline_return ?? 0,
+          firstSnapshot.baseline_return ?? 0
+        )
+        const annualized = calculateAnnualizedReturn(periodReturn, calendarDays)
+        metricsMap[strategyId] = {
+          periodReturn,
+          annualized,
+          baselineReturn,
+          alpha: periodReturn - baselineReturn,
+          calendarDays
+        }
+      }
+    })
+
+    return metricsMap
+  }, [isComparisonMode, multiPerformanceData, selectedStrategies, timeRange])
+
   // Initialize chart
   useEffect(() => {
     if (!chartContainerRef.current) return
     if (chartRef.current) return
 
     const chartHeight = isMobile ? 250 : 300
-    // Use fallback width to prevent chart creation with width 0 during layout transitions
     const initialWidth = chartContainerRef.current.clientWidth || 300
 
     chartRef.current = createChart(chartContainerRef.current, {
@@ -241,35 +515,6 @@ function PerformanceV2() {
       },
     })
 
-    seriesRef.current = chartRef.current.addLineSeries({
-      color: '#3b82f6',
-      lineWidth: 2,
-      title: 'Portfolio',
-      priceFormat: {
-        type: 'custom',
-        formatter: (price: number) => {
-          const sign = price >= 0 ? '+' : ''
-          return `${sign}${price.toFixed(2)}%`
-        },
-      },
-    })
-
-    baselineSeriesRef.current = chartRef.current.addLineSeries({
-      color: '#f59e0b',
-      lineWidth: 2,
-      lineStyle: 2,
-      title: 'QQQ Baseline',
-      priceFormat: {
-        type: 'custom',
-        formatter: (price: number) => {
-          const sign = price >= 0 ? '+' : ''
-          return `${sign}${price.toFixed(2)}%`
-        },
-      },
-    })
-
-    // Use ResizeObserver for reliable container size detection on mobile
-    // This fixes blank chart issue when switching to mobile view
     const resizeObserver = new ResizeObserver((entries) => {
       if (chartContainerRef.current && chartRef.current) {
         const width = entries[0]?.contentRect.width || chartContainerRef.current.clientWidth
@@ -280,7 +525,6 @@ function PerformanceV2() {
     })
     resizeObserver.observe(chartContainerRef.current)
 
-    // Signal chart is ready for data - triggers data update effect
     setChartReady(true)
 
     return () => {
@@ -289,21 +533,36 @@ function PerformanceV2() {
       if (chartRef.current) {
         chartRef.current.remove()
         chartRef.current = null
-        seriesRef.current = null
+        strategySeriesRef.current.clear()
         baselineSeriesRef.current = null
       }
     }
   }, [isLoading, isMobile])
 
-  // Update chart data
+  // Update chart data - Multi-strategy or single strategy
   useEffect(() => {
-    if (!chartRef.current || !seriesRef.current || !equityCurve?.data || equityCurve.data.length === 0) return
+    if (!chartRef.current || !chartReady) return
 
-    const firstPoint = equityCurve.data[0]
-    const firstValue = firstPoint?.value ?? 1
-    const firstBaseline = firstPoint?.baseline_value ?? 1
+    // Clear existing series
+    strategySeriesRef.current.forEach((series) => {
+      try {
+        chartRef.current?.removeSeries(series)
+      } catch {
+        // Series might already be removed
+      }
+    })
+    strategySeriesRef.current.clear()
+
+    if (baselineSeriesRef.current) {
+      try {
+        chartRef.current.removeSeries(baselineSeriesRef.current)
+      } catch {
+        // Series might already be removed
+      }
+      baselineSeriesRef.current = null
+    }
+
     const isAllTime = timeRange === 'all'
-
     const priceFormatter = isAllTime
       ? (price: number) => `$${price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
       : (price: number) => {
@@ -315,41 +574,122 @@ function PerformanceV2() {
       localization: { priceFormatter },
     })
 
-    seriesRef.current.applyOptions({
-      priceFormat: { type: 'custom', formatter: priceFormatter },
-    })
+    if (isComparisonMode && multiPerformanceData) {
+      // Multi-strategy chart
+      let baselineData: LineData[] = []
 
-    if (baselineSeriesRef.current) {
-      baselineSeriesRef.current.applyOptions({
+      selectedStrategies.forEach((strategyId, idx) => {
+        const perfData = multiPerformanceData?.[strategyId]
+        if (!perfData?.history || perfData.history.length === 0) return
+
+        const style = STRATEGY_COLORS[idx] || STRATEGY_COLORS[0]
+        const series = chartRef.current!.addLineSeries({
+          color: style.color,
+          lineStyle: style.lineStyle,
+          lineWidth: 2,
+          title: getStrategyDisplayName(strategyId),
+          priceFormat: { type: 'custom', formatter: priceFormatter },
+        })
+
+        const firstPoint = perfData.history[0]
+        const firstEquity = firstPoint?.total_equity ?? 1
+
+        if (isAllTime) {
+          const chartData: LineData[] = perfData.history.map((point: PerformanceSnapshot) => ({
+            time: point.timestamp.slice(0, 10) as string,
+            value: point.total_equity ?? 0,
+          }))
+          series.setData(chartData)
+        } else {
+          const chartData: LineData[] = perfData.history.map((point: PerformanceSnapshot) => ({
+            time: point.timestamp.slice(0, 10) as string,
+            value: firstEquity > 0 ? ((point.total_equity ?? firstEquity) / firstEquity - 1) * 100 : 0,
+          }))
+          series.setData(chartData)
+        }
+
+        strategySeriesRef.current.set(strategyId, series)
+
+        // Extract baseline data from first strategy
+        if (idx === 0) {
+          const firstBaseline = firstPoint?.baseline_value ?? 1
+          if (isAllTime) {
+            baselineData = perfData.history
+              .filter((p: PerformanceSnapshot) => p.baseline_value != null)
+              .map((point: PerformanceSnapshot) => ({
+                time: point.timestamp.slice(0, 10) as string,
+                value: point.baseline_value!,
+              }))
+          } else {
+            baselineData = perfData.history
+              .filter((p: PerformanceSnapshot) => p.baseline_value != null)
+              .map((point: PerformanceSnapshot) => ({
+                time: point.timestamp.slice(0, 10) as string,
+                value: firstBaseline > 0 ? (point.baseline_value! / firstBaseline - 1) * 100 : 0,
+              }))
+          }
+        }
+      })
+
+      // Add baseline series
+      if (baselineData.length > 0) {
+        baselineSeriesRef.current = chartRef.current.addLineSeries({
+          color: BASELINE_STYLE.color,
+          lineStyle: BASELINE_STYLE.lineStyle,
+          lineWidth: 2,
+          title: 'Baseline (QQQ)',
+          priceFormat: { type: 'custom', formatter: priceFormatter },
+        })
+        baselineSeriesRef.current.setData(baselineData)
+      }
+    } else if (!isComparisonMode && singleEquityCurve?.data && singleEquityCurve.data.length > 0) {
+      // Single strategy chart
+      const firstPoint = singleEquityCurve.data[0]
+      const firstValue = firstPoint?.value ?? 1
+      const firstBaseline = firstPoint?.baseline_value ?? 1
+
+      const series = chartRef.current.addLineSeries({
+        color: '#3b82f6',
+        lineWidth: 2,
+        title: 'Portfolio',
         priceFormat: { type: 'custom', formatter: priceFormatter },
       })
-    }
 
-    if (isAllTime) {
-      const chartData: LineData[] = equityCurve.data.map((point: { time: string; value: number }) => ({
-        time: point.time as string,
-        value: point.value,
-      }))
-      seriesRef.current.setData(chartData)
+      if (isAllTime) {
+        const chartData: LineData[] = singleEquityCurve.data.map((point: { time: string; value: number }) => ({
+          time: point.time as string,
+          value: point.value,
+        }))
+        series.setData(chartData)
+      } else {
+        const chartData: LineData[] = singleEquityCurve.data.map((point: { time: string; value: number }) => ({
+          time: point.time as string,
+          value: firstValue > 0 ? (point.value / firstValue - 1) * 100 : 0,
+        }))
+        series.setData(chartData)
+      }
 
-      if (baselineSeriesRef.current) {
-        const baselineData: LineData[] = equityCurve.data
+      strategySeriesRef.current.set('portfolio', series)
+
+      // Baseline series
+      baselineSeriesRef.current = chartRef.current.addLineSeries({
+        color: '#f59e0b',
+        lineWidth: 2,
+        lineStyle: 2,
+        title: 'QQQ Baseline',
+        priceFormat: { type: 'custom', formatter: priceFormatter },
+      })
+
+      if (isAllTime) {
+        const baselineData: LineData[] = singleEquityCurve.data
           .filter((point: { time: string; baseline_value?: number }) => point.baseline_value != null)
           .map((point: { time: string; baseline_value: number }) => ({
             time: point.time as string,
             value: point.baseline_value,
           }))
         baselineSeriesRef.current.setData(baselineData)
-      }
-    } else {
-      const chartData: LineData[] = equityCurve.data.map((point: { time: string; value: number }) => ({
-        time: point.time as string,
-        value: firstValue > 0 ? (point.value / firstValue - 1) * 100 : 0,
-      }))
-      seriesRef.current.setData(chartData)
-
-      if (baselineSeriesRef.current) {
-        const baselineData: LineData[] = equityCurve.data
+      } else {
+        const baselineData: LineData[] = singleEquityCurve.data
           .filter((point: { time: string; baseline_value?: number }) => point.baseline_value != null)
           .map((point: { time: string; baseline_value: number }) => ({
             time: point.time as string,
@@ -360,7 +700,16 @@ function PerformanceV2() {
     }
 
     chartRef.current?.timeScale().fitContent()
-  }, [equityCurve, timeRange, chartReady])
+  }, [singleEquityCurve, multiPerformanceData, timeRange, chartReady, isComparisonMode, selectedStrategies, getStrategyDisplayName])
+
+  // Build strategy styles map for comparison tables
+  const strategyStyles = useMemo(() => {
+    const styles: Record<string, StrategyStyle> = {}
+    selectedStrategies.forEach((id, idx) => {
+      styles[id] = getStyleForStrategyIndex(idx)
+    })
+    return styles
+  }, [selectedStrategies, getStyleForStrategyIndex])
 
   if (isLoading) {
     return (
@@ -411,44 +760,193 @@ function PerformanceV2() {
           </div>
         </div>
 
-        {/* Strategy Selector */}
-        <StrategySelector showCompare={false} compact={isMobile} />
+        {/* Strategy Multi-Selector */}
+        <StrategyMultiSelector compact={isMobile} />
       </div>
 
-      {/* Key Metrics */}
-      {performance?.current && (
-        <ResponsiveGrid columns={{ default: 2, md: 3, lg: 5 }} gap="md">
-          <MetricCard
-            label="Total Equity"
-            value={performance.current.total_equity ?? 0}
-            format="currency"
-          />
-          <MetricCard
-            label={`${getTimeRangeLabel(timeRange)} Return`}
-            value={periodMetrics.periodReturn}
-            format="percent"
-          />
-          <MetricCard
-            label="Annualized"
-            value={periodMetrics.annualizedReturn}
-            format="percent"
-          />
-          <MetricCard
-            label="Sharpe Ratio"
-            value={performance.current.sharpe_ratio ?? 0}
-            format="number"
-          />
-          <MetricCard
-            label="Max Drawdown"
-            value={performance.current.max_drawdown ?? 0}
-            format="percent"
-            className="col-span-2 md:col-span-1"
-          />
-        </ResponsiveGrid>
+      {/* Key Metrics - Comparison or Single View */}
+      {isComparisonMode && multiPeriodMetrics ? (
+        // Multi-Strategy Comparison Table
+        isMobile ? (
+          // Mobile: Stacked Cards
+          <div className="space-y-3">
+            {selectedStrategies.map((strategyId, idx) => {
+              const perfData = multiPerformanceData?.[strategyId]
+              const periodData = multiPeriodMetrics[strategyId]
+              return (
+                <MobileComparisonCard
+                  key={strategyId}
+                  strategyName={getStrategyDisplayName(strategyId)}
+                  style={strategyStyles[strategyId]}
+                  metrics={{
+                    totalEquity: perfData?.current?.total_equity,
+                    periodReturn: periodData?.periodReturn,
+                    annualized: periodData?.annualized,
+                    sharpe: perfData?.current?.sharpe_ratio,
+                    maxDrawdown: perfData?.current?.max_drawdown,
+                  }}
+                  rank={idx === 0 ? 1 : undefined}
+                />
+              )
+            })}
+            {/* Baseline Card */}
+            <MobileComparisonCard
+              strategyName="Baseline (QQQ)"
+              style={baselineStyle}
+              metrics={{
+                periodReturn: multiPeriodMetrics[selectedStrategies[0]]?.baselineReturn,
+                annualized: undefined,
+                sharpe: undefined,
+                maxDrawdown: undefined,
+                totalEquity: undefined,
+              }}
+            />
+          </div>
+        ) : (
+          // Desktop: Comparison Table
+          <ResponsiveCard padding="md">
+            <ResponsiveText variant="h2" as="h3" className="text-white mb-4">
+              {getTimeRangeLabel(timeRange)} Performance Comparison
+            </ResponsiveText>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead className="text-sm text-gray-400 border-b border-slate-700">
+                  <tr>
+                    <th className="py-3 px-4">Metric</th>
+                    {selectedStrategies.map((strategyId, idx) => (
+                      <th key={strategyId} className="py-3 px-4 text-center">
+                        <div className="flex items-center justify-center gap-2">
+                          <div
+                            className="w-3 h-3 rounded-full"
+                            style={{ backgroundColor: STRATEGY_COLOR_HEX[idx as keyof typeof STRATEGY_COLOR_HEX] }}
+                          />
+                          <span className="text-gray-500 text-xs font-mono">{getPatternIndicator(idx)}</span>
+                          <span style={{ color: STRATEGY_COLOR_HEX[idx as keyof typeof STRATEGY_COLOR_HEX] }}>
+                            {getStrategyDisplayName(strategyId)}
+                          </span>
+                        </div>
+                      </th>
+                    ))}
+                    <th className="py-3 px-4 text-center text-gray-400">
+                      <div className="flex items-center justify-center gap-2">
+                        <div
+                          className="w-3 h-3 rounded-full"
+                          style={{ backgroundColor: STRATEGY_COLOR_HEX.baseline }}
+                        />
+                        <span className="text-gray-500 text-xs font-mono">— —</span>
+                        <span>Baseline</span>
+                      </div>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <ComparisonRow
+                    label="Total Equity"
+                    values={Object.fromEntries(
+                      selectedStrategies.map((id) => [id, multiPerformanceData?.[id]?.current?.total_equity])
+                    )}
+                    strategyStyles={strategyStyles}
+                    format="currency"
+                    higherIsBetter={true}
+                    baselineValue={undefined}
+                    strategyOrder={selectedStrategies}
+                  />
+                  <ComparisonRow
+                    label={`${getTimeRangeLabel(timeRange)} Return`}
+                    values={Object.fromEntries(
+                      selectedStrategies.map((id) => [id, multiPeriodMetrics[id]?.periodReturn])
+                    )}
+                    strategyStyles={strategyStyles}
+                    format="percent"
+                    higherIsBetter={true}
+                    baselineValue={multiPeriodMetrics[selectedStrategies[0]]?.baselineReturn}
+                    strategyOrder={selectedStrategies}
+                  />
+                  <ComparisonRow
+                    label="Annualized"
+                    values={Object.fromEntries(
+                      selectedStrategies.map((id) => [id, multiPeriodMetrics[id]?.annualized])
+                    )}
+                    strategyStyles={strategyStyles}
+                    format="percent"
+                    higherIsBetter={true}
+                    baselineValue={undefined}
+                    strategyOrder={selectedStrategies}
+                  />
+                  <ComparisonRow
+                    label="Sharpe Ratio"
+                    values={Object.fromEntries(
+                      selectedStrategies.map((id) => [id, multiPerformanceData?.[id]?.current?.sharpe_ratio])
+                    )}
+                    strategyStyles={strategyStyles}
+                    format="number"
+                    higherIsBetter={true}
+                    baselineValue={undefined}
+                    strategyOrder={selectedStrategies}
+                  />
+                  <ComparisonRow
+                    label="Max Drawdown"
+                    values={Object.fromEntries(
+                      selectedStrategies.map((id) => [id, multiPerformanceData?.[id]?.current?.max_drawdown])
+                    )}
+                    strategyStyles={strategyStyles}
+                    format="percent"
+                    higherIsBetter={false}
+                    baselineValue={undefined}
+                    strategyOrder={selectedStrategies}
+                  />
+                  <ComparisonRow
+                    label="Alpha"
+                    values={Object.fromEntries(
+                      selectedStrategies.map((id) => [id, multiPeriodMetrics[id]?.alpha])
+                    )}
+                    strategyStyles={strategyStyles}
+                    format="percent"
+                    higherIsBetter={true}
+                    baselineValue={undefined}
+                    strategyOrder={selectedStrategies}
+                  />
+                </tbody>
+              </table>
+            </div>
+          </ResponsiveCard>
+        )
+      ) : (
+        // Single Strategy Metrics
+        performance?.current && (
+          <ResponsiveGrid columns={{ default: 2, md: 3, lg: 5 }} gap="md">
+            <MetricCard
+              label="Total Equity"
+              value={performance.current.total_equity ?? 0}
+              format="currency"
+            />
+            <MetricCard
+              label={`${getTimeRangeLabel(timeRange)} Return`}
+              value={periodMetrics.periodReturn}
+              format="percent"
+            />
+            <MetricCard
+              label="Annualized"
+              value={periodMetrics.annualizedReturn}
+              format="percent"
+            />
+            <MetricCard
+              label="Sharpe Ratio"
+              value={performance.current.sharpe_ratio ?? 0}
+              format="number"
+            />
+            <MetricCard
+              label="Max Drawdown"
+              value={performance.current.max_drawdown ?? 0}
+              format="percent"
+              className="col-span-2 md:col-span-1"
+            />
+          </ResponsiveGrid>
+        )
       )}
 
-      {/* Portfolio Holdings */}
-      {performance?.current && (
+      {/* Portfolio Holdings - Only show in single strategy mode */}
+      {!isComparisonMode && performance?.current && (
         <ResponsiveCard padding="md">
           <ResponsiveText variant="h2" as="h3" className="text-white mb-4">
             Portfolio Holdings
@@ -492,8 +990,8 @@ function PerformanceV2() {
         </ResponsiveCard>
       )}
 
-      {/* Trade Statistics */}
-      {performance?.current && (
+      {/* Trade Statistics - Only show in single strategy mode */}
+      {!isComparisonMode && performance?.current && (
         <ResponsiveGrid columns={{ default: 2, md: 4 }} gap="md">
           <MetricCard
             label="Total Trades"
@@ -531,29 +1029,70 @@ function PerformanceV2() {
                 : 'Percentage return from start of period'}
             </ResponsiveText>
           </div>
-          <div className="flex items-center gap-4 text-xs sm:text-sm">
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-0.5 bg-blue-500"></div>
-              <span className="text-gray-400">Portfolio</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-0.5 bg-amber-500" style={{ borderTop: '2px dashed #f59e0b' }}></div>
-              <span className="text-gray-400">QQQ</span>
-            </div>
+          <div className="flex flex-wrap items-center gap-3 text-xs sm:text-sm">
+            {isComparisonMode ? (
+              <>
+                {selectedStrategies.map((strategyId, idx) => (
+                  <div key={strategyId} className="flex items-center gap-2">
+                    <div
+                      className="w-4 h-0.5"
+                      style={{
+                        backgroundColor: STRATEGY_COLOR_HEX[idx as keyof typeof STRATEGY_COLOR_HEX],
+                        borderStyle: idx === 1 ? 'dashed' : idx === 2 ? 'dotted' : 'solid',
+                      }}
+                    />
+                    <span style={{ color: STRATEGY_COLOR_HEX[idx as keyof typeof STRATEGY_COLOR_HEX] }}>
+                      {getStrategyDisplayName(strategyId)}
+                    </span>
+                  </div>
+                ))}
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-0.5 border-t-2 border-dashed border-gray-400" />
+                  <span className="text-gray-400">QQQ</span>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-0.5 bg-blue-500"></div>
+                  <span className="text-gray-400">Portfolio</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-0.5 bg-amber-500" style={{ borderTop: '2px dashed #f59e0b' }}></div>
+                  <span className="text-gray-400">QQQ</span>
+                </div>
+              </>
+            )}
           </div>
         </div>
         <div ref={chartContainerRef} className="w-full" />
       </ResponsiveCard>
 
-      {/* Regime Performance - Card View (Mobile) or Table View (Desktop) */}
+      {/* Regime Performance */}
       {regimeBreakdown && (() => {
         const totalDays = regimeBreakdown.regimes?.reduce((sum: number, r: { days?: number }) => sum + (r.days ?? 0), 0) ?? 1
 
         return (
           <ResponsiveCard padding="md">
-            <ResponsiveText variant="h2" as="h3" className="text-white mb-4">
-              Performance by Regime
-            </ResponsiveText>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 gap-2">
+              <ResponsiveText variant="h2" as="h3" className="text-white">
+                Performance by Regime
+              </ResponsiveText>
+              {/* Strategy dropdown in comparison mode */}
+              {isComparisonMode && (
+                <select
+                  value={regimeStrategyId}
+                  onChange={(e) => setRegimeStrategyId(e.target.value)}
+                  className="px-3 py-2 bg-slate-700 rounded-lg border border-slate-600 min-h-[44px] text-sm"
+                >
+                  {selectedStrategies.map((id) => (
+                    <option key={id} value={id}>
+                      {getStrategyDisplayName(id)}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
 
             {isMobile ? (
               // Mobile Card View
@@ -686,8 +1225,8 @@ function PerformanceV2() {
         )
       })()}
 
-      {/* Daily Performance History - Simplified on Mobile */}
-      {performance?.history && performance.history.length > 0 && (() => {
+      {/* Daily Performance History - Only in single strategy mode */}
+      {!isComparisonMode && performance?.history && performance.history.length > 0 && (() => {
         // Deduplicate by date
         const historyByDate = new Map<string, typeof performance.history[0]>()
         for (const snapshot of performance.history) {
@@ -848,7 +1387,7 @@ function PerformanceV2() {
             <ResponsiveText variant="h2" as="h3" className="text-white mb-4">
               Select Custom Date Range
             </ResponsiveText>
-            
+
             <div className="space-y-4">
               <div>
                 <label className="block text-sm text-gray-400 mb-1">Start Date</label>
@@ -859,7 +1398,7 @@ function PerformanceV2() {
                   className="w-full px-3 py-2 bg-slate-700 rounded-lg border border-slate-600 min-h-[44px]"
                 />
               </div>
-              
+
               <div>
                 <label className="block text-sm text-gray-400 mb-1">End Date (optional)</label>
                 <input

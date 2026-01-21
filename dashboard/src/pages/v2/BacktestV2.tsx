@@ -1,28 +1,31 @@
 /**
- * BacktestV2 - Responsive Backtest Dashboard Page
+ * BacktestV2 - Multi-Strategy Comparison Backtest Dashboard
  *
- * Displays golden backtest results with interactive visualizations.
+ * Displays backtest results with support for comparing up to 3 strategies.
  * Features:
- * - All-time and period metrics
- * - Interactive equity curve with zoom/pan
+ * - Multi-strategy selection with colorblind-friendly patterns
+ * - Overlaid equity curves for comparison
+ * - Side-by-side metrics tables
+ * - Single-strategy view preserved when only 1 selected
  * - Bidirectional date-chart synchronization
- * - Regime performance breakdown
  * - Admin-only strategy config viewer
  *
- * @version 1.0.0
- * @part Backtest Dashboard UI - Phase 4
+ * @version 2.0.0
+ * @part Multi-Strategy Comparison UI - Phase 2
  */
 
 import { useQuery } from '@tanstack/react-query'
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import { ChevronDown, ChevronUp, Settings, Calendar, TrendingUp, BarChart3 } from 'lucide-react'
+import { ChevronDown, ChevronUp, Settings, Calendar, TrendingUp, BarChart3, Trophy, Medal } from 'lucide-react'
 import { backtestApi } from '../../api/client'
-import { createChart, IChartApi, ISeriesApi, LineData, TickMarkType, Time } from 'lightweight-charts'
+import { createChart, IChartApi, ISeriesApi, LineData, TickMarkType, Time, LineStyle } from 'lightweight-charts'
 import { ResponsiveCard, ResponsiveText, ResponsiveGrid, MetricCard } from '../../components/ui'
 import { useIsMobileOrSmaller, useIsTablet } from '../../hooks/useMediaQuery'
 import { useAuth } from '../../contexts/AuthContext'
 import { useStrategy } from '../../contexts/StrategyContext'
-import StrategySelector from '../../components/StrategySelector'
+import StrategyMultiSelector from '../../components/StrategyMultiSelector'
+import { useMultiStrategyBacktestData, findBestStrategy } from '../../hooks/useMultiStrategyData'
+import { BASELINE_STYLE, type StrategyStyle } from '../../constants/strategyColors'
 
 // Helper functions
 function formatPercent(value: number | null | undefined, decimals = 2): string {
@@ -31,12 +34,182 @@ function formatPercent(value: number | null | undefined, decimals = 2): string {
   return `${sign}${value.toFixed(decimals)}%`
 }
 
+function formatCurrency(value: number | null | undefined): string {
+  if (value == null) return '-'
+  return `$${value.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+}
+
+function formatNumber(value: number | null | undefined, decimals = 2): string {
+  if (value == null) return '-'
+  return value.toFixed(decimals)
+}
+
+// Comparison row component for metrics tables
+interface ComparisonRowProps {
+  label: string
+  values: Record<string, number | null | undefined>
+  strategyStyles: Record<string, StrategyStyle>
+  format: 'percent' | 'currency' | 'number'
+  higherIsBetter?: boolean
+  baselineValue?: number | null
+  strategyOrder: string[]
+}
+
+function ComparisonRow({
+  label,
+  values,
+  strategyStyles,
+  format,
+  higherIsBetter = true,
+  baselineValue,
+  strategyOrder
+}: ComparisonRowProps) {
+  const formatValue = (val: number | null | undefined) => {
+    switch (format) {
+      case 'percent': return formatPercent(val)
+      case 'currency': return formatCurrency(val)
+      case 'number': return formatNumber(val)
+      default: return String(val ?? '-')
+    }
+  }
+
+  // Find best strategy for this metric
+  const numericValues: Record<string, number | undefined> = {}
+  for (const [key, val] of Object.entries(values)) {
+    numericValues[key] = val ?? undefined
+  }
+  const bestStrategy = findBestStrategy(numericValues, higherIsBetter)
+
+  return (
+    <tr className="border-b border-slate-700/50">
+      <td className="py-3 text-gray-400">{label}</td>
+      {strategyOrder.map((strategyId) => {
+        const style = strategyStyles[strategyId]
+        const value = values[strategyId]
+        const isBest = bestStrategy === strategyId && Object.keys(values).length > 1
+        const isPositive = value != null && value >= 0
+
+        return (
+          <td
+            key={strategyId}
+            className={`py-3 font-medium ${isPositive ? 'text-green-400' : 'text-red-400'}`}
+          >
+            <div className="flex items-center gap-2">
+              <span
+                className="w-3 h-3 rounded-full flex-shrink-0"
+                style={{ backgroundColor: style?.color || '#6b7280' }}
+              />
+              <span>{formatValue(value)}</span>
+              {isBest && <Trophy className="w-4 h-4 text-amber-400" />}
+            </div>
+          </td>
+        )
+      })}
+      {baselineValue !== undefined && (
+        <td className={`py-3 ${(baselineValue ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+          <div className="flex items-center gap-2">
+            <span
+              className="w-3 h-3 rounded-full flex-shrink-0"
+              style={{ backgroundColor: BASELINE_STYLE.color }}
+            />
+            <span>{formatValue(baselineValue)}</span>
+          </div>
+        </td>
+      )}
+    </tr>
+  )
+}
+
+// Mobile comparison card for smaller screens
+interface MobileComparisonCardProps {
+  strategyName: string
+  style: StrategyStyle
+  metrics: {
+    totalReturn?: number | null
+    cagr?: number | null
+    sharpe?: number | null
+    maxDrawdown?: number | null
+    alpha?: number | null
+  }
+  rank?: number
+}
+
+function MobileComparisonCard({ strategyName, style, metrics, rank }: MobileComparisonCardProps) {
+  return (
+    <div className="bg-slate-700/50 rounded-lg p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <span
+            className="w-4 h-4 rounded-full"
+            style={{ backgroundColor: style.color }}
+          />
+          <span className="font-medium text-white">{strategyName}</span>
+        </div>
+        {rank && rank <= 3 && (
+          <div className="flex items-center gap-1">
+            {rank === 1 && <Trophy className="w-4 h-4 text-amber-400" />}
+            {rank === 2 && <Medal className="w-4 h-4 text-gray-300" />}
+            {rank === 3 && <Medal className="w-4 h-4 text-amber-600" />}
+          </div>
+        )}
+      </div>
+      <div className="grid grid-cols-2 gap-3 text-sm">
+        <div>
+          <span className="text-gray-400 block">Total Return</span>
+          <span className={(metrics.totalReturn ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}>
+            {formatPercent(metrics.totalReturn)}
+          </span>
+        </div>
+        <div>
+          <span className="text-gray-400 block">CAGR</span>
+          <span className={(metrics.cagr ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}>
+            {formatPercent(metrics.cagr)}
+          </span>
+        </div>
+        <div>
+          <span className="text-gray-400 block">Sharpe</span>
+          <span className="text-gray-200">{formatNumber(metrics.sharpe)}</span>
+        </div>
+        <div>
+          <span className="text-gray-400 block">Max DD</span>
+          <span className="text-red-400">{formatPercent(metrics.maxDrawdown)}</span>
+        </div>
+        <div className="col-span-2">
+          <span className="text-gray-400 block">Alpha vs QQQ</span>
+          <span className={(metrics.alpha ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}>
+            {formatPercent(metrics.alpha)}
+          </span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function BacktestV2() {
   const isMobile = useIsMobileOrSmaller()
   const isTablet = useIsTablet()
   const { user } = useAuth()
   const isAdmin = user?.role === 'admin'
-  const { selectedStrategy } = useStrategy()
+  const {
+    selectedStrategies,
+    getColorForStrategy,
+    baselineStyle,
+    loadStrategiesFromUrl,
+    updateUrlWithStrategies
+  } = useStrategy()
+
+  // Load strategies from URL on mount
+  useEffect(() => {
+    loadStrategiesFromUrl()
+  }, [loadStrategiesFromUrl])
+
+  // Update URL when strategies change
+  useEffect(() => {
+    updateUrlWithStrategies()
+  }, [selectedStrategies, updateUrlWithStrategies])
+
+  // Determine if we're in comparison mode (more than 1 strategy selected)
+  const isComparisonMode = selectedStrategies.length > 1
 
   // State for date range filtering (actual API filter - only changes on explicit user input)
   const [filterStartDate, setFilterStartDate] = useState<string>('')
@@ -51,94 +224,100 @@ function BacktestV2() {
   const [showConfigPane, setShowConfigPane] = useState(false)
   const [displayMode, setDisplayMode] = useState<'percentage' | 'absolute'>('percentage')
   // Base index for percentage calculations - when panning, this updates to the first visible point
-  // so percentages are recalculated relative to that point
   const [percentageBaseIndex, setPercentageBaseIndex] = useState<number>(0)
+  // Strategy selector for regime table in comparison mode
+  const [regimeTableStrategy, setRegimeTableStrategy] = useState<string>(selectedStrategies[0] || '')
+
+  // Update regime table strategy when selected strategies change
+  useEffect(() => {
+    if (selectedStrategies.length > 0 && !selectedStrategies.includes(regimeTableStrategy)) {
+      setRegimeTableStrategy(selectedStrategies[0])
+    }
+  }, [selectedStrategies, regimeTableStrategy])
 
   // Chart refs
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
-  const portfolioSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
+  // Store series refs by strategy ID
+  const strategySeriesRefs = useRef<Map<string, ISeriesApi<'Line'>>>(new Map())
   const baselineSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
   const [chartReady, setChartReady] = useState(false)
-  // Ref to hold latest visible range change handler (avoids recreating chart on date changes)
   const visibleRangeHandlerRef = useRef<(() => void) | null>(null)
-  // Debounce timer for percentage recalculation
   const recalcDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // Ref to hold latest recalculatePercentages function (avoids stale closure in timeout)
   const recalcFnRef = useRef<(() => void) | null>(null)
-  // Flag to track if initial load is complete - prevents date sync during chart initialization
   const isInitialLoadRef = useRef(true)
 
-  // Fetch backtest data - only use filter dates (not view dates from chart zoom)
-  const { data: backtestData, isLoading: isLoadingData } = useQuery({
-    queryKey: ['backtest-data', filterStartDate, filterEndDate, selectedStrategy],
-    queryFn: () => backtestApi.getData({
+  // Fetch multi-strategy backtest data in parallel
+  const {
+    data: multiStrategyData,
+    isLoading: isMultiLoading,
+    errors: _errors
+  } = useMultiStrategyBacktestData(
+    selectedStrategies,
+    {
       start_date: filterStartDate || undefined,
       end_date: filterEndDate || undefined,
-      strategy_id: selectedStrategy,
-    }).then(res => res.data),
-  })
+    },
+    selectedStrategies.length > 0
+  )
 
-  // Fetch regime breakdown - only use filter dates
+  // Get primary strategy data for single-strategy view
+  const primaryStrategyId = selectedStrategies[0]
+  const primaryData = primaryStrategyId ? multiStrategyData[primaryStrategyId] : undefined
+
+  // Fetch regime breakdown for the selected strategy in regime table
   const { data: regimeData } = useQuery({
-    queryKey: ['backtest-regime', filterStartDate, filterEndDate, selectedStrategy],
+    queryKey: ['backtest-regime', filterStartDate, filterEndDate, regimeTableStrategy],
     queryFn: () => backtestApi.getRegimeBreakdown({
       start_date: filterStartDate || undefined,
       end_date: filterEndDate || undefined,
-      strategy_id: selectedStrategy,
+      strategy_id: regimeTableStrategy,
     }).then(res => res.data),
+    enabled: !!regimeTableStrategy,
   })
 
-  // Fetch config (admin only)
+  // Fetch config (admin only) - show for first selected strategy
   const { data: configData } = useQuery({
-    queryKey: ['backtest-config', selectedStrategy],
-    queryFn: () => backtestApi.getConfig({ strategy_id: selectedStrategy }).then(res => res.data),
-    enabled: isAdmin,
+    queryKey: ['backtest-config', primaryStrategyId],
+    queryFn: () => backtestApi.getConfig({ strategy_id: primaryStrategyId }).then(res => res.data),
+    enabled: isAdmin && !!primaryStrategyId,
   })
 
-  // Get date bounds from summary (full backtest range, not filtered timeseries)
+  // Get date bounds from the first strategy with data
   const dateBounds = useMemo(() => {
-    // Use summary dates for full range (allows selecting any date in backtest period)
-    if (backtestData?.summary?.start_date && backtestData?.summary?.end_date) {
-      return { min: backtestData.summary.start_date, max: backtestData.summary.end_date }
+    for (const strategyId of selectedStrategies) {
+      const data = multiStrategyData[strategyId]
+      if (data?.summary?.start_date && data?.summary?.end_date) {
+        return { min: data.summary.start_date, max: data.summary.end_date }
+      }
+      if (data?.timeseries && data.timeseries.length > 0) {
+        const dates = data.timeseries.map(d => d.date).sort()
+        return { min: dates[0], max: dates[dates.length - 1] }
+      }
     }
-    // Fallback to timeseries if summary not available
-    if (!backtestData?.timeseries || backtestData.timeseries.length === 0) {
-      return { min: '', max: '' }
-    }
-    const dates = backtestData.timeseries.map(d => d.date).sort()
-    return { min: dates[0], max: dates[dates.length - 1] }
-  }, [backtestData?.summary?.start_date, backtestData?.summary?.end_date, backtestData?.timeseries])
+    return { min: '', max: '' }
+  }, [multiStrategyData, selectedStrategies])
 
   // Initialize view dates to full backtest range when data loads
-  // This ensures date inputs show the full range by default, regardless of window size
   useEffect(() => {
     if (dateBounds.min && dateBounds.max && !viewStartDate && !viewEndDate) {
       setViewStartDate(dateBounds.min)
       setViewEndDate(dateBounds.max)
-      // Mark initial load as complete after a short delay to allow chart to finish rendering
-      // This prevents the visible range callback from overwriting our initial dates
       setTimeout(() => {
         isInitialLoadRef.current = false
       }, 500)
     }
   }, [dateBounds.min, dateBounds.max, viewStartDate, viewEndDate])
 
-  // Update view dates and percentage base based on visible range - called after debounce
-  // This syncs the date inputs with the chart's visible range when user pans/zooms
+  // Update view dates and percentage base based on visible range
   const updateVisibleRangeState = useCallback(() => {
-    if (!chartRef.current || !backtestData?.timeseries) return
-
-    // Don't update during initial load - preserves full date range as default
+    if (!chartRef.current) return
     if (isInitialLoadRef.current) return
-
-    // Don't update if user is explicitly typing in date inputs
     if (isUserTypingDateRef.current) return
 
     const visibleRange = chartRef.current.timeScale().getVisibleRange()
     if (!visibleRange) return
 
-    // Convert visible range to date strings
     const fromTime = typeof visibleRange.from === 'string'
       ? visibleRange.from
       : new Date((visibleRange.from as number) * 1000).toISOString().split('T')[0]
@@ -146,87 +325,66 @@ function BacktestV2() {
       ? visibleRange.to
       : new Date((visibleRange.to as number) * 1000).toISOString().split('T')[0]
 
-    // Update view dates to sync with chart (this updates the date inputs)
-    // Mark as chart interaction to prevent feedback loop
     isChartInteractionRef.current = true
     setViewStartDate(fromTime)
     setViewEndDate(toTime)
 
-    // Update percentage base in percentage mode
-    if (displayMode === 'percentage') {
-      const timeseries = backtestData.timeseries
-      // Find first data point that is >= the visible range start
+    // Update percentage base using first strategy's timeseries
+    if (displayMode === 'percentage' && primaryData?.timeseries) {
+      const timeseries = primaryData.timeseries
       const firstVisibleIndex = timeseries.findIndex(point => point.date >= fromTime)
       if (firstVisibleIndex !== -1 && firstVisibleIndex !== percentageBaseIndex) {
         setPercentageBaseIndex(firstVisibleIndex)
       }
     }
-  }, [backtestData?.timeseries, displayMode, percentageBaseIndex])
+  }, [primaryData?.timeseries, displayMode, percentageBaseIndex])
 
-  // Keep recalcFnRef updated with latest function
   useEffect(() => {
     recalcFnRef.current = updateVisibleRangeState
   }, [updateVisibleRangeState])
 
-  // Handle chart range changes - debounced to avoid issues during active panning
-  // This syncs date inputs with visible range and recalculates percentages.
-  // IMPORTANT: Updates view dates (for display) but NOT filter dates (no API refetch).
   const handleVisibleRangeChange = useCallback(() => {
-    // Clear any pending recalculation
     if (recalcDebounceRef.current) {
       clearTimeout(recalcDebounceRef.current)
     }
-    // Debounce: wait 150ms after user stops panning/zooming before recalculating
-    // Use ref to always get latest function and avoid stale closure
     recalcDebounceRef.current = setTimeout(() => {
       if (recalcFnRef.current) {
         recalcFnRef.current()
       }
     }, 150)
-  }, []) // No dependencies - always uses ref for latest function
+  }, [])
 
-  // Keep ref updated with latest handler
   useEffect(() => {
     visibleRangeHandlerRef.current = handleVisibleRangeChange
   }, [handleVisibleRangeChange])
 
-  // Apply date range to chart - when view dates change from inputs (not chart interaction)
   const applyDateRangeToChart = useCallback(() => {
-    if (!chartRef.current || !backtestData?.timeseries) return
-    // Skip if this was triggered by chart interaction (avoids feedback loop)
+    if (!chartRef.current) return
     if (isChartInteractionRef.current) {
       isChartInteractionRef.current = false
       return
     }
 
     if (viewStartDate && viewEndDate) {
-      // Set visible range to match date inputs
       chartRef.current.timeScale().setVisibleRange({
         from: viewStartDate as Time,
         to: viewEndDate as Time,
       })
     } else {
-      // Fit all content
       chartRef.current.timeScale().fitContent()
     }
-  }, [viewStartDate, viewEndDate, backtestData?.timeseries])
+  }, [viewStartDate, viewEndDate])
 
-  // Reset zoom handler - resets filter dates and restores view to full range
   const handleResetZoom = useCallback(() => {
-    // Clear filter dates (API will return full data)
     setFilterStartDate('')
     setFilterEndDate('')
-    // Restore view dates to full backtest range
     setViewStartDate(dateBounds.min)
     setViewEndDate(dateBounds.max)
-    // Reset percentage base to first point
     setPercentageBaseIndex(0)
-    // Temporarily block date sync while chart resets to prevent overwriting full range
     isInitialLoadRef.current = true
     if (chartRef.current) {
       chartRef.current.timeScale().fitContent()
     }
-    // Re-enable date sync after chart settles
     setTimeout(() => {
       isInitialLoadRef.current = false
     }, 500)
@@ -283,21 +441,7 @@ function BacktestV2() {
       },
     })
 
-    portfolioSeriesRef.current = chartRef.current.addLineSeries({
-      color: '#3b82f6',
-      lineWidth: 2,
-      title: 'Portfolio',
-    })
-
-    baselineSeriesRef.current = chartRef.current.addLineSeries({
-      color: '#f59e0b',
-      lineWidth: 2,
-      lineStyle: 2,
-      title: 'Baseline (QQQ)',
-    })
-
-    // Subscribe to visible range changes for bidirectional sync
-    // Use a wrapper that calls the ref to always get the latest handler
+    // Subscribe to visible range changes
     const rangeChangeWrapper = () => {
       if (visibleRangeHandlerRef.current) {
         visibleRangeHandlerRef.current()
@@ -321,7 +465,6 @@ function BacktestV2() {
     return () => {
       resizeObserver.disconnect()
       setChartReady(false)
-      // Clear debounce timer
       if (recalcDebounceRef.current) {
         clearTimeout(recalcDebounceRef.current)
         recalcDebounceRef.current = null
@@ -330,24 +473,17 @@ function BacktestV2() {
         chartRef.current.timeScale().unsubscribeVisibleTimeRangeChange(rangeChangeWrapper)
         chartRef.current.remove()
         chartRef.current = null
-        portfolioSeriesRef.current = null
+        strategySeriesRefs.current.clear()
         baselineSeriesRef.current = null
       }
     }
-  }, [isMobile]) // Only depend on isMobile for chart sizing, not loading state
+  }, [isMobile])
 
-  // Update chart data when data, display mode, or percentage base changes
+  // Update chart data when strategies or data changes
   useEffect(() => {
-    if (!chartRef.current || !portfolioSeriesRef.current || !backtestData?.timeseries || backtestData.timeseries.length === 0) return
+    if (!chartRef.current || !chartReady) return
 
-    const timeseries = backtestData.timeseries
-    // Use percentageBaseIndex to determine which point is the "base" (0%) for percentage calculations
-    // This enables dynamic rebasing when panning/zooming in percentage mode
-    const baseIndex = Math.min(percentageBaseIndex, timeseries.length - 1)
-    const basePortfolio = timeseries[baseIndex]?.portfolio ?? 1
-    const baseBaseline = timeseries[baseIndex]?.baseline ?? 1
-
-    // Configure price formatter based on display mode
+    // Get price formatter based on display mode
     const priceFormatter = displayMode === 'absolute'
       ? (price: number) => `$${price.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
       : (price: number) => {
@@ -359,90 +495,206 @@ function BacktestV2() {
       localization: { priceFormatter },
     })
 
-    portfolioSeriesRef.current.applyOptions({
-      priceFormat: { type: 'custom', formatter: priceFormatter },
-    })
+    // Track which series we need
+    const neededStrategyIds = new Set(selectedStrategies)
 
-    if (baselineSeriesRef.current) {
-      baselineSeriesRef.current.applyOptions({
-        priceFormat: { type: 'custom', formatter: priceFormatter },
-      })
+    // Remove series for strategies that are no longer selected
+    for (const [strategyId, series] of strategySeriesRefs.current.entries()) {
+      if (!neededStrategyIds.has(strategyId)) {
+        chartRef.current.removeSeries(series)
+        strategySeriesRefs.current.delete(strategyId)
+      }
     }
 
-    // Prepare chart data
-    if (displayMode === 'absolute') {
-      const portfolioData: LineData[] = timeseries
-        .filter(point => point.portfolio != null)
-        .map(point => ({
-          time: point.date as string,
-          value: point.portfolio!,
-        }))
-      portfolioSeriesRef.current.setData(portfolioData)
+    // Add or update series for each selected strategy
+    let baselineAdded = false
 
-      if (baselineSeriesRef.current) {
-        const baselineData: LineData[] = timeseries
-          .filter(point => point.baseline != null)
+    for (let i = 0; i < selectedStrategies.length; i++) {
+      const strategyId = selectedStrategies[i]
+      const data = multiStrategyData[strategyId]
+      if (!data?.timeseries || data.timeseries.length === 0) continue
+
+      const style = getColorForStrategy(strategyId)
+      const timeseries = data.timeseries
+
+      // Calculate base values for percentage mode
+      const baseIndex = Math.min(percentageBaseIndex, timeseries.length - 1)
+      const basePortfolio = timeseries[baseIndex]?.portfolio ?? 1
+      const baseBaseline = timeseries[baseIndex]?.baseline ?? 1
+
+      // Get or create series for this strategy
+      let series = strategySeriesRefs.current.get(strategyId)
+      if (!series) {
+        series = chartRef.current.addLineSeries({
+          color: style.color,
+          lineWidth: 2,
+          lineStyle: style.lineStyle,
+          title: data.summary?.strategy_name || strategyId,
+        })
+        strategySeriesRefs.current.set(strategyId, series)
+      } else {
+        // Update existing series styling
+        series.applyOptions({
+          color: style.color,
+          lineStyle: style.lineStyle,
+          title: data.summary?.strategy_name || strategyId,
+        })
+      }
+
+      series.applyOptions({
+        priceFormat: { type: 'custom', formatter: priceFormatter },
+      })
+
+      // Prepare data based on display mode
+      if (displayMode === 'absolute') {
+        const portfolioData: LineData[] = timeseries
+          .filter(point => point.portfolio != null)
           .map(point => ({
             time: point.date as string,
-            value: point.baseline!,
+            value: point.portfolio!,
           }))
-        baselineSeriesRef.current.setData(baselineData)
-      }
-    } else {
-      // Percentage mode - calculate returns from base point (first visible point after panning)
-      const portfolioData: LineData[] = timeseries
-        .filter(point => point.portfolio != null)
-        .map(point => ({
-          time: point.date as string,
-          value: basePortfolio > 0 ? (point.portfolio! / basePortfolio - 1) * 100 : 0,
-        }))
-      portfolioSeriesRef.current.setData(portfolioData)
-
-      if (baselineSeriesRef.current) {
-        const baselineData: LineData[] = timeseries
-          .filter(point => point.baseline != null)
+        series.setData(portfolioData)
+      } else {
+        const portfolioData: LineData[] = timeseries
+          .filter(point => point.portfolio != null)
           .map(point => ({
             time: point.date as string,
-            value: baseBaseline > 0 ? (point.baseline! / baseBaseline - 1) * 100 : 0,
+            value: basePortfolio > 0 ? (point.portfolio! / basePortfolio - 1) * 100 : 0,
           }))
-        baselineSeriesRef.current.setData(baselineData)
+        series.setData(portfolioData)
       }
+
+      // Add baseline series only once (from first strategy with data)
+      if (!baselineAdded && timeseries.some(p => p.baseline != null)) {
+        if (!baselineSeriesRef.current) {
+          baselineSeriesRef.current = chartRef.current.addLineSeries({
+            color: baselineStyle.color,
+            lineWidth: 2,
+            lineStyle: baselineStyle.lineStyle,
+            title: 'Baseline (QQQ)',
+          })
+        }
+
+        baselineSeriesRef.current.applyOptions({
+          priceFormat: { type: 'custom', formatter: priceFormatter },
+        })
+
+        if (displayMode === 'absolute') {
+          const baselineData: LineData[] = timeseries
+            .filter(point => point.baseline != null)
+            .map(point => ({
+              time: point.date as string,
+              value: point.baseline!,
+            }))
+          baselineSeriesRef.current.setData(baselineData)
+        } else {
+          const baselineData: LineData[] = timeseries
+            .filter(point => point.baseline != null)
+            .map(point => ({
+              time: point.date as string,
+              value: baseBaseline > 0 ? (point.baseline! / baseBaseline - 1) * 100 : 0,
+            }))
+          baselineSeriesRef.current.setData(baselineData)
+        }
+        baselineAdded = true
+      }
+    }
+
+    // Remove baseline if no strategies have baseline data
+    if (!baselineAdded && baselineSeriesRef.current) {
+      chartRef.current.removeSeries(baselineSeriesRef.current)
+      baselineSeriesRef.current = null
     }
 
     // Fit content if no view range is set
     if (!viewStartDate && !viewEndDate) {
       chartRef.current.timeScale().fitContent()
     }
-  }, [backtestData?.timeseries, displayMode, chartReady, viewStartDate, viewEndDate, percentageBaseIndex])
+  }, [multiStrategyData, selectedStrategies, displayMode, chartReady, viewStartDate, viewEndDate, percentageBaseIndex, getColorForStrategy, baselineStyle])
 
-  // Apply date range when dates change from inputs (not from chart zoom)
+  // Apply date range when dates change from inputs
   useEffect(() => {
     if (chartReady) {
       applyDateRangeToChart()
     }
   }, [chartReady, applyDateRangeToChart])
 
-  // Show loading or empty state, but don't return early - keep chart container in DOM
-  const showLoading = isLoadingData
-  const showEmpty = !isLoadingData && (!backtestData?.timeseries || backtestData.timeseries.length === 0)
+  // Prepare strategy styles map for comparison components
+  const strategyStyles = useMemo(() => {
+    const styles: Record<string, StrategyStyle> = {}
+    for (const strategyId of selectedStrategies) {
+      styles[strategyId] = getColorForStrategy(strategyId)
+    }
+    return styles
+  }, [selectedStrategies, getColorForStrategy])
 
-  if (showEmpty) {
+  // Show loading or empty state
+  const showLoading = isMultiLoading
+  const hasAnyData = selectedStrategies.some((id: string) =>
+    multiStrategyData[id]?.timeseries && multiStrategyData[id].timeseries.length > 0
+  )
+  const showEmpty = !isMultiLoading && !hasAnyData && selectedStrategies.length > 0
+
+  if (selectedStrategies.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 text-center">
-        <BarChart3 className="w-16 h-16 text-gray-500 mb-4" />
-        <ResponsiveText variant="h2" as="h2" className="text-white mb-2">
-          No Backtest Data Available
-        </ResponsiveText>
-        <ResponsiveText variant="body" className="text-gray-400 max-w-md">
-          Run a backtest with dashboard export enabled to view results here.
-          The dashboard CSV should be placed in config/backtest/ directory.
-        </ResponsiveText>
+      <div className="space-y-4 sm:space-y-6">
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <ResponsiveText variant="h1" as="h2" className="text-white flex items-center gap-2">
+                <TrendingUp className="w-6 h-6 text-blue-400" />
+                Backtest Results
+              </ResponsiveText>
+            </div>
+          </div>
+          <StrategyMultiSelector compact={isMobile} />
+        </div>
+
+        <div className="flex flex-col items-center justify-center h-64 text-center">
+          <BarChart3 className="w-16 h-16 text-gray-500 mb-4" />
+          <ResponsiveText variant="h2" as="h2" className="text-white mb-2">
+            Select Strategies to Compare
+          </ResponsiveText>
+          <ResponsiveText variant="body" className="text-gray-400 max-w-md">
+            Choose up to 3 strategies from the dropdown above to view and compare their backtest performance.
+          </ResponsiveText>
+        </div>
       </div>
     )
   }
 
-  const summary = backtestData?.summary
-  const period_metrics = backtestData?.period_metrics
+  if (showEmpty) {
+    return (
+      <div className="space-y-4 sm:space-y-6">
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <ResponsiveText variant="h1" as="h2" className="text-white flex items-center gap-2">
+                <TrendingUp className="w-6 h-6 text-blue-400" />
+                Backtest Results
+              </ResponsiveText>
+            </div>
+          </div>
+          <StrategyMultiSelector compact={isMobile} />
+        </div>
+
+        <div className="flex flex-col items-center justify-center h-64 text-center">
+          <BarChart3 className="w-16 h-16 text-gray-500 mb-4" />
+          <ResponsiveText variant="h2" as="h2" className="text-white mb-2">
+            No Backtest Data Available
+          </ResponsiveText>
+          <ResponsiveText variant="body" className="text-gray-400 max-w-md">
+            Run a backtest with dashboard export enabled to view results here.
+            The dashboard CSV should be placed in config/backtest/ directory.
+          </ResponsiveText>
+        </div>
+      </div>
+    )
+  }
+
+  // Get primary summary for header info (when not in comparison mode)
+  const primarySummary = primaryData?.summary
+  const primaryPeriodMetrics = primaryData?.period_metrics
 
   return (
     <div className="space-y-4 sm:space-y-6">
@@ -452,58 +704,205 @@ function BacktestV2() {
           <div>
             <ResponsiveText variant="h1" as="h2" className="text-white flex items-center gap-2">
               <TrendingUp className="w-6 h-6 text-blue-400" />
-              Backtest Results
+              {isComparisonMode ? 'Strategy Comparison' : 'Backtest Results'}
             </ResponsiveText>
-            {summary?.strategy_name && (
+            {!isComparisonMode && primarySummary?.strategy_name && (
               <ResponsiveText variant="small" className="text-gray-400 mt-1">
-                Strategy: {summary.strategy_name}
+                Strategy: {primarySummary.strategy_name}
+              </ResponsiveText>
+            )}
+            {isComparisonMode && (
+              <ResponsiveText variant="small" className="text-gray-400 mt-1">
+                Comparing {selectedStrategies.length} strategies
               </ResponsiveText>
             )}
           </div>
         </div>
 
-        {/* Strategy Selector */}
-        <StrategySelector showCompare={false} compact={isMobile} />
+        {/* Strategy Multi-Selector */}
+        <StrategyMultiSelector compact={isMobile} />
       </div>
 
-      {/* All-Time Metrics (Row 1) */}
-      {summary && (
+      {/* All-Time Metrics - Single Strategy View */}
+      {!isComparisonMode && primarySummary && (
         <ResponsiveCard padding="md">
           <ResponsiveText variant="h3" as="h3" className="text-white mb-3">
-            All-Time Performance ({summary.start_date} to {summary.end_date})
+            All-Time Performance ({primarySummary.start_date} to {primarySummary.end_date})
           </ResponsiveText>
           <ResponsiveGrid columns={{ default: 2, md: 3, lg: 6 }} gap="md">
             <MetricCard
               label="Initial Capital"
-              value={summary.initial_capital ?? 0}
+              value={primarySummary.initial_capital ?? 0}
               format="currency"
             />
             <MetricCard
               label="Total Return"
-              value={summary.total_return ?? 0}
+              value={primarySummary.total_return ?? 0}
               format="percent"
             />
             <MetricCard
               label="CAGR"
-              value={summary.annualized_return ?? 0}
+              value={primarySummary.annualized_return ?? 0}
               format="percent"
             />
             <MetricCard
               label="Sharpe Ratio"
-              value={summary.sharpe_ratio ?? 0}
+              value={primarySummary.sharpe_ratio ?? 0}
               format="number"
             />
             <MetricCard
               label="Max Drawdown"
-              value={summary.max_drawdown ?? 0}
+              value={primarySummary.max_drawdown ?? 0}
               format="percent"
             />
             <MetricCard
               label="Alpha vs QQQ"
-              value={summary.alpha ?? 0}
+              value={primarySummary.alpha ?? 0}
               format="percent"
             />
           </ResponsiveGrid>
+        </ResponsiveCard>
+      )}
+
+      {/* All-Time Metrics - Comparison View */}
+      {isComparisonMode && (
+        <ResponsiveCard padding="md">
+          <ResponsiveText variant="h3" as="h3" className="text-white mb-3">
+            All-Time Performance Comparison
+          </ResponsiveText>
+
+          {isMobile ? (
+            // Mobile card view for comparison
+            <div className="space-y-3">
+              {selectedStrategies.map((strategyId: string, idx: number) => {
+                const data = multiStrategyData[strategyId]
+                const summary = data?.summary
+                if (!summary) return null
+
+                return (
+                  <MobileComparisonCard
+                    key={strategyId}
+                    strategyName={summary.strategy_name || strategyId}
+                    style={strategyStyles[strategyId]}
+                    metrics={{
+                      totalReturn: summary.total_return,
+                      cagr: summary.annualized_return,
+                      sharpe: summary.sharpe_ratio,
+                      maxDrawdown: summary.max_drawdown,
+                      alpha: summary.alpha,
+                    }}
+                    rank={idx + 1}
+                  />
+                )
+              })}
+              {/* Baseline card */}
+              <div className="bg-slate-700/30 rounded-lg p-4 border border-dashed border-slate-600">
+                <div className="flex items-center gap-2 mb-3">
+                  <span
+                    className="w-4 h-4 rounded-full"
+                    style={{ backgroundColor: BASELINE_STYLE.color }}
+                  />
+                  <span className="font-medium text-gray-400">Baseline (QQQ)</span>
+                </div>
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div className="col-span-2">
+                    <span className="text-gray-400 block">Total Return</span>
+                    <span className={(primarySummary?.baseline_total_return ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}>
+                      {formatPercent(primarySummary?.baseline_total_return)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            // Desktop table view for comparison
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead className="text-sm text-gray-400 border-b border-slate-700">
+                  <tr>
+                    <th className="pb-3">Metric</th>
+                    {selectedStrategies.map((strategyId: string) => {
+                      const data = multiStrategyData[strategyId]
+                      const style = strategyStyles[strategyId]
+                      return (
+                        <th key={strategyId} className="pb-3">
+                          <div className="flex items-center gap-2">
+                            <span
+                              className="w-3 h-3 rounded-full"
+                              style={{ backgroundColor: style?.color || '#6b7280' }}
+                            />
+                            {data?.summary?.strategy_name || strategyId}
+                          </div>
+                        </th>
+                      )
+                    })}
+                    <th className="pb-3">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="w-3 h-3 rounded-full"
+                          style={{ backgroundColor: BASELINE_STYLE.color }}
+                        />
+                        QQQ (Baseline)
+                      </div>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <ComparisonRow
+                    label="Total Return"
+                    values={Object.fromEntries(
+                      selectedStrategies.map((id: string) => [id, multiStrategyData[id]?.summary?.total_return])
+                    )}
+                    strategyStyles={strategyStyles}
+                    format="percent"
+                    higherIsBetter={true}
+                    baselineValue={primarySummary?.baseline_total_return}
+                    strategyOrder={selectedStrategies}
+                  />
+                  <ComparisonRow
+                    label="CAGR"
+                    values={Object.fromEntries(
+                      selectedStrategies.map((id: string) => [id, multiStrategyData[id]?.summary?.annualized_return])
+                    )}
+                    strategyStyles={strategyStyles}
+                    format="percent"
+                    higherIsBetter={true}
+                    strategyOrder={selectedStrategies}
+                  />
+                  <ComparisonRow
+                    label="Sharpe Ratio"
+                    values={Object.fromEntries(
+                      selectedStrategies.map((id: string) => [id, multiStrategyData[id]?.summary?.sharpe_ratio])
+                    )}
+                    strategyStyles={strategyStyles}
+                    format="number"
+                    higherIsBetter={true}
+                    strategyOrder={selectedStrategies}
+                  />
+                  <ComparisonRow
+                    label="Max Drawdown"
+                    values={Object.fromEntries(
+                      selectedStrategies.map((id: string) => [id, multiStrategyData[id]?.summary?.max_drawdown])
+                    )}
+                    strategyStyles={strategyStyles}
+                    format="percent"
+                    higherIsBetter={false}
+                    strategyOrder={selectedStrategies}
+                  />
+                  <ComparisonRow
+                    label="Alpha vs QQQ"
+                    values={Object.fromEntries(
+                      selectedStrategies.map((id: string) => [id, multiStrategyData[id]?.summary?.alpha])
+                    )}
+                    strategyStyles={strategyStyles}
+                    format="percent"
+                    higherIsBetter={true}
+                    strategyOrder={selectedStrategies}
+                  />
+                </tbody>
+              </table>
+            </div>
+          )}
         </ResponsiveCard>
       )}
 
@@ -526,12 +925,9 @@ function BacktestV2() {
                 min={dateBounds.min}
                 max={dateBounds.max}
                 onChange={(e) => {
-                  // Set flag to prevent chart from overwriting user's explicit input
                   isUserTypingDateRef.current = true
                   setViewStartDate(e.target.value)
-                  // Update filter dates on explicit user input (triggers data refetch)
                   setFilterStartDate(e.target.value)
-                  // Clear flag after a short delay to allow chart to update
                   setTimeout(() => { isUserTypingDateRef.current = false }, 500)
                 }}
                 className="px-3 py-2 bg-slate-700 rounded-lg border border-slate-600 min-h-[44px] text-sm"
@@ -545,12 +941,9 @@ function BacktestV2() {
                 min={viewStartDate || dateBounds.min}
                 max={dateBounds.max}
                 onChange={(e) => {
-                  // Set flag to prevent chart from overwriting user's explicit input
                   isUserTypingDateRef.current = true
                   setViewEndDate(e.target.value)
-                  // Update filter dates on explicit user input (triggers data refetch)
                   setFilterEndDate(e.target.value)
-                  // Clear flag after a short delay to allow chart to update
                   setTimeout(() => { isUserTypingDateRef.current = false }, 500)
                 }}
                 className="px-3 py-2 bg-slate-700 rounded-lg border border-slate-600 min-h-[44px] text-sm"
@@ -566,48 +959,48 @@ function BacktestV2() {
         </div>
       </ResponsiveCard>
 
-      {/* Period Metrics (Row 2) - when date range is selected */}
-      {period_metrics && (filterStartDate || filterEndDate) && (
+      {/* Period Metrics - Single Strategy */}
+      {!isComparisonMode && primaryPeriodMetrics && (filterStartDate || filterEndDate) && (
         <ResponsiveCard padding="md">
           <ResponsiveText variant="h3" as="h3" className="text-white mb-3">
-            Selected Period ({period_metrics.start_date} to {period_metrics.end_date})
+            Selected Period ({primaryPeriodMetrics.start_date} to {primaryPeriodMetrics.end_date})
           </ResponsiveText>
           <ResponsiveGrid columns={{ default: 2, md: 3, lg: 5 }} gap="md">
             <MetricCard
               label="Period Return"
-              value={period_metrics.period_return ?? 0}
+              value={primaryPeriodMetrics.period_return ?? 0}
               format="percent"
             />
             <MetricCard
               label="Annualized"
-              value={period_metrics.annualized_return ?? 0}
+              value={primaryPeriodMetrics.annualized_return ?? 0}
               format="percent"
             />
             <MetricCard
               label="Baseline Return"
-              value={period_metrics.baseline_return ?? 0}
+              value={primaryPeriodMetrics.baseline_return ?? 0}
               format="percent"
             />
             <MetricCard
               label="Baseline CAGR"
-              value={period_metrics.baseline_annualized ?? 0}
+              value={primaryPeriodMetrics.baseline_annualized ?? 0}
               format="percent"
             />
             <MetricCard
               label="Alpha"
-              value={period_metrics.alpha ?? 0}
+              value={primaryPeriodMetrics.alpha ?? 0}
               format="percent"
             />
           </ResponsiveGrid>
           <ResponsiveText variant="small" className="text-gray-500 mt-2">
-            {period_metrics.days} calendar days
+            {primaryPeriodMetrics.days} calendar days
           </ResponsiveText>
         </ResponsiveCard>
       )}
 
       {/* Equity Curve Chart */}
       <ResponsiveCard padding="md">
-        {/* Display mode toggle - positioned above chart */}
+        {/* Display mode toggle */}
         <div className="flex justify-end mb-4">
           <div className="flex items-center gap-2">
             <button
@@ -635,7 +1028,7 @@ function BacktestV2() {
         <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 gap-2">
           <div>
             <ResponsiveText variant="h2" as="h3" className="text-white">
-              {displayMode === 'absolute' ? 'Equity Curve' : 'Performance (% Return)'}
+              {displayMode === 'absolute' ? 'Equity Curves' : 'Performance (% Return)'}
             </ResponsiveText>
             <ResponsiveText variant="small" className="text-gray-400">
               {displayMode === 'absolute'
@@ -643,13 +1036,35 @@ function BacktestV2() {
                 : 'Percentage return from backtest start'}
             </ResponsiveText>
           </div>
-          <div className="flex items-center gap-4 text-xs sm:text-sm">
+          {/* Chart Legend */}
+          <div className="flex flex-wrap items-center gap-4 text-xs sm:text-sm">
+            {selectedStrategies.map((strategyId: string) => {
+              const data = multiStrategyData[strategyId]
+              const style = strategyStyles[strategyId]
+              return (
+                <div key={strategyId} className="flex items-center gap-2">
+                  <div
+                    className="w-4 h-0.5"
+                    style={{
+                      backgroundColor: style?.color || '#6b7280',
+                      borderStyle: style?.lineStyle === LineStyle.Dashed ? 'dashed' :
+                                   style?.lineStyle === LineStyle.Dotted ? 'dotted' :
+                                   style?.lineStyle === LineStyle.LargeDashed ? 'dashed' : 'solid',
+                      borderWidth: style?.lineStyle !== LineStyle.Solid ? '2px 0 0 0' : '0',
+                      borderColor: style?.color || '#6b7280',
+                    }}
+                  />
+                  <span className="text-gray-400">{data?.summary?.strategy_name || strategyId}</span>
+                </div>
+              )
+            })}
             <div className="flex items-center gap-2">
-              <div className="w-4 h-0.5 bg-blue-500"></div>
-              <span className="text-gray-400">Portfolio</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-0.5 bg-amber-500" style={{ borderTop: '2px dashed #f59e0b' }}></div>
+              <div
+                className="w-4 h-0.5"
+                style={{
+                  borderTop: `2px dashed ${BASELINE_STYLE.color}`,
+                }}
+              />
               <span className="text-gray-400">QQQ</span>
             </div>
           </div>
@@ -670,9 +1085,30 @@ function BacktestV2() {
       {/* Regime Performance Table */}
       {regimeData?.regimes && regimeData.regimes.length > 0 && (
         <ResponsiveCard padding="md">
-          <ResponsiveText variant="h2" as="h3" className="text-white mb-4">
-            Performance by Regime
-          </ResponsiveText>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+            <ResponsiveText variant="h2" as="h3" className="text-white">
+              Performance by Regime
+            </ResponsiveText>
+            {isComparisonMode && (
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-gray-400">Strategy:</label>
+                <select
+                  value={regimeTableStrategy}
+                  onChange={(e) => setRegimeTableStrategy(e.target.value)}
+                  className="px-3 py-2 bg-slate-700 rounded-lg border border-slate-600 text-sm min-h-[44px]"
+                >
+                  {selectedStrategies.map((strategyId: string) => {
+                    const data = multiStrategyData[strategyId]
+                    return (
+                      <option key={strategyId} value={strategyId}>
+                        {data?.summary?.strategy_name || strategyId}
+                      </option>
+                    )
+                  })}
+                </select>
+              </div>
+            )}
+          </div>
 
           {isMobile ? (
             // Mobile Card View
@@ -834,10 +1270,12 @@ function BacktestV2() {
       )}
 
       {/* Footer info */}
-      {backtestData && (
+      {hasAnyData && (
         <ResponsiveText variant="small" className="text-gray-500 text-center">
-          Showing {backtestData.filtered_data_points} of {backtestData.total_data_points} data points
-          {summary?.baseline_ticker && ` | Baseline: ${summary.baseline_ticker}`}
+          {isComparisonMode
+            ? `Comparing ${selectedStrategies.length} strategies`
+            : primaryData && `Showing ${primaryData.filtered_data_points} of ${primaryData.total_data_points} data points`}
+          {primarySummary?.baseline_ticker && ` | Baseline: ${primarySummary.baseline_ticker}`}
         </ResponsiveText>
       )}
     </div>

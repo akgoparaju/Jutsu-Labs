@@ -1,3 +1,38 @@
+#### **Feature: Multi-Strategy Comparison UI** (2026-01-21)
+
+Implemented comprehensive multi-strategy comparison UI allowing users to compare up to 3 strategies side-by-side with overlaid equity curves and comparative metrics tables.
+
+**Key Features**:
+- Multi-select strategy dropdown (max 3 strategies)
+- Colorblind-friendly visual differentiation (Blue, Green, Amber + Gray baseline)
+- Line patterns for accessibility (Solid, Dashed, Dotted)
+- Best value highlighting with star (★) indicator in comparison tables
+- Mobile responsive card views with desktop table views
+- URL synchronization for strategy selection persistence
+
+**New Files**:
+- `src/constants/strategyColors.ts` - Color/pattern system for strategy differentiation
+- `src/hooks/useMultiStrategyData.ts` - Parallel data fetching with React Query `useQueries`
+- `src/components/StrategyMultiSelector.tsx` - Multi-select dropdown with color-coded chips
+
+**Modified Files**:
+- `src/contexts/StrategyContext.tsx` - Added `compareStrategies[]`, URL sync, display name helpers
+- `src/pages/v2/BacktestV2.tsx` - Overlaid equity curves, comparative metrics table
+- `src/pages/v2/PerformanceV2.tsx` - Multi-line chart, comparison metrics, mobile views
+- `src/pages/v2/DashboardV2.tsx` - Strategy Comparison card with key metrics table
+
+**Comparison Metrics**:
+- Total Equity, Period Return, CAGR, Sharpe Ratio, Max Drawdown
+- QQQ baseline always included for reference
+- Time range selectors (30D, 90D, YTD, 1Y, All-Time)
+
+**Technical Details**:
+- `useMultiStrategyPerformanceData()` and `useMultiStrategyBacktestData()` hooks
+- Map-based series tracking for multi-line charts
+- URL query parameter: `?strategies=v3_5b,v3_5d`
+
+---
+
 #### **Data: V3.5D Paper Trade Backfill** (2026-01-21)
 
 Retroactively generated and inserted paper trade performance data for Hierarchical_Adaptive_v3_5d strategy.

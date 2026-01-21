@@ -21,7 +21,7 @@ function TradesV2() {
   const queryClient = useQueryClient()
   const isMobile = useIsMobileOrSmaller()
   const { hasPermission } = useAuth()
-  const { getStrategyDisplayName } = useStrategy()
+  useStrategy() // Context hook for future multi-strategy support
   const [page, setPage] = useState(1)
   const [pageSize] = useState(20)
   const [filters, setFilters] = useState({

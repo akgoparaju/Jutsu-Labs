@@ -13,10 +13,18 @@
 
 import { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { strategiesApi, StrategyInfo, StrategiesListResponse } from '../api/client'
+import { strategiesApi, StrategyInfo } from '../api/client'
+import {
+  STRATEGY_COLORS,
+  BASELINE_STYLE,
+  MAX_COMPARE_STRATEGIES,
+  getStrategyStyle,
+  StrategyStyle,
+} from '../constants/strategyColors'
 
 const STORAGE_KEY = 'jutsu_selected_strategy'
 const COMPARE_KEY = 'jutsu_compare_strategies'
+const URL_STRATEGIES_PARAM = 'strategies'
 
 interface StrategyContextType {
   // Strategy list
@@ -38,9 +46,22 @@ interface StrategyContextType {
   setCompareStrategies: (ids: string[]) => void
   toggleCompareStrategy: (id: string) => void
 
+  // Alias for multi-strategy UI (compareStrategies)
+  selectedStrategies: string[]
+
   // Helpers
   getStrategyById: (id: string) => StrategyInfo | undefined
   getStrategyDisplayName: (id: string) => string
+
+  // Color mapping for multi-strategy comparison
+  getColorForStrategy: (strategyId: string) => StrategyStyle
+  getStyleForStrategyIndex: (index: number) => StrategyStyle
+  baselineStyle: StrategyStyle
+  maxCompareStrategies: number
+
+  // URL sync
+  updateUrlWithStrategies: () => void
+  loadStrategiesFromUrl: () => string[] | null
 }
 
 const StrategyContext = createContext<StrategyContextType | null>(null)
@@ -120,14 +141,71 @@ export function StrategyProvider({ children }: { children: ReactNode }) {
     return strategy?.display_name || id
   }, [strategies])
 
-  // Initialize compare strategies with primary if empty and strategies loaded
+  // Color mapping: Get style for a strategy based on its position in compareStrategies
+  const getColorForStrategy = useCallback((strategyId: string): StrategyStyle => {
+    const index = compareStrategies.indexOf(strategyId)
+    return index === -1 ? STRATEGY_COLORS[0] : getStrategyStyle(index)
+  }, [compareStrategies])
+
+  // Get style by index directly
+  const getStyleForStrategyIndex = useCallback((index: number): StrategyStyle => {
+    return getStrategyStyle(index)
+  }, [])
+
+  // URL sync: Update URL with current strategy selection
+  const updateUrlWithStrategies = useCallback(() => {
+    if (compareStrategies.length === 0) return
+
+    const params = new URLSearchParams(window.location.search)
+    params.set(URL_STRATEGIES_PARAM, compareStrategies.join(','))
+    const newUrl = `${window.location.pathname}?${params.toString()}`
+    window.history.replaceState({}, '', newUrl)
+  }, [compareStrategies])
+
+  // URL sync: Load strategies from URL
+  const loadStrategiesFromUrl = useCallback((): string[] | null => {
+    const params = new URLSearchParams(window.location.search)
+    const strategiesParam = params.get(URL_STRATEGIES_PARAM)
+
+    if (!strategiesParam) return null
+
+    // Parse and validate strategy IDs
+    const strategyIds = strategiesParam.split(',').slice(0, MAX_COMPARE_STRATEGIES)
+    const validIds = strategyIds.filter(id =>
+      strategies.some(s => s.id === id)
+    )
+
+    return validIds.length > 0 ? validIds : null
+  }, [strategies])
+
+  // Initialize compare strategies from URL or with defaults
   useEffect(() => {
-    if (strategies.length > 0 && compareStrategies.length === 0 && isCompareMode) {
-      // Default to first two strategies for comparison
-      const defaultCompare = strategies.slice(0, 2).map(s => s.id)
-      setCompareStrategies(defaultCompare)
+    if (strategies.length === 0) return
+
+    // First, try to load from URL
+    const urlStrategies = loadStrategiesFromUrl()
+    if (urlStrategies && urlStrategies.length > 0) {
+      // If URL has strategies, use them and enable compare mode if multiple
+      setCompareStrategies(urlStrategies)
+      if (urlStrategies.length > 1) {
+        setCompareModeState(true)
+      }
+      return
     }
-  }, [strategies, compareStrategies.length, isCompareMode, setCompareStrategies])
+
+    // Otherwise, initialize with default (primary strategy) if empty
+    if (compareStrategies.length === 0) {
+      const defaultStrategy = primaryStrategyId || strategies[0]?.id || 'v3_5b'
+      setCompareStrategies([defaultStrategy])
+    }
+  }, [strategies, loadStrategiesFromUrl, primaryStrategyId, compareStrategies.length, setCompareStrategies])
+
+  // Sync URL when compare strategies change
+  useEffect(() => {
+    if (compareStrategies.length > 0) {
+      updateUrlWithStrategies()
+    }
+  }, [compareStrategies, updateUrlWithStrategies])
 
   // Validate selected strategy exists
   useEffect(() => {
@@ -150,8 +228,18 @@ export function StrategyProvider({ children }: { children: ReactNode }) {
     compareStrategies,
     setCompareStrategies,
     toggleCompareStrategy,
+    // Alias for multi-strategy UI
+    selectedStrategies: compareStrategies,
     getStrategyById,
     getStrategyDisplayName,
+    // Color mapping
+    getColorForStrategy,
+    getStyleForStrategyIndex,
+    baselineStyle: BASELINE_STYLE,
+    maxCompareStrategies: MAX_COMPARE_STRATEGIES,
+    // URL sync
+    updateUrlWithStrategies,
+    loadStrategiesFromUrl,
   }
 
   return (
