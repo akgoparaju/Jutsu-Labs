@@ -256,6 +256,33 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to check data freshness on startup: {e}")
 
+    # Architecture fix 2026-01-21: Add scheduler recovery task
+    # If scheduler failed to start due to database unavailability, this task
+    # will attempt to start it once the database becomes available.
+    # This provides self-healing capability for transient startup issues.
+    async def scheduler_recovery_check():
+        """Check if scheduler needs recovery and attempt to start it."""
+        try:
+            # Wait a bit for database to become available
+            await asyncio.sleep(30)  # 30 seconds after startup
+            
+            if scheduler_service is not None:
+                if not scheduler_service.is_healthy():
+                    logger.warning(
+                        "SCHEDULER RECOVERY: Scheduler is not healthy, attempting recovery..."
+                    )
+                    if scheduler_service.ensure_running():
+                        logger.info("SCHEDULER RECOVERY: Successfully recovered scheduler")
+                    else:
+                        logger.error("SCHEDULER RECOVERY: Failed to recover scheduler")
+                else:
+                    logger.debug("Scheduler health check passed")
+        except Exception as e:
+            logger.warning(f"Scheduler recovery check failed: {e}")
+    
+    if scheduler_service is not None:
+        asyncio.create_task(scheduler_recovery_check())
+
     # Mark application as ready for traffic
     # This signals to load balancers that startup is complete
     startup_state.mark_ready()

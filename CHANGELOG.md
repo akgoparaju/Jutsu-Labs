@@ -1,3 +1,37 @@
+#### **Fix: Scheduler Self-Healing Architecture** (2026-01-21)
+
+Implemented permanent fix for scheduler not starting when database is temporarily unavailable.
+
+**Problem**:
+- Scheduler failed to start if PostgreSQL was unavailable during container startup
+- Once failed, scheduler remained broken for entire container lifetime
+- No automatic recovery mechanism existed
+- Required manual container restart to fix
+
+**Root Cause**:
+- Race condition: Docker container starts before PostgreSQL is fully ready
+- `SchedulerService.start()` was a single-shot operation with no retry
+- Exception at startup left scheduler in broken state (jobs added but never scheduled)
+- Resulted in recurring `'Job' object has no attribute 'next_run_time'` warnings
+
+**Solution**:
+1. **Retry Logic**: `start()` method now retries 5 times with exponential backoff (2, 4, 8, 16, 32 seconds)
+2. **Health Monitoring**: Added `is_healthy()` method to detect broken scheduler state
+3. **Self-Healing**: Added `ensure_running()` method and background recovery task
+4. **Graceful Degradation**: Falls back to MemoryJobStore only after all retries fail
+5. **Observable Status**: `get_status()` now includes `scheduler_running` and `scheduler_healthy`
+
+**Files Modified**:
+- `jutsu_engine/api/scheduler.py`: Added retry logic, `ensure_running()`, `is_healthy()` methods
+- `jutsu_engine/api/main.py`: Added `scheduler_recovery_check()` background task
+
+**Impact**:
+- Scheduler automatically recovers from transient database unavailability
+- No manual intervention needed for startup race conditions
+- Health status visible in API for monitoring
+
+---
+
 #### **Fix: CSV Exporter Date Off-by-One Day** (2026-01-20)
 
 Fixed issue where grid search and backtest CSV exports showed dates 1 day earlier than expected.

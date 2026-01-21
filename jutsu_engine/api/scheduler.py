@@ -599,11 +599,30 @@ class SchedulerService:
         except Exception as e:
             logger.warning(f"Failed to save notification state: {e}")
 
-    def start(self):
-        """Start the scheduler."""
+    def start(self, max_retries: int = 5, initial_delay: float = 2.0):
+        """
+        Start the scheduler with retry logic for database connection.
+        
+        Architecture fix 2026-01-21: Added retry logic to handle race condition
+        where container starts before database is ready. This prevents the
+        scheduler from being permanently broken due to transient DB unavailability.
+        
+        Args:
+            max_retries: Maximum number of connection attempts (default: 5)
+            initial_delay: Initial delay between retries in seconds (default: 2.0)
+                          Uses exponential backoff: 2, 4, 8, 16, 32 seconds
+        """
         if self._scheduler is not None and self._scheduler.running:
             logger.info("Scheduler already running")
-            return
+            return True
+        
+        # Clean up any previous failed scheduler instance
+        if self._scheduler is not None:
+            try:
+                self._scheduler.shutdown(wait=False)
+            except Exception:
+                pass
+            self._scheduler = None
 
         # Configure scheduler with persistent job store (SQLAlchemy)
         # Architecture decision 2026-01-14: Use SQLAlchemyJobStore to prevent
@@ -613,31 +632,132 @@ class SchedulerService:
         # as "missed" if event loop is delayed by network I/O, database queries, etc.
         # 300 seconds (5 minutes) allows for temporary delays while still
         # catching truly missed executions.
-        try:
-            database_url = get_database_url()
-            jobstore = SQLAlchemyJobStore(url=database_url)
-            logger.info("Using SQLAlchemyJobStore for persistent job scheduling")
-        except Exception as e:
-            # Fallback to MemoryJobStore if database not available
-            logger.warning(f"Failed to create SQLAlchemyJobStore, using MemoryJobStore: {e}")
-            jobstore = MemoryJobStore()
+        
+        delay = initial_delay
+        last_error = None
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                database_url = get_database_url()
+                jobstore = SQLAlchemyJobStore(url=database_url)
+                logger.info(f"Using SQLAlchemyJobStore for persistent job scheduling (attempt {attempt})")
+                
+                self._scheduler = AsyncIOScheduler(
+                    jobstores={'default': jobstore},
+                    timezone=EASTERN,
+                    job_defaults={
+                        'misfire_grace_time': 300,  # 5 minutes grace period
+                        'coalesce': True,           # Combine multiple missed runs into one
+                        'max_instances': 1,         # Only one instance at a time
+                    },
+                )
 
-        self._scheduler = AsyncIOScheduler(
-            jobstores={'default': jobstore},
-            timezone=EASTERN,
-            job_defaults={
-                'misfire_grace_time': 300,  # 5 minutes grace period
-                'coalesce': True,           # Combine multiple missed runs into one
-                'max_instances': 1,         # Only one instance at a time
-            },
+                # Add job if scheduler is enabled
+                if self.state.enabled:
+                    self._add_job()
+
+                self._scheduler.start()
+                logger.info("Scheduler started")
+                return True
+                
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Scheduler start attempt {attempt}/{max_retries} failed: {e}")
+                
+                # Clean up failed scheduler
+                if self._scheduler is not None:
+                    try:
+                        self._scheduler.shutdown(wait=False)
+                    except Exception:
+                        pass
+                    self._scheduler = None
+                
+                if attempt < max_retries:
+                    logger.info(f"Retrying in {delay:.1f} seconds...")
+                    import time as time_module
+                    time_module.sleep(delay)
+                    delay *= 2  # Exponential backoff
+        
+        # All retries failed - fall back to MemoryJobStore
+        logger.error(
+            f"All {max_retries} attempts to connect to database failed. "
+            f"Last error: {last_error}. Falling back to MemoryJobStore (jobs will be lost on restart)."
         )
+        
+        try:
+            jobstore = MemoryJobStore()
+            self._scheduler = AsyncIOScheduler(
+                jobstores={'default': jobstore},
+                timezone=EASTERN,
+                job_defaults={
+                    'misfire_grace_time': 300,
+                    'coalesce': True,
+                    'max_instances': 1,
+                },
+            )
+            
+            if self.state.enabled:
+                self._add_job()
+            
+            self._scheduler.start()
+            logger.warning("Scheduler started with MemoryJobStore (degraded mode)")
+            return True
+            
+        except Exception as e:
+            logger.critical(f"Failed to start scheduler even with MemoryJobStore: {e}")
+            return False
 
-        # Add job if scheduler is enabled
-        if self.state.enabled:
-            self._add_job()
-
-        self._scheduler.start()
-        logger.info("Scheduler started")
+    def ensure_running(self) -> bool:
+        """
+        Ensure the scheduler is running, attempting to start it if not.
+        
+        Architecture fix 2026-01-21: This method provides self-healing capability.
+        If the scheduler failed to start at startup (e.g., database unavailable),
+        this method can be called later to attempt recovery.
+        
+        Returns:
+            True if scheduler is running (was already running or successfully started)
+            False if scheduler could not be started
+        """
+        if self._scheduler is not None and self._scheduler.running:
+            return True
+        
+        logger.info("Scheduler not running, attempting to start...")
+        return self.start(max_retries=3, initial_delay=1.0)
+    
+    def is_healthy(self) -> bool:
+        """
+        Check if the scheduler is healthy.
+        
+        A healthy scheduler:
+        - Has been started
+        - Is currently running
+        - Can retrieve job information without errors
+        
+        Returns:
+            True if scheduler is healthy, False otherwise
+        """
+        if self._scheduler is None:
+            return False
+        
+        if not self._scheduler.running:
+            return False
+        
+        # Try to get a job to verify jobstore is accessible
+        try:
+            job = self._scheduler.get_job(self._job_id)
+            # If job exists, verify it has required attributes
+            if job is not None:
+                # Access next_run_time to verify job is not corrupted
+                _ = job.next_run_time
+            return True
+        except AttributeError as e:
+            # Job object is corrupted (e.g., "'Job' object has no attribute 'next_run_time'")
+            logger.warning(f"Scheduler health check failed - corrupted job object: {e}")
+            return False
+        except Exception as e:
+            logger.warning(f"Scheduler health check failed: {e}")
+            return False
 
     def stop(self):
         """Stop the scheduler."""
@@ -805,11 +925,17 @@ class SchedulerService:
         """Get the next scheduled run time."""
         if self._scheduler is None or not self.state.enabled:
             return None
+        
+        if not self._scheduler.running:
+            return None
 
         try:
             job = self._scheduler.get_job(self._job_id)
-            if job and job.next_run_time:
+            if job and hasattr(job, 'next_run_time') and job.next_run_time:
                 return job.next_run_time.isoformat()
+        except AttributeError as e:
+            # Job object is corrupted - this indicates jobstore issues
+            logger.warning(f"Failed to get next run time (corrupted job): {e}")
         except Exception as e:
             logger.warning(f"Failed to get next run time: {e}")
 
@@ -832,9 +958,15 @@ class SchedulerService:
             - run_count: Total number of runs
             - is_running: Whether a job is currently executing
             - is_running_refresh: Whether data refresh is running
+            - scheduler_running: Whether the scheduler process is running
+            - scheduler_healthy: Whether the scheduler is healthy
         """
         execution_time = self._get_execution_time()
         est_time = EXECUTION_TIME_MAP.get(execution_time, time(9, 45))
+        
+        # Check scheduler health
+        scheduler_running = self._scheduler is not None and self._scheduler.running
+        scheduler_healthy = self.is_healthy()
 
         return {
             'enabled': self.state.enabled,
@@ -851,17 +983,24 @@ class SchedulerService:
             'is_running_refresh': self._is_running_refresh,
             'is_running_hourly_refresh': self._is_running_hourly_refresh,
             'valid_execution_times': list(EXECUTION_TIME_MAP.keys()),
+            'scheduler_running': scheduler_running,
+            'scheduler_healthy': scheduler_healthy,
         }
     
     def _get_next_refresh_time(self) -> Optional[str]:
         """Get the next scheduled data refresh time."""
         if self._scheduler is None or not self.state.enabled:
             return None
+        
+        if not self._scheduler.running:
+            return None
 
         try:
             job = self._scheduler.get_job(self._refresh_job_id)
-            if job and job.next_run_time:
+            if job and hasattr(job, 'next_run_time') and job.next_run_time:
                 return job.next_run_time.isoformat()
+        except AttributeError as e:
+            logger.warning(f"Failed to get next refresh time (corrupted job): {e}")
         except Exception as e:
             logger.warning(f"Failed to get next refresh time: {e}")
 
@@ -871,11 +1010,16 @@ class SchedulerService:
         """Get the next scheduled hourly refresh time."""
         if self._scheduler is None or not self.state.enabled:
             return None
+        
+        if not self._scheduler.running:
+            return None
 
         try:
             job = self._scheduler.get_job(self._hourly_refresh_job_id)
-            if job and job.next_run_time:
+            if job and hasattr(job, 'next_run_time') and job.next_run_time:
                 return job.next_run_time.isoformat()
+        except AttributeError as e:
+            logger.warning(f"Failed to get next hourly refresh time (corrupted job): {e}")
         except Exception as e:
             logger.warning(f"Failed to get next hourly refresh time: {e}")
 
