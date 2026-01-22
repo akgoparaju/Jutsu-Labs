@@ -39,7 +39,6 @@ function DecisionTreeV2() {
 
   // Get selected strategies from URL params (same pattern as Dashboard)
   const selectedStrategies = searchParams.get('strategies')?.split(',').filter(Boolean) || []
-  const isComparisonMode = selectedStrategies.length > 1
 
   // State for selected strategy in Decision Tree view
   const [selectedStrategy, setSelectedStrategy] = useState<string>('')
@@ -65,9 +64,13 @@ function DecisionTreeV2() {
   })
 
   // Convert backtest config to our config format
+  // The YAML structure has parameters nested under strategy.parameters
+  const strategyParams = (backtestConfig?.config as Record<string, unknown>)?.strategy as Record<string, unknown> | undefined
+  const configParams = strategyParams?.parameters as Record<string, unknown> | undefined
+
   const config = backtestConfig ? {
     strategy_name: backtestConfig.strategy_name || selectedStrategy,
-    parameters: Object.entries(backtestConfig.config || {}).map(([name, value]) => ({
+    parameters: Object.entries(configParams || {}).map(([name, value]) => ({
       name,
       value,
       is_overridden: false,
@@ -86,7 +89,7 @@ function DecisionTreeV2() {
   })
 
   // Helper to get config parameter value
-  const getParam = (name: string): number | string | boolean | undefined => {
+  const getParam = (name: string): unknown => {
     const param = config?.parameters?.find(p => p.name === name)
     return param?.value
   }

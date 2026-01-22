@@ -316,13 +316,18 @@ function PerformanceV2() {
 
   // Single strategy dropdown for regime table in comparison mode
   const [regimeStrategyId, setRegimeStrategyId] = useState<string>(selectedStrategies[0] || '')
+  // Single strategy dropdown for daily performance table in comparison mode
+  const [dailyPerfStrategyId, setDailyPerfStrategyId] = useState<string>(selectedStrategies[0] || '')
 
   // Update regime strategy when selection changes
   useEffect(() => {
     if (selectedStrategies.length > 0 && !selectedStrategies.includes(regimeStrategyId)) {
       setRegimeStrategyId(selectedStrategies[0])
     }
-  }, [selectedStrategies, regimeStrategyId])
+    if (selectedStrategies.length > 0 && !selectedStrategies.includes(dailyPerfStrategyId)) {
+      setDailyPerfStrategyId(selectedStrategies[0])
+    }
+  }, [selectedStrategies, regimeStrategyId, dailyPerfStrategyId])
 
   const queryParams = useMemo(() =>
     getTimeRangeParams(timeRange, customStartDate, customEndDate),
@@ -661,7 +666,6 @@ function PerformanceV2() {
           color: style.color,
           lineStyle: style.lineStyle,
           lineWidth: 2,
-          title: getStrategyDisplayName(strategyId),
           priceFormat: { type: 'custom', formatter: priceFormatter },
         })
 
@@ -711,7 +715,6 @@ function PerformanceV2() {
           color: BASELINE_STYLE.color,
           lineStyle: BASELINE_STYLE.lineStyle,
           lineWidth: 2,
-          title: 'Baseline (QQQ)',
           priceFormat: { type: 'custom', formatter: priceFormatter },
         })
         baselineSeriesRef.current.setData(baselineData)
@@ -725,7 +728,6 @@ function PerformanceV2() {
       const series = chartRef.current.addLineSeries({
         color: '#3b82f6',
         lineWidth: 2,
-        title: 'Portfolio',
         priceFormat: { type: 'custom', formatter: priceFormatter },
       })
 
@@ -750,7 +752,6 @@ function PerformanceV2() {
         color: '#f59e0b',
         lineWidth: 2,
         lineStyle: 2,
-        title: 'QQQ Baseline',
         priceFormat: { type: 'custom', formatter: priceFormatter },
       })
 
@@ -1306,11 +1307,17 @@ function PerformanceV2() {
         )
       })()}
 
-      {/* Daily Performance History - Only in single strategy mode */}
-      {!isComparisonMode && performance?.history && performance.history.length > 0 && (() => {
+      {/* Daily Performance History - Works in both single and comparison modes */}
+      {(() => {
+        // Get the appropriate performance data based on mode
+        const dailyPerfData = isComparisonMode
+          ? multiPerformanceData?.[dailyPerfStrategyId]
+          : performance
+        
+        if (!dailyPerfData?.history || dailyPerfData.history.length === 0) return null
         // Deduplicate by date
-        const historyByDate = new Map<string, typeof performance.history[0]>()
-        for (const snapshot of performance.history) {
+        const historyByDate = new Map<string, typeof dailyPerfData.history[0]>()
+        for (const snapshot of dailyPerfData.history) {
           const dateKey = new Date(snapshot.timestamp).toLocaleDateString()
           historyByDate.set(dateKey, snapshot)
         }
@@ -1338,9 +1345,25 @@ function PerformanceV2() {
 
         return (
           <ResponsiveCard padding="md">
-            <ResponsiveText variant="h2" as="h3" className="text-white mb-4">
-              Daily Performance
-            </ResponsiveText>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 gap-2">
+              <ResponsiveText variant="h2" as="h3" className="text-white">
+                Daily Performance
+              </ResponsiveText>
+              {/* Strategy dropdown in comparison mode */}
+              {isComparisonMode && (
+                <select
+                  value={dailyPerfStrategyId}
+                  onChange={(e) => setDailyPerfStrategyId(e.target.value)}
+                  className="px-3 py-2 bg-slate-700 rounded-lg border border-slate-600 min-h-[44px] text-sm"
+                >
+                  {selectedStrategies.map((id) => (
+                    <option key={id} value={id}>
+                      {getStrategyDisplayName(id)}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
 
             {isMobile ? (
               // Mobile: Simplified card view with key metrics only

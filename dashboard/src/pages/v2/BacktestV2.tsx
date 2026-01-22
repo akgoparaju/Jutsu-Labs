@@ -529,7 +529,6 @@ function BacktestV2() {
           color: style.color,
           lineWidth: 2,
           lineStyle: style.lineStyle,
-          title: data.summary?.strategy_name || strategyId,
         })
         strategySeriesRefs.current.set(strategyId, series)
       } else {
@@ -537,7 +536,6 @@ function BacktestV2() {
         series.applyOptions({
           color: style.color,
           lineStyle: style.lineStyle,
-          title: data.summary?.strategy_name || strategyId,
         })
       }
 
@@ -571,7 +569,6 @@ function BacktestV2() {
             color: baselineStyle.color,
             lineWidth: 2,
             lineStyle: baselineStyle.lineStyle,
-            title: 'Baseline (QQQ)',
           })
         }
 

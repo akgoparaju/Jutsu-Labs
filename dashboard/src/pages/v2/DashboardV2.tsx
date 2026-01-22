@@ -239,7 +239,10 @@ function DashboardV2() {
   )
 
   // Get latest baseline from most recent snapshot
-  const latestSnapshot = performanceData?.history?.[performanceData.history.length - 1]
+  // In comparison mode, get from first strategy's data
+  const latestSnapshot = isComparisonMode && primaryStrategy
+    ? multiPerformanceData?.[primaryStrategy]?.history?.slice(-1)[0]
+    : performanceData?.history?.[performanceData.history.length - 1]
   const baselineValue = latestSnapshot?.baseline_value
 
   // Calculate period-specific returns and baseline metrics
@@ -622,7 +625,9 @@ function DashboardV2() {
                             </td>
                           )
                         })}
-                        <td className="py-3 px-4 text-center text-gray-400">—</td>
+                        <td className="py-3 px-4 text-center text-amber-400 font-medium">
+                          {formatMetricValue(baselineValue, 'currency')}
+                        </td>
                       </tr>
                     )
                   })()}
@@ -950,50 +955,145 @@ function DashboardV2() {
       )}
 
       {/* 3. Portfolio Snapshot */}
-      {status?.portfolio && (
+      {(isComparisonMode ? Object.keys(multiPerformanceData || {}).length > 0 : status?.portfolio) && (
         <ResponsiveCard padding="md">
           <ResponsiveText variant="h2" as="h3" className="mb-4">
             Portfolio Snapshot
           </ResponsiveText>
 
-          {/* Balance Grid */}
-          <ResponsiveGrid
-            columns={{ default: 1, xs: 2, md: 4 }}
-            gap="sm"
-            className="mb-6"
-          >
-            <MetricCard
-              label="Total Equity"
-              value={status.portfolio.total_equity}
-              format="currency"
-            />
-            <MetricCard
-              label="QQQ Baseline"
-              value={baselineValue}
-              format="currency"
-              variant="baseline"
-            />
-            {status.portfolio.cash !== undefined && (
-              <MetricCard
-                label="Cash"
-                value={status.portfolio.cash}
-                format="currency"
-                variant="neutral"
-              />
-            )}
-            {status.portfolio.positions_value !== undefined && (
-              <MetricCard
-                label="Positions Value"
-                value={status.portfolio.positions_value}
-                format="currency"
-                variant="neutral"
-              />
-            )}
-          </ResponsiveGrid>
+          {isComparisonMode ? (
+            // Multi-strategy comparison view - Holdings with Cash row
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-slate-700">
+                    <th className="text-left py-3 px-4 text-gray-400 font-medium">Symbol</th>
+                    {selectedStrategies.map((strategyId) => (
+                      <th key={strategyId} className="text-center py-3 px-4">
+                        <div className="flex items-center justify-center gap-2">
+                          <div
+                            className="w-3 h-3 rounded-full"
+                            style={{ backgroundColor: strategyStyles[strategyId]?.color || STRATEGY_COLOR_HEX[0] }}
+                          />
+                          <span style={{ color: strategyStyles[strategyId]?.color || STRATEGY_COLOR_HEX[0] }}>
+                            {getStrategyDisplayName(strategyId).replace('Hierarchical Adaptive ', '')}
+                          </span>
+                        </div>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {/* Cash Row */}
+                  <tr className="border-b border-slate-700/50 bg-slate-700/20">
+                    <td className="py-3 px-4 text-blue-400 font-medium">Cash</td>
+                    {selectedStrategies.map((strategyId) => {
+                      const perfData = multiPerformanceData?.[strategyId]
+                      return (
+                        <td key={strategyId} className="py-3 px-4 text-center">
+                          <div className="text-blue-400 font-medium">
+                            ${(perfData?.current?.cash ?? 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                          </div>
+                        </td>
+                      )
+                    })}
+                  </tr>
+                  {/* Get all unique symbols across strategies */}
+                  {(() => {
+                    const allSymbols = new Set<string>()
+                    selectedStrategies.forEach((strategyId) => {
+                      const holdings = multiPerformanceData?.[strategyId]?.current?.holdings
+                      holdings?.forEach((h: { symbol: string }) => allSymbols.add(h.symbol))
+                    })
+                    
+                    if (allSymbols.size === 0) {
+                      return (
+                        <tr>
+                          <td colSpan={selectedStrategies.length + 1} className="py-4 text-center text-gray-500">
+                            No positions currently held
+                          </td>
+                        </tr>
+                      )
+                    }
+                    
+                    return Array.from(allSymbols).sort().map((symbol) => (
+                      <tr key={symbol} className="border-b border-slate-700/50">
+                        <td className="py-3 px-4 text-gray-200 font-medium">{symbol}</td>
+                        {selectedStrategies.map((strategyId) => {
+                          const holdings = multiPerformanceData?.[strategyId]?.current?.holdings as Array<{
+                            symbol: string
+                            quantity: number
+                            value: number
+                            weight_pct: number
+                          }> | undefined
+                          const holding = holdings?.find(h => h.symbol === symbol)
+                          if (holding) {
+                            return (
+                              <td key={strategyId} className="py-3 px-4 text-center">
+                                <div className="text-green-400 font-medium">
+                                  ${holding.value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                                </div>
+                                <div className="text-xs text-gray-500">
+                                  {holding.quantity} shares ({holding.weight_pct.toFixed(1)}%)
+                                </div>
+                              </td>
+                            )
+                          }
+                          return (
+                            <td key={strategyId} className="py-3 px-4 text-center text-gray-600">
+                              —
+                            </td>
+                          )
+                        })}
+                      </tr>
+                    ))
+                  })()}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            // Single strategy view (original)
+            <>
+              {/* Balance Grid */}
+              <ResponsiveGrid
+                columns={{ default: 1, xs: 2, md: 4 }}
+                gap="sm"
+                className="mb-6"
+              >
+                <MetricCard
+                  label="Total Equity"
+                  value={status?.portfolio?.total_equity}
+                  format="currency"
+                />
+                <MetricCard
+                  label="QQQ Baseline"
+                  value={baselineValue}
+                  format="currency"
+                  variant="baseline"
+                />
+                {status?.portfolio?.cash !== undefined && (
+                  <MetricCard
+                    label="Cash"
+                    value={status.portfolio.cash}
+                    format="currency"
+                    variant="neutral"
+                  />
+                )}
+                {status?.portfolio?.positions_value !== undefined && (
+                  <MetricCard
+                    label="Positions Value"
+                    value={status.portfolio.positions_value}
+                    format="currency"
+                    variant="neutral"
+                  />
+                )}
+              </ResponsiveGrid>
 
-          {/* Positions Display - Cards on mobile, table on tablet+ */}
-          {status.portfolio.positions && status.portfolio.positions.length > 0 && (
-            <PositionsDisplay positions={status.portfolio.positions} />
+              {/* Positions Display - Cards on mobile, table on tablet+ */}
+              {status?.portfolio?.positions && status.portfolio.positions.length > 0 && (
+                <PositionsDisplay positions={status.portfolio.positions} />
+              )}
+            </>
           )}
         </ResponsiveCard>
       )}

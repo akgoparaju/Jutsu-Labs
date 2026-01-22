@@ -1,3 +1,55 @@
+#### **Fix: Dashboard Portfolio Snapshot & Strategy Comparison** (2026-01-22)
+
+Improved Dashboard tab multi-strategy comparison UI:
+
+**1. Portfolio Snapshot - Removed Redundant Table**
+- Removed duplicate Equity Summary table (Total Equity + Cash rows) that repeated info from Strategy Comparison
+- Moved Cash row into the Holdings table as the first row with blue highlighting
+- Holdings table now shows Cash + all symbol positions across strategies
+- File: `dashboard/src/pages/v2/DashboardV2.tsx`
+
+**2. Strategy Comparison - QQQ Baseline Total Equity**
+- Fixed QQQ baseline total equity to show actual value instead of "—"
+- Baseline value now correctly sourced from multiPerformanceData in comparison mode
+- Shows QQQ baseline growth (what $100K would be worth if invested in QQQ)
+- File: `dashboard/src/pages/v2/DashboardV2.tsx`
+
+**Note on Holdings Comparison v3.5d Data**:
+- v3.5d holdings showing "—" is correct behavior when no Position records exist in database
+- v3.5d was backfilled from CSV (creates snapshots, not Position records)
+- Future scheduler runs will populate Position records for v3.5d
+- Related: Run `alembic upgrade head` to ensure Position.strategy_id column exists
+
+---
+
+#### **Fix: Dashboard Multi-Strategy UI Improvements** (2026-01-22)
+
+Fixed 4 lingering issues in the multi-strategy dashboard UI:
+
+**1. Dashboard Tab - Multi-Strategy Portfolio Snapshot**
+- Added equity comparison table showing each strategy's total equity + QQQ baseline
+- Added holdings comparison table listing all symbols across strategies with positions
+- File: `dashboard/src/pages/v2/DashboardV2.tsx`
+
+**2. Decision Tree Tab - Cell 1 Exit Confirmation for v3.5d**
+- Fixed config parameter extraction to access nested YAML structure (`strategy.parameters`)
+- `cell1_exit_confirmation_enabled` and `cell1_exit_confirmation_days` now correctly read from backtest config
+- Section displays confirmation days required, pending days, progress bar, and status
+- File: `dashboard/src/pages/v2/DecisionTreeV2.tsx`
+
+**3. Chart Labels Obstructing Endpoint Values (Backtest & Performance tabs)**
+- Removed `title` property from `addLineSeries()` calls that created inline labels
+- Clears chart obstruction while legend above chart still provides strategy identification
+- Files: `dashboard/src/pages/v2/PerformanceV2.tsx`, `dashboard/src/pages/v2/BacktestV2.tsx`
+
+**4. Performance Tab - Daily Performance with Strategy Dropdown**
+- Added `dailyPerfStrategyId` state for strategy selection in comparison mode
+- Daily Performance section now works in both single and comparison modes
+- Added dropdown strategy selector in section header for comparison mode
+- File: `dashboard/src/pages/v2/PerformanceV2.tsx`
+
+---
+
 #### **Documentation: Multi-Strategy Scheduler Documentation (Phase 4)** (2026-01-22)
 
 Completed Phase 4 of the multi-strategy scheduler system, updating all documentation to reflect the completed implementation.
