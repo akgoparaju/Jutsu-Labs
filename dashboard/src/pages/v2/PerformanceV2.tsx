@@ -120,14 +120,14 @@ function calculateSharpeRatio(dailyReturns: number[]): number {
  * Deduplicate chart data by time, keeping the last value for each date.
  * Also sorts the data chronologically to satisfy lightweight-charts requirements.
  */
-function deduplicateChartData<T extends { time: string; value: number }>(data: T[]): T[] {
+function deduplicateChartData<T extends { time: unknown; value: number }>(data: T[]): T[] {
   // Use a Map to keep only the last value for each date
   const dateMap = new Map<string, T>()
   for (const point of data) {
-    dateMap.set(point.time, point)
+    dateMap.set(String(point.time), point)
   }
   // Convert back to array and sort by date
-  return Array.from(dateMap.values()).sort((a, b) => a.time.localeCompare(b.time))
+  return Array.from(dateMap.values()).sort((a, b) => String(a.time).localeCompare(String(b.time)))
 }
 
 // Helper to format metric values

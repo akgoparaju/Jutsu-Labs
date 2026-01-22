@@ -73,7 +73,7 @@ function ConfigV2() {
   })
 
   const updateConfig = useMutation({
-    mutationFn: (data: { parameter_name: string; new_value: unknown; reason?: string }) =>
+    mutationFn: (data: { parameter_name: string; new_value: unknown; reason?: string; strategy_id?: string }) =>
       configApi.updateConfig(data).then(res => res.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['config'] })
