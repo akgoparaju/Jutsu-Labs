@@ -805,11 +805,25 @@ function BacktestV2() {
                   <span className="font-medium text-gray-400">Baseline (QQQ)</span>
                 </div>
                 <div className="grid grid-cols-2 gap-3 text-sm">
-                  <div className="col-span-2">
+                  <div>
                     <span className="text-gray-400 block">Total Return</span>
                     <span className={(primarySummary?.baseline_total_return ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}>
                       {formatPercent(primarySummary?.baseline_total_return)}
                     </span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block">CAGR</span>
+                    <span className={(primarySummary?.baseline_cagr ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}>
+                      {formatPercent(primarySummary?.baseline_cagr)}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block">Sharpe</span>
+                    <span className="text-gray-200">{formatNumber(primarySummary?.baseline_sharpe_ratio)}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block">Max DD</span>
+                    <span className="text-red-400">{formatPercent(primarySummary?.baseline_max_drawdown)}</span>
                   </div>
                 </div>
               </div>
@@ -867,6 +881,7 @@ function BacktestV2() {
                     strategyStyles={strategyStyles}
                     format="percent"
                     higherIsBetter={true}
+                    baselineValue={primarySummary?.baseline_cagr}
                     strategyOrder={selectedStrategies}
                   />
                   <ComparisonRow
@@ -877,6 +892,7 @@ function BacktestV2() {
                     strategyStyles={strategyStyles}
                     format="number"
                     higherIsBetter={true}
+                    baselineValue={primarySummary?.baseline_sharpe_ratio}
                     strategyOrder={selectedStrategies}
                   />
                   <ComparisonRow
@@ -887,6 +903,7 @@ function BacktestV2() {
                     strategyStyles={strategyStyles}
                     format="percent"
                     higherIsBetter={false}
+                    baselineValue={primarySummary?.baseline_max_drawdown}
                     strategyOrder={selectedStrategies}
                   />
                   <ComparisonRow
@@ -995,6 +1012,165 @@ function BacktestV2() {
           <ResponsiveText variant="small" className="text-gray-500 mt-2">
             {primaryPeriodMetrics.days} calendar days
           </ResponsiveText>
+        </ResponsiveCard>
+      )}
+
+      {/* Period Metrics - Comparison View */}
+      {isComparisonMode && (filterStartDate || filterEndDate) && selectedStrategies.some(
+        (id: string) => multiStrategyData[id]?.period_metrics
+      ) && (
+        <ResponsiveCard padding="md">
+          <ResponsiveText variant="h3" as="h3" className="text-white mb-3">
+            Selected Period Comparison
+            {primaryPeriodMetrics && ` (${primaryPeriodMetrics.start_date} to ${primaryPeriodMetrics.end_date})`}
+          </ResponsiveText>
+
+          {isMobile ? (
+            // Mobile card view for period comparison
+            <div className="space-y-3">
+              {selectedStrategies.map((strategyId: string) => {
+                const data = multiStrategyData[strategyId]
+                const periodMetrics = data?.period_metrics
+                if (!periodMetrics) return null
+
+                return (
+                  <div key={strategyId} className="bg-slate-700/50 rounded-lg p-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <span
+                        className="w-4 h-4 rounded-full"
+                        style={{ backgroundColor: strategyStyles[strategyId]?.color || '#6b7280' }}
+                      />
+                      <span className="font-medium text-white">{data?.summary?.strategy_name || strategyId}</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 text-sm">
+                      <div>
+                        <span className="text-gray-400 block">Period Return</span>
+                        <span className={(periodMetrics.period_return ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}>
+                          {formatPercent(periodMetrics.period_return)}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-gray-400 block">Annualized</span>
+                        <span className={(periodMetrics.annualized_return ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}>
+                          {formatPercent(periodMetrics.annualized_return)}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-gray-400 block">Alpha</span>
+                        <span className={(periodMetrics.alpha ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}>
+                          {formatPercent(periodMetrics.alpha)}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-gray-400 block">Days</span>
+                        <span className="text-gray-200">{periodMetrics.days}</span>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+              {/* Baseline info */}
+              {primaryPeriodMetrics && (
+                <div className="bg-slate-700/30 rounded-lg p-4 border border-dashed border-slate-600">
+                  <div className="flex items-center gap-2 mb-3">
+                    <span
+                      className="w-4 h-4 rounded-full"
+                      style={{ backgroundColor: BASELINE_STYLE.color }}
+                    />
+                    <span className="font-medium text-gray-400">Baseline (QQQ)</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div>
+                      <span className="text-gray-400 block">Period Return</span>
+                      <span className={(primaryPeriodMetrics.baseline_return ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}>
+                        {formatPercent(primaryPeriodMetrics.baseline_return)}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-gray-400 block">Annualized</span>
+                      <span className={(primaryPeriodMetrics.baseline_annualized ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}>
+                        {formatPercent(primaryPeriodMetrics.baseline_annualized)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            // Desktop table view for period comparison
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead className="text-sm text-gray-400 border-b border-slate-700">
+                  <tr>
+                    <th className="pb-3">Metric</th>
+                    {selectedStrategies.map((strategyId: string) => {
+                      const data = multiStrategyData[strategyId]
+                      const style = strategyStyles[strategyId]
+                      return (
+                        <th key={strategyId} className="pb-3">
+                          <div className="flex items-center gap-2">
+                            <span
+                              className="w-3 h-3 rounded-full"
+                              style={{ backgroundColor: style?.color || '#6b7280' }}
+                            />
+                            {data?.summary?.strategy_name || strategyId}
+                          </div>
+                        </th>
+                      )
+                    })}
+                    <th className="pb-3">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="w-3 h-3 rounded-full"
+                          style={{ backgroundColor: BASELINE_STYLE.color }}
+                        />
+                        QQQ (Baseline)
+                      </div>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <ComparisonRow
+                    label="Period Return"
+                    values={Object.fromEntries(
+                      selectedStrategies.map((id: string) => [id, multiStrategyData[id]?.period_metrics?.period_return])
+                    )}
+                    strategyStyles={strategyStyles}
+                    format="percent"
+                    higherIsBetter={true}
+                    baselineValue={primaryPeriodMetrics?.baseline_return}
+                    strategyOrder={selectedStrategies}
+                  />
+                  <ComparisonRow
+                    label="Annualized"
+                    values={Object.fromEntries(
+                      selectedStrategies.map((id: string) => [id, multiStrategyData[id]?.period_metrics?.annualized_return])
+                    )}
+                    strategyStyles={strategyStyles}
+                    format="percent"
+                    higherIsBetter={true}
+                    baselineValue={primaryPeriodMetrics?.baseline_annualized}
+                    strategyOrder={selectedStrategies}
+                  />
+                  <ComparisonRow
+                    label="Alpha vs QQQ"
+                    values={Object.fromEntries(
+                      selectedStrategies.map((id: string) => [id, multiStrategyData[id]?.period_metrics?.alpha])
+                    )}
+                    strategyStyles={strategyStyles}
+                    format="percent"
+                    higherIsBetter={true}
+                    strategyOrder={selectedStrategies}
+                  />
+                </tbody>
+              </table>
+              {primaryPeriodMetrics?.days && (
+                <ResponsiveText variant="small" className="text-gray-500 mt-2">
+                  {primaryPeriodMetrics.days} calendar days
+                </ResponsiveText>
+              )}
+            </div>
+          )}
         </ResponsiveCard>
       )}
 

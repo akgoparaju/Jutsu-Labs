@@ -9,22 +9,67 @@
  */
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
-import { configApi, ConfigParameter } from '../../api/client'
+import { useState, useEffect } from 'react'
+import { configApi, backtestApi, ConfigParameter } from '../../api/client'
 import SchwabAuth from '../../components/SchwabAuth'
 import { ResponsiveCard, ResponsiveText } from '../../components/ui'
 import { useIsMobileOrSmaller } from '../../hooks/useMediaQuery'
+import { useStrategy } from '../../contexts/StrategyContext'
 
 function ConfigV2() {
   const queryClient = useQueryClient()
   const isMobile = useIsMobileOrSmaller()
+  const { strategies: availableStrategies, primaryStrategyId } = useStrategy()
+  const [selectedStrategy, setSelectedStrategy] = useState<string>('')
   const [editingParam, setEditingParam] = useState<string | null>(null)
   const [editValue, setEditValue] = useState<string>('')
   const [editReason, setEditReason] = useState<string>('')
 
+  // Set default selected strategy to primary
+  useEffect(() => {
+    if (!selectedStrategy && primaryStrategyId) {
+      setSelectedStrategy(primaryStrategyId)
+    } else if (!selectedStrategy && availableStrategies.length > 0) {
+      setSelectedStrategy(availableStrategies[0].id)
+    }
+  }, [selectedStrategy, primaryStrategyId, availableStrategies])
+
+  // Check if viewing the primary/active strategy (editable)
+  const isViewingPrimary = selectedStrategy === primaryStrategyId
+
+  // Use configApi for primary strategy, backtestApi for others
   const { data: config, isLoading, error } = useQuery({
-    queryKey: ['config'],
-    queryFn: () => configApi.getConfig().then(res => res.data),
+    queryKey: ['config', selectedStrategy, isViewingPrimary],
+    queryFn: async () => {
+      if (isViewingPrimary) {
+        // Use live config API for primary strategy (supports editing)
+        return configApi.getConfig().then(res => res.data)
+      } else {
+        // Use backtest config API for viewing other strategies (read-only)
+        const backtestConfig = await backtestApi.getConfig({ strategy_id: selectedStrategy }).then(res => res.data)
+        // Transform backtest config format to match ConfigResponse
+        const parameters: ConfigParameter[] = []
+        // Cast config to expected shape since it's typed as Record<string, unknown>
+        const configData = backtestConfig.config as { strategy?: { parameters?: Record<string, unknown> } } | undefined
+        if (configData?.strategy?.parameters) {
+          for (const [name, value] of Object.entries(configData.strategy.parameters)) {
+            parameters.push({
+              name,
+              value,
+              original_value: value, // For backtest config, value IS the default (no overrides possible)
+              is_overridden: false,
+            })
+          }
+        }
+        return {
+          strategy_name: backtestConfig.strategy_name || selectedStrategy,
+          parameters,
+          active_overrides: 0,
+          last_modified: undefined,
+        }
+      }
+    },
+    enabled: !!selectedStrategy,
   })
 
   const updateConfig = useMutation({
@@ -39,7 +84,8 @@ function ConfigV2() {
   })
 
   const resetParameter = useMutation({
-    mutationFn: (name: string) => configApi.resetParameter(name).then(res => res.data),
+    mutationFn: (params: { name: string; strategy_id: string }) =>
+      configApi.resetParameter(params.name, params.strategy_id).then(res => res.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['config'] })
     },
@@ -67,12 +113,13 @@ function ConfigV2() {
       parameter_name: param.name,
       new_value: parsedValue,
       reason: editReason || undefined,
+      strategy_id: selectedStrategy,
     })
   }
 
   const handleReset = (name: string) => {
     if (window.confirm(`Reset ${name} to its default value?`)) {
-      resetParameter.mutate(name)
+      resetParameter.mutate({ name, strategy_id: selectedStrategy })
     }
   }
 
@@ -145,32 +192,42 @@ function ConfigV2() {
         <ResponsiveText variant="h1" as="h2" className="text-white">
           Configuration
         </ResponsiveText>
-        {config && (config.active_overrides ?? 0) > 0 && (
-          <span className="px-3 py-1 bg-yellow-600/30 text-yellow-400 rounded-full text-sm self-start">
-            {config.active_overrides} override(s) active
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          {config && (config.active_overrides ?? 0) > 0 && (
+            <span className="px-3 py-1 bg-yellow-600/30 text-yellow-400 rounded-full text-sm">
+              {config.active_overrides} override(s) active
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Schwab API Authentication */}
       <SchwabAuth />
 
-      {/* Strategy Info */}
-      {config && (
-        <ResponsiveCard padding="md">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-            <div>
-              <ResponsiveText variant="small" className="text-gray-400">Strategy</ResponsiveText>
-              <ResponsiveText variant="h3" className="text-white">{config.strategy_name}</ResponsiveText>
-            </div>
-            {config.last_modified && (
-              <ResponsiveText variant="small" className="text-gray-400">
-                Last modified: {new Date(config.last_modified).toLocaleString()}
-              </ResponsiveText>
-            )}
+      {/* Strategy Selector - replaces static Strategy info box */}
+      <ResponsiveCard padding="md">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex-1">
+            <ResponsiveText variant="small" className="text-gray-400 mb-2 block">Strategy</ResponsiveText>
+            <select
+              value={selectedStrategy}
+              onChange={(e) => setSelectedStrategy(e.target.value)}
+              className="w-full sm:w-auto px-3 py-2 bg-slate-700 rounded-lg border border-slate-600 focus:outline-none focus:border-blue-500 text-base min-h-[44px]"
+            >
+              {availableStrategies.map((strategy) => (
+                <option key={strategy.id} value={strategy.id}>
+                  {strategy.display_name}{strategy.id === primaryStrategyId ? ' (Active)' : ''}
+                </option>
+              ))}
+            </select>
           </div>
-        </ResponsiveCard>
-      )}
+          {config?.last_modified && (
+            <ResponsiveText variant="small" className="text-gray-400">
+              Last modified: {new Date(config.last_modified).toLocaleString()}
+            </ResponsiveText>
+          )}
+        </div>
+      </ResponsiveCard>
 
       {/* Parameters - Card View (Mobile) or Table View (Desktop) */}
       {isMobile ? (

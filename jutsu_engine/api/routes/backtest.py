@@ -246,6 +246,36 @@ def _parse_dashboard_csv(csv_path: Path) -> Dict[str, Any]:
                 if summary.get('annualized_return') is not None:
                     summary['alpha'] = round(summary['annualized_return'] - baseline_cagr, 2)
 
+            # Calculate baseline Sharpe ratio from daily returns
+            baseline_values = [t['baseline'] for t in timeseries if t.get('baseline') is not None]
+            if len(baseline_values) >= 2:
+                baseline_daily_returns = []
+                for i in range(1, len(baseline_values)):
+                    if baseline_values[i-1] > 0:
+                        daily_ret = (baseline_values[i] / baseline_values[i-1]) - 1
+                        baseline_daily_returns.append(daily_ret)
+
+                if len(baseline_daily_returns) >= 2:
+                    n = len(baseline_daily_returns)
+                    mean_ret = sum(baseline_daily_returns) / n
+                    variance = sum((r - mean_ret) ** 2 for r in baseline_daily_returns) / (n - 1)
+                    std_dev = math.sqrt(variance) if variance > 0 else 0
+                    if std_dev > 0:
+                        baseline_sharpe = (math.sqrt(252) * mean_ret) / std_dev
+                        summary['baseline_sharpe_ratio'] = round(baseline_sharpe, 2)
+
+            # Calculate baseline max drawdown
+            if len(baseline_values) >= 2:
+                peak = baseline_values[0]
+                max_drawdown = 0.0
+                for value in baseline_values:
+                    if value > peak:
+                        peak = value
+                    drawdown = (value - peak) / peak * 100  # Negative percentage
+                    if drawdown < max_drawdown:
+                        max_drawdown = drawdown
+                summary['baseline_max_drawdown'] = round(max_drawdown, 2)
+
     return {
         'summary': summary,
         'timeseries': timeseries,

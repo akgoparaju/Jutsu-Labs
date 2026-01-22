@@ -83,6 +83,7 @@ export interface TradeRecord {
   z_score?: number
   reason?: string
   mode: string
+  strategy_id?: string
 }
 
 export interface TradeListResponse {
@@ -249,9 +250,10 @@ export const tradesApi = {
     action?: string
     start_date?: string
     end_date?: string
+    strategy_id?: string
   }) => api.get<TradeListResponse>('/trades', { params }),
   getTrade: (id: number) => api.get<TradeRecord>(`/trades/${id}`),
-  getStats: (params?: { mode?: string; start_date?: string; end_date?: string }) =>
+  getStats: (params?: { mode?: string; start_date?: string; end_date?: string; strategy_id?: string }) =>
     api.get('/trades/summary/stats', { params }),
   exportCsv: (params?: {
     symbol?: string
@@ -259,6 +261,7 @@ export const tradesApi = {
     action?: string
     start_date?: string
     end_date?: string
+    strategy_id?: string
   }) => api.get('/trades/export', { params, responseType: 'blob' }),
   // Trade execution (Jutsu Trader)
   executeTrade: (data: ExecuteTradeRequest) =>
@@ -278,9 +281,10 @@ export const performanceApi = {
 
 export const configApi = {
   getConfig: () => api.get<ConfigResponse>('/config'),
-  updateConfig: (data: { parameter_name: string; new_value: any; reason?: string }) =>
+  updateConfig: (data: { parameter_name: string; new_value: any; reason?: string; strategy_id?: string }) =>
     api.put('/config', data),
-  resetParameter: (name: string) => api.delete(`/config/${name}`),
+  resetParameter: (name: string, strategy_id?: string) =>
+    api.delete(`/config/${name}`, { params: strategy_id ? { strategy_id } : undefined }),
 }
 
 export const controlApi = {
@@ -426,6 +430,9 @@ export interface BacktestSummary {
   alpha?: number
   baseline_ticker?: string
   baseline_total_return?: number
+  baseline_cagr?: number
+  baseline_sharpe_ratio?: number
+  baseline_max_drawdown?: number
 }
 
 export interface BacktestDataPoint {

@@ -245,9 +245,13 @@ async def update_configuration(
                     detail=f"Parameter {param_name} must be one of: {allowed}"
                 )
 
-        # Deactivate existing override if present
+        # Get strategy_id from update or default to primary strategy
+        strategy_id = update.strategy_id or config.get('strategy', {}).get('strategy_id', 'v3_5b')
+
+        # Deactivate existing override if present for this strategy
         existing = db.query(ConfigOverride).filter(
             ConfigOverride.parameter_name == param_name,
+            ConfigOverride.strategy_id == strategy_id,
             ConfigOverride.is_active == True
         ).first()
 
@@ -255,13 +259,14 @@ async def update_configuration(
             existing.is_active = False
             existing.deactivated_at = datetime.now(timezone.utc)
 
-        # Create new override
+        # Create new override for this strategy
         value_type = get_value_type(new_value)
         new_override = ConfigOverride(
             parameter_name=param_name,
             original_value=str(original_value),
             override_value=str(new_value),
             value_type=value_type,
+            strategy_id=strategy_id,
             is_active=True,
             reason=update.reason,
             created_at=datetime.now(timezone.utc),
@@ -311,6 +316,7 @@ async def update_configuration(
 )
 async def reset_parameter(
     parameter_name: str,
+    strategy_id: Optional[str] = None,
     db: Session = Depends(get_db),
     config: dict = Depends(get_config),
     _auth = Depends(require_permission("config:write")),
@@ -319,8 +325,12 @@ async def reset_parameter(
     Reset a parameter to its default value from config file.
 
     Deactivates any active override for the parameter.
+    Optionally specify strategy_id to reset for a specific strategy.
     """
     try:
+        # Get strategy_id from query param or default to primary strategy
+        target_strategy_id = strategy_id or config.get('strategy', {}).get('strategy_id', 'v3_5b')
+
         # Get current config
         strategy_config = config.get('strategy', {})
         parameters = strategy_config.get('parameters', {})
@@ -333,9 +343,10 @@ async def reset_parameter(
 
         original_value = parameters[parameter_name]
 
-        # Deactivate override
+        # Deactivate override for this strategy
         existing = db.query(ConfigOverride).filter(
             ConfigOverride.parameter_name == parameter_name,
+            ConfigOverride.strategy_id == target_strategy_id,
             ConfigOverride.is_active == True
         ).first()
 

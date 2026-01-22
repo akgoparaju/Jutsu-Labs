@@ -90,6 +90,7 @@ class ConfigUpdate(BaseModel):
     parameter_name: str = Field(..., description="Name of parameter to update")
     new_value: Any = Field(..., description="New value for parameter")
     reason: Optional[str] = Field(None, description="Reason for change")
+    strategy_id: Optional[str] = Field(None, description="Strategy ID to update (optional, defaults to primary)")
 
 
 class ConfigUpdateResponse(BaseModel):
@@ -126,6 +127,7 @@ class TradeRecord(BaseModel):
     z_score: Optional[float] = None
     reason: Optional[str] = None
     mode: str
+    strategy_id: Optional[str] = Field(None, description="Strategy identifier (e.g., 'v3_5b', 'v3_5d')")
 
 
 class TradeListResponse(BaseModel):

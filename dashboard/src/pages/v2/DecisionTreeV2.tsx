@@ -12,8 +12,11 @@
  * @part Responsive UI - Phase 4
  */
 
+import { useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { indicatorsApi, configApi, IndicatorsResponse, ConfigResponse } from '../../api/client'
+import { indicatorsApi, backtestApi, IndicatorsResponse, BacktestConfigResponse } from '../../api/client'
+import { useStrategy } from '../../contexts/StrategyContext'
 import {
   GitBranch,
   TrendingUp,
@@ -24,22 +27,53 @@ import {
   ArrowRight,
   CheckCircle2,
   Circle,
+  ChevronDown,
 } from 'lucide-react'
 import { ResponsiveCard, ResponsiveText } from '../../components/ui'
 import { useIsMobileOrSmaller } from '../../hooks/useMediaQuery'
 
 function DecisionTreeV2() {
   const isMobile = useIsMobileOrSmaller()
+  const [searchParams] = useSearchParams()
+  const { strategies: availableStrategies } = useStrategy()
 
-  // Fetch config for thresholds using the shared API client
-  const { data: config, isLoading: configLoading } = useQuery<ConfigResponse>({
-    queryKey: ['config'],
+  // Get selected strategies from URL params (same pattern as Dashboard)
+  const selectedStrategies = searchParams.get('strategies')?.split(',').filter(Boolean) || []
+  const isComparisonMode = selectedStrategies.length > 1
+
+  // State for selected strategy in Decision Tree view
+  const [selectedStrategy, setSelectedStrategy] = useState<string>('')
+
+  // Initialize selected strategy from URL params or use first available
+  useEffect(() => {
+    if (selectedStrategies.length > 0 && !selectedStrategies.includes(selectedStrategy)) {
+      setSelectedStrategy(selectedStrategies[0])
+    } else if (selectedStrategies.length === 0 && availableStrategies.length > 0 && !selectedStrategy) {
+      setSelectedStrategy(availableStrategies[0].id)
+    }
+  }, [selectedStrategies, availableStrategies, selectedStrategy])
+
+  // Fetch config for thresholds using backtest config API (supports strategy_id)
+  const { data: backtestConfig, isLoading: configLoading } = useQuery<BacktestConfigResponse>({
+    queryKey: ['backtest-config', selectedStrategy],
     queryFn: async () => {
-      const response = await configApi.getConfig()
+      const response = await backtestApi.getConfig({ strategy_id: selectedStrategy })
       return response.data
     },
+    enabled: !!selectedStrategy,
     refetchInterval: 30000,
   })
+
+  // Convert backtest config to our config format
+  const config = backtestConfig ? {
+    strategy_name: backtestConfig.strategy_name || selectedStrategy,
+    parameters: Object.entries(backtestConfig.config || {}).map(([name, value]) => ({
+      name,
+      value,
+      is_overridden: false,
+    })),
+    active_overrides: 0,
+  } : undefined
 
   // Fetch current indicators
   const { data: indicators, isLoading: indicatorsLoading } = useQuery<IndicatorsResponse>({
@@ -83,6 +117,11 @@ function DecisionTreeV2() {
   const bondSmaFast = getParam('bond_sma_fast') as number ?? 20
   const bondSmaSlow = getParam('bond_sma_slow') as number ?? 60
 
+  // v3.5d Cell 1 Exit Confirmation parameters
+  const cell1ExitConfirmationEnabled = getParam('cell1_exit_confirmation_enabled') as boolean ?? false
+  const cell1ExitConfirmationDays = getParam('cell1_exit_confirmation_days') as number ?? 2
+  const cell1ExitPendingDays = getIndicator('cell1_exit_pending_days')?.value as number | undefined
+
   // Derived states
   const kalmanSignal = tNorm !== undefined
     ? tNorm > tNormBullThresh ? 'Bull'
@@ -112,8 +151,22 @@ function DecisionTreeV2() {
           <GitBranch className="w-5 h-5 sm:w-6 sm:h-6 text-purple-400" />
           Cell Decision Tree
         </ResponsiveText>
-        <div className="text-xs sm:text-sm text-gray-400">
-          Strategy: {config?.strategy_name ?? 'Unknown'}
+        <div className="flex items-center gap-3">
+          {/* Strategy selector dropdown - always visible */}
+          <div className="relative">
+            <select
+              value={selectedStrategy}
+              onChange={(e) => setSelectedStrategy(e.target.value)}
+              className="appearance-none bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-1.5 pr-8 text-sm text-gray-200 cursor-pointer hover:border-purple-500/50 focus:outline-none focus:border-purple-500"
+            >
+              {availableStrategies.map((strategy) => (
+                <option key={strategy.id} value={strategy.id}>
+                  {strategy.display_name}
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+          </div>
         </div>
       </div>
 
@@ -486,6 +539,83 @@ function DecisionTreeV2() {
             </span>
           </div>
         </ResponsiveCard>
+
+        {/* Cell 1 Exit Confirmation (v3.5d feature) */}
+        {cell1ExitConfirmationEnabled && (
+          <ResponsiveCard padding="md">
+            <h3 className="text-base sm:text-lg font-semibold mb-3 sm:mb-4 flex items-center gap-2 text-amber-400">
+              <span className="bg-amber-500/20 px-2 py-1 rounded text-xs">v3.5d</span>
+              Cell 1 Exit Confirmation
+            </h3>
+
+            <div className="bg-slate-700/50 rounded p-3 sm:p-4 space-y-2">
+              <div className="text-xs sm:text-sm text-gray-400 mb-3">
+                Requires {cell1ExitConfirmationDays} consecutive days below T_norm bull threshold before exiting Cell 1 to Sideways.
+                Prevents whipsaw during brief pullbacks.
+              </div>
+
+              <div className="space-y-2 text-xs sm:text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-400">Confirmation Days Required:</span>
+                  <code className="text-yellow-400 font-bold">{cell1ExitConfirmationDays}</code>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-400">Current Pending Days:</span>
+                  <code className={`font-bold ${
+                    cell1ExitPendingDays !== undefined && cell1ExitPendingDays > 0
+                      ? 'text-amber-400'
+                      : 'text-gray-500'
+                  }`}>
+                    {cell1ExitPendingDays ?? 0}
+                  </code>
+                </div>
+              </div>
+
+              <div className="border-t border-slate-600 my-2" />
+
+              {/* Progress bar for exit confirmation */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-xs text-gray-400">
+                  <span>Exit Confirmation Progress</span>
+                  <span>
+                    {cell1ExitPendingDays ?? 0} / {cell1ExitConfirmationDays}
+                  </span>
+                </div>
+                <div className="w-full bg-slate-600 rounded-full h-2">
+                  <div
+                    className={`h-2 rounded-full transition-all duration-300 ${
+                      cell1ExitPendingDays !== undefined && cell1ExitPendingDays >= cell1ExitConfirmationDays
+                        ? 'bg-red-500'
+                        : cell1ExitPendingDays !== undefined && cell1ExitPendingDays > 0
+                          ? 'bg-amber-500'
+                          : 'bg-gray-500'
+                    }`}
+                    style={{
+                      width: `${Math.min(100, ((cell1ExitPendingDays ?? 0) / cell1ExitConfirmationDays) * 100)}%`
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div className="border-t border-slate-600 my-2" />
+
+              <div className="flex items-center gap-2">
+                <span className="text-gray-400 text-sm">Status:</span>
+                {currentCell === 1 ? (
+                  cell1ExitPendingDays !== undefined && cell1ExitPendingDays >= cell1ExitConfirmationDays ? (
+                    <span className="text-red-400 font-bold text-sm">EXIT CONFIRMED → Transitioning to Sideways</span>
+                  ) : cell1ExitPendingDays !== undefined && cell1ExitPendingDays > 0 ? (
+                    <span className="text-amber-400 font-bold text-sm">PENDING ({cell1ExitPendingDays}/{cell1ExitConfirmationDays}) → Staying in Cell 1</span>
+                  ) : (
+                    <span className="text-green-400 font-bold text-sm">STABLE → In Cell 1, no exit signals</span>
+                  )
+                ) : (
+                  <span className="text-gray-500 text-sm">N/A (Not in Cell 1)</span>
+                )}
+              </div>
+            </div>
+          </ResponsiveCard>
+        )}
 
         {/* Stage 4: Treasury Overlay */}
         <ResponsiveCard padding="md">

@@ -15,19 +15,19 @@ import { ResponsiveCard, ResponsiveText, ResponsiveGrid, MetricCard } from '../.
 import { useIsMobileOrSmaller } from '../../hooks/useMediaQuery'
 import { useAuth } from '../../contexts/AuthContext'
 import { useStrategy } from '../../contexts/StrategyContext'
-import StrategySelector from '../../components/StrategySelector'
 
 function TradesV2() {
   const queryClient = useQueryClient()
   const isMobile = useIsMobileOrSmaller()
   const { hasPermission } = useAuth()
-  useStrategy() // Context hook for future multi-strategy support
+  const { strategies: availableStrategies } = useStrategy()
   const [page, setPage] = useState(1)
   const [pageSize] = useState(20)
   const [filters, setFilters] = useState({
     symbol: '',
     mode: '',
     action: '',
+    strategy_id: '',
   })
   const [showTradeModal, setShowTradeModal] = useState(false)
 
@@ -44,13 +44,15 @@ function TradesV2() {
       symbol: filters.symbol || undefined,
       mode: filters.mode || undefined,
       action: filters.action || undefined,
+      strategy_id: filters.strategy_id || undefined,
     }).then(res => res.data),
   })
 
   const { data: stats } = useQuery({
-    queryKey: ['tradeStats', filters.mode],
+    queryKey: ['tradeStats', filters.mode, filters.strategy_id],
     queryFn: () => tradesApi.getStats({
       mode: filters.mode || undefined,
+      strategy_id: filters.strategy_id || undefined,
     }).then(res => res.data),
   })
 
@@ -60,6 +62,7 @@ function TradesV2() {
         symbol: filters.symbol || undefined,
         mode: filters.mode || undefined,
         action: filters.action || undefined,
+        strategy_id: filters.strategy_id || undefined,
       })
 
       const url = window.URL.createObjectURL(response.data)
@@ -101,8 +104,6 @@ function TradesV2() {
           </div>
         </div>
 
-        {/* Strategy Selector */}
-        <StrategySelector showCompare={false} compact={isMobile} />
       </div>
 
       {/* Execute Trade Modal */}
@@ -183,9 +184,24 @@ function TradesV2() {
               <option value="SELL">Sell</option>
             </select>
           </div>
+          <div className="flex-1 min-w-0 sm:min-w-[150px] sm:max-w-[200px]">
+            <label className="block text-sm text-gray-400 mb-1">Strategy</label>
+            <select
+              value={filters.strategy_id}
+              onChange={(e) => setFilters({ ...filters, strategy_id: e.target.value })}
+              className="w-full px-3 py-2 bg-slate-700 rounded-lg border border-slate-600 focus:outline-none focus:border-blue-500 min-h-[44px]"
+            >
+              <option value="">All Strategies</option>
+              {availableStrategies.map((strategy) => (
+                <option key={strategy.id} value={strategy.id}>
+                  {strategy.display_name}
+                </option>
+              ))}
+            </select>
+          </div>
           <div className="flex items-end">
             <button
-              onClick={() => setFilters({ symbol: '', mode: '', action: '' })}
+              onClick={() => setFilters({ symbol: '', mode: '', action: '', strategy_id: '' })}
               className="w-full sm:w-auto px-3 py-2 bg-slate-600 hover:bg-slate-500 rounded-lg transition-colors min-h-[44px]"
             >
               Clear Filters
@@ -213,7 +229,7 @@ function TradesV2() {
               {data.trades.map((trade: TradeRecord) => (
                 <ResponsiveCard key={trade.id} padding="md">
                   <div className="space-y-3">
-                    {/* Header: Symbol, Action, Mode */}
+                    {/* Header: Symbol, Action, Strategy, Mode */}
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <span className="font-bold text-white">{trade.symbol}</span>
@@ -223,13 +239,18 @@ function TradesV2() {
                           {trade.action}
                         </span>
                       </div>
-                      <span className={`px-2 py-0.5 rounded text-xs ${
-                        trade.mode === 'online_live' ? 'bg-yellow-600/30 text-yellow-400' :
-                        trade.mode === 'online_mock' ? 'bg-purple-600/30 text-purple-400' :
-                        'bg-blue-600/30 text-blue-400'
-                      }`}>
-                        {trade.mode}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded text-xs bg-slate-600 text-gray-300">
+                          {trade.strategy_id || 'v3_5b'}
+                        </span>
+                        <span className={`px-2 py-0.5 rounded text-xs ${
+                          trade.mode === 'online_live' ? 'bg-yellow-600/30 text-yellow-400' :
+                          trade.mode === 'online_mock' ? 'bg-purple-600/30 text-purple-400' :
+                          'bg-blue-600/30 text-blue-400'
+                        }`}>
+                          {trade.mode}
+                        </span>
+                      </div>
                     </div>
 
                     {/* Trade Details Grid */}
@@ -291,6 +312,7 @@ function TradesV2() {
                       <th className="px-4 py-3">Fill</th>
                       <th className="px-4 py-3">Slippage</th>
                       <th className="px-4 py-3">Cell</th>
+                      <th className="px-4 py-3">Strategy</th>
                       <th className="px-4 py-3">Mode</th>
                       <th className="px-4 py-3">Reason</th>
                     </tr>
@@ -320,6 +342,11 @@ function TradesV2() {
                         <td className="px-4 py-3">
                           <span className="px-2 py-1 bg-slate-700 rounded text-xs">
                             {trade.strategy_cell ?? '-'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="px-2 py-1 bg-slate-600 rounded text-xs text-gray-300">
+                            {trade.strategy_id || 'v3_5b'}
                           </span>
                         </td>
                         <td className="px-4 py-3">

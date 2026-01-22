@@ -98,6 +98,38 @@ function calculateCalendarDays(history: Array<{ timestamp?: string }>): number {
   return Math.floor(diffMs / (1000 * 60 * 60 * 24)) + 1
 }
 
+/**
+ * Calculate Sharpe Ratio from daily returns.
+ * Sharpe = Mean Daily Return / Std Dev of Daily Returns, annualized with sqrt(252)
+ */
+function calculateSharpeRatio(dailyReturns: number[]): number {
+  if (!dailyReturns || dailyReturns.length < 2) return 0
+
+  const n = dailyReturns.length
+  const mean = dailyReturns.reduce((a, b) => a + b, 0) / n
+  const variance = dailyReturns.reduce((sum, r) => sum + Math.pow(r - mean, 2), 0) / (n - 1)
+  const stdDev = Math.sqrt(variance)
+
+  if (stdDev === 0) return 0
+
+  // Annualize: Sharpe = sqrt(252) * mean / stdDev
+  return (Math.sqrt(252) * mean) / stdDev
+}
+
+/**
+ * Deduplicate chart data by time, keeping the last value for each date.
+ * Also sorts the data chronologically to satisfy lightweight-charts requirements.
+ */
+function deduplicateChartData<T extends { time: string; value: number }>(data: T[]): T[] {
+  // Use a Map to keep only the last value for each date
+  const dateMap = new Map<string, T>()
+  for (const point of data) {
+    dateMap.set(point.time, point)
+  }
+  // Convert back to array and sort by date
+  return Array.from(dateMap.values()).sort((a, b) => a.time.localeCompare(b.time))
+}
+
 // Helper to format metric values
 function formatMetricValue(value: number | null | undefined, format: 'percent' | 'currency' | 'number'): string {
   if (value === null || value === undefined) return '—'
@@ -409,6 +441,9 @@ function PerformanceV2() {
       periodReturn: number
       annualized: number
       baselineReturn: number
+      baselineAnnualized: number
+      baselineMaxDrawdown: number
+      baselineSharpe: number
       alpha: number
       calendarDays: number
     }> = {}
@@ -416,7 +451,7 @@ function PerformanceV2() {
     selectedStrategies.forEach((strategyId) => {
       const perfData = multiPerformanceData?.[strategyId]
       if (!perfData?.history || perfData.history.length === 0) {
-        metricsMap[strategyId] = { periodReturn: 0, annualized: 0, baselineReturn: 0, alpha: 0, calendarDays: 0 }
+        metricsMap[strategyId] = { periodReturn: 0, annualized: 0, baselineReturn: 0, baselineAnnualized: 0, baselineMaxDrawdown: 0, baselineSharpe: 0, alpha: 0, calendarDays: 0 }
         return
       }
 
@@ -424,14 +459,49 @@ function PerformanceV2() {
       const lastSnapshot = perfData.history[perfData.history.length - 1]
       const calendarDays = calculateCalendarDays(perfData.history)
 
+      // Calculate baseline max drawdown from history
+      let baselineMaxDrawdown = 0
+      let baselinePeak = 0
+      for (const snapshot of perfData.history) {
+        const baselineValue = snapshot.baseline_value ?? 0
+        if (baselineValue > baselinePeak) {
+          baselinePeak = baselineValue
+        }
+        if (baselinePeak > 0) {
+          const drawdown = ((baselineValue - baselinePeak) / baselinePeak) * 100
+          if (drawdown < baselineMaxDrawdown) {
+            baselineMaxDrawdown = drawdown
+          }
+        }
+      }
+
+      // Calculate baseline Sharpe ratio from daily returns
+      const dailyBaselineReturns: number[] = []
+      for (let i = 1; i < perfData.history.length; i++) {
+        const prevReturn = perfData.history[i - 1].baseline_return ?? 0
+        const currReturn = perfData.history[i].baseline_return ?? 0
+        // Convert cumulative returns to daily return
+        const prevGrowth = 1 + prevReturn / 100
+        const currGrowth = 1 + currReturn / 100
+        if (prevGrowth !== 0) {
+          const dailyReturn = (currGrowth / prevGrowth - 1) * 100
+          dailyBaselineReturns.push(dailyReturn)
+        }
+      }
+      const baselineSharpe = calculateSharpeRatio(dailyBaselineReturns)
+
       if (timeRange === 'all') {
         const cumReturn = lastSnapshot.cumulative_return ?? 0
         const baselineReturn = lastSnapshot.baseline_return ?? 0
         const annualized = calculateAnnualizedReturn(cumReturn, calendarDays)
+        const baselineAnnualized = calculateAnnualizedReturn(baselineReturn, calendarDays)
         metricsMap[strategyId] = {
           periodReturn: cumReturn,
           annualized,
           baselineReturn,
+          baselineAnnualized,
+          baselineMaxDrawdown,
+          baselineSharpe,
           alpha: cumReturn - baselineReturn,
           calendarDays
         }
@@ -445,10 +515,14 @@ function PerformanceV2() {
           firstSnapshot.baseline_return ?? 0
         )
         const annualized = calculateAnnualizedReturn(periodReturn, calendarDays)
+        const baselineAnnualized = calculateAnnualizedReturn(baselineReturn, calendarDays)
         metricsMap[strategyId] = {
           periodReturn,
           annualized,
           baselineReturn,
+          baselineAnnualized,
+          baselineMaxDrawdown,
+          baselineSharpe,
           alpha: periodReturn - baselineReturn,
           calendarDays
         }
@@ -599,13 +673,13 @@ function PerformanceV2() {
             time: point.timestamp.slice(0, 10) as string,
             value: point.total_equity ?? 0,
           }))
-          series.setData(chartData)
+          series.setData(deduplicateChartData(chartData))
         } else {
           const chartData: LineData[] = perfData.history.map((point: PerformanceSnapshot) => ({
             time: point.timestamp.slice(0, 10) as string,
             value: firstEquity > 0 ? ((point.total_equity ?? firstEquity) / firstEquity - 1) * 100 : 0,
           }))
-          series.setData(chartData)
+          series.setData(deduplicateChartData(chartData))
         }
 
         strategySeriesRef.current.set(strategyId, series)
@@ -614,19 +688,19 @@ function PerformanceV2() {
         if (idx === 0) {
           const firstBaseline = firstPoint?.baseline_value ?? 1
           if (isAllTime) {
-            baselineData = perfData.history
+            baselineData = deduplicateChartData(perfData.history
               .filter((p: PerformanceSnapshot) => p.baseline_value != null)
               .map((point: PerformanceSnapshot) => ({
                 time: point.timestamp.slice(0, 10) as string,
                 value: point.baseline_value!,
-              }))
+              })))
           } else {
-            baselineData = perfData.history
+            baselineData = deduplicateChartData(perfData.history
               .filter((p: PerformanceSnapshot) => p.baseline_value != null)
               .map((point: PerformanceSnapshot) => ({
                 time: point.timestamp.slice(0, 10) as string,
                 value: firstBaseline > 0 ? (point.baseline_value! / firstBaseline - 1) * 100 : 0,
-              }))
+              })))
           }
         }
       })
@@ -660,13 +734,13 @@ function PerformanceV2() {
           time: point.time as string,
           value: point.value,
         }))
-        series.setData(chartData)
+        series.setData(deduplicateChartData(chartData))
       } else {
         const chartData: LineData[] = singleEquityCurve.data.map((point: { time: string; value: number }) => ({
           time: point.time as string,
           value: firstValue > 0 ? (point.value / firstValue - 1) * 100 : 0,
         }))
-        series.setData(chartData)
+        series.setData(deduplicateChartData(chartData))
       }
 
       strategySeriesRef.current.set('portfolio', series)
@@ -687,7 +761,7 @@ function PerformanceV2() {
             time: point.time as string,
             value: point.baseline_value,
           }))
-        baselineSeriesRef.current.setData(baselineData)
+        baselineSeriesRef.current.setData(deduplicateChartData(baselineData))
       } else {
         const baselineData: LineData[] = singleEquityCurve.data
           .filter((point: { time: string; baseline_value?: number }) => point.baseline_value != null)
@@ -695,7 +769,7 @@ function PerformanceV2() {
             time: point.time as string,
             value: firstBaseline > 0 ? (point.baseline_value / firstBaseline - 1) * 100 : 0,
           }))
-        baselineSeriesRef.current.setData(baselineData)
+        baselineSeriesRef.current.setData(deduplicateChartData(baselineData))
       }
     }
 
@@ -783,7 +857,9 @@ function PerformanceV2() {
                     periodReturn: periodData?.periodReturn,
                     annualized: periodData?.annualized,
                     sharpe: perfData?.current?.sharpe_ratio,
-                    maxDrawdown: perfData?.current?.max_drawdown,
+                    maxDrawdown: perfData?.current?.max_drawdown != null
+                      ? -Math.abs(perfData.current.max_drawdown)
+                      : undefined,
                   }}
                   rank={idx === 0 ? 1 : undefined}
                 />
@@ -795,9 +871,9 @@ function PerformanceV2() {
               style={baselineStyle}
               metrics={{
                 periodReturn: multiPeriodMetrics[selectedStrategies[0]]?.baselineReturn,
-                annualized: undefined,
-                sharpe: undefined,
-                maxDrawdown: undefined,
+                annualized: multiPeriodMetrics[selectedStrategies[0]]?.baselineAnnualized,
+                sharpe: multiPeriodMetrics[selectedStrategies[0]]?.baselineSharpe,
+                maxDrawdown: multiPeriodMetrics[selectedStrategies[0]]?.baselineMaxDrawdown,
                 totalEquity: undefined,
               }}
             />
@@ -870,7 +946,7 @@ function PerformanceV2() {
                     strategyStyles={strategyStyles}
                     format="percent"
                     higherIsBetter={true}
-                    baselineValue={undefined}
+                    baselineValue={multiPeriodMetrics[selectedStrategies[0]]?.baselineAnnualized}
                     strategyOrder={selectedStrategies}
                   />
                   <ComparisonRow
@@ -881,18 +957,21 @@ function PerformanceV2() {
                     strategyStyles={strategyStyles}
                     format="number"
                     higherIsBetter={true}
-                    baselineValue={undefined}
+                    baselineValue={multiPeriodMetrics[selectedStrategies[0]]?.baselineSharpe}
                     strategyOrder={selectedStrategies}
                   />
                   <ComparisonRow
                     label="Max Drawdown"
                     values={Object.fromEntries(
-                      selectedStrategies.map((id) => [id, multiPerformanceData?.[id]?.current?.max_drawdown])
+                      selectedStrategies.map((id) => {
+                        const rawValue = multiPerformanceData?.[id]?.current?.max_drawdown
+                        return [id, rawValue != null ? -Math.abs(rawValue) : null]
+                      })
                     )}
                     strategyStyles={strategyStyles}
                     format="percent"
                     higherIsBetter={false}
-                    baselineValue={undefined}
+                    baselineValue={multiPeriodMetrics[selectedStrategies[0]]?.baselineMaxDrawdown}
                     strategyOrder={selectedStrategies}
                   />
                   <ComparisonRow
@@ -903,7 +982,7 @@ function PerformanceV2() {
                     strategyStyles={strategyStyles}
                     format="percent"
                     higherIsBetter={true}
-                    baselineValue={undefined}
+                    baselineValue={0}
                     strategyOrder={selectedStrategies}
                   />
                 </tbody>
@@ -937,7 +1016,9 @@ function PerformanceV2() {
             />
             <MetricCard
               label="Max Drawdown"
-              value={performance.current.max_drawdown ?? 0}
+              value={performance.current.max_drawdown != null
+                ? -Math.abs(performance.current.max_drawdown)
+                : 0}
               format="percent"
               className="col-span-2 md:col-span-1"
             />

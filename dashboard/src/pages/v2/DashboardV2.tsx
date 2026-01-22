@@ -111,6 +111,47 @@ function calculateCalendarDays(history: Array<{ timestamp?: string }>): number {
   return Math.floor(diffMs / (1000 * 60 * 60 * 24)) + 1
 }
 
+/**
+ * Calculate Sharpe Ratio from daily returns.
+ * Sharpe = Mean Daily Return / Std Dev of Daily Returns, annualized with sqrt(252)
+ */
+function calculateSharpeRatio(dailyReturns: number[]): number {
+  if (!dailyReturns || dailyReturns.length < 2) return 0
+  
+  const n = dailyReturns.length
+  const mean = dailyReturns.reduce((a, b) => a + b, 0) / n
+  const variance = dailyReturns.reduce((sum, r) => sum + Math.pow(r - mean, 2), 0) / (n - 1)
+  const stdDev = Math.sqrt(variance)
+  
+  if (stdDev === 0) return 0
+  
+  // Annualize: Sharpe = sqrt(252) * mean / stdDev
+  return (Math.sqrt(252) * mean) / stdDev
+}
+
+/**
+ * Calculate Max Drawdown from a series of portfolio values.
+ * Returns the percentage as a negative number (e.g., -15.5 for -15.5% drawdown)
+ */
+function calculateMaxDrawdownFromValues(values: number[]): number {
+  if (!values || values.length < 2) return 0
+  
+  let maxDrawdown = 0
+  let peak = values[0]
+  
+  for (const value of values) {
+    if (value > peak) {
+      peak = value
+    }
+    const drawdown = (value - peak) / peak
+    if (drawdown < maxDrawdown) {
+      maxDrawdown = drawdown
+    }
+  }
+  
+  return maxDrawdown * 100  // Return as percentage
+}
+
 // Helper to format metric values
 function formatMetricValue(value: number | null | undefined, format: 'percent' | 'currency' | 'number'): string {
   if (value === null || value === undefined) return '—'
@@ -201,15 +242,56 @@ function DashboardV2() {
   const latestSnapshot = performanceData?.history?.[performanceData.history.length - 1]
   const baselineValue = latestSnapshot?.baseline_value
 
-  // Calculate period-specific returns
+  // Calculate period-specific returns and baseline metrics
+  // In comparison mode, use first strategy's data from multiPerformanceData for baseline calculations
   const periodMetrics = useMemo(() => {
-    if (!performanceData?.history || performanceData.history.length === 0) {
-      return { periodReturn: 0, periodBaselineReturn: 0, periodAlpha: 0, annualizedReturn: 0, baselineAnnualizedReturn: 0, calendarDays: 0 }
+    // Get history from either single strategy data or first strategy in comparison mode
+    const historySource = performanceData?.history ||
+      (primaryStrategy && multiPerformanceData?.[primaryStrategy]?.history) ||
+      []
+
+    if (!historySource || historySource.length === 0) {
+      return {
+        periodReturn: 0,
+        periodBaselineReturn: 0,
+        periodAlpha: 0,
+        annualizedReturn: 0,
+        baselineAnnualizedReturn: 0,
+        calendarDays: 0,
+        baselineSharpe: 0,
+        baselineMaxDrawdown: 0
+      }
     }
 
-    const firstSnapshot = performanceData.history[0]
-    const lastSnapshot = performanceData.history[performanceData.history.length - 1]
-    const calendarDays = calculateCalendarDays(performanceData.history)
+    const history = historySource
+    const firstSnapshot = history[0]
+    const lastSnapshot = history[history.length - 1]
+    const calendarDays = calculateCalendarDays(history)
+
+    // Calculate daily baseline returns for Sharpe ratio
+    const dailyBaselineReturns: number[] = []
+    for (let i = 1; i < history.length; i++) {
+      const prevReturn = history[i - 1].baseline_return ?? 0
+      const currReturn = history[i].baseline_return ?? 0
+      // Convert cumulative returns to daily return
+      const prevGrowth = 1 + prevReturn / 100
+      const currGrowth = 1 + currReturn / 100
+      if (prevGrowth !== 0) {
+        const dailyReturn = (currGrowth / prevGrowth - 1) * 100
+        dailyBaselineReturns.push(dailyReturn)
+      }
+    }
+
+    // Calculate baseline Sharpe ratio
+    const baselineSharpe = calculateSharpeRatio(dailyBaselineReturns)
+
+    // Extract baseline values for max drawdown calculation
+    const baselineValues = history
+      .map(s => s.baseline_value)
+      .filter((v): v is number => v !== undefined && v !== null)
+
+    // Calculate baseline max drawdown
+    const baselineMaxDrawdown = calculateMaxDrawdownFromValues(baselineValues)
 
     if (timeRange === 'all') {
       const cumReturn = lastSnapshot.cumulative_return ?? 0
@@ -222,7 +304,9 @@ function DashboardV2() {
         periodAlpha: cumReturn - baseReturn,
         annualizedReturn,
         baselineAnnualizedReturn,
-        calendarDays
+        calendarDays,
+        baselineSharpe,
+        baselineMaxDrawdown
       }
     }
 
@@ -243,12 +327,18 @@ function DashboardV2() {
       periodAlpha: periodReturn - periodBaselineReturn,
       annualizedReturn,
       baselineAnnualizedReturn,
-      calendarDays
+      calendarDays,
+      baselineSharpe,
+      baselineMaxDrawdown
     }
-  }, [performanceData?.history, timeRange])
+  }, [performanceData?.history, multiPerformanceData, primaryStrategy, timeRange])
 
   const [confirmLive, setConfirmLive] = useState(false)
   const [showTradeModal, setShowTradeModal] = useState(false)
+
+  // State for selected strategy in Decision Tree and Target Allocation sections
+  const [selectedDecisionTreeStrategy, setSelectedDecisionTreeStrategy] = useState<string>(primaryStrategy || '')
+  const [selectedTargetAllocationStrategy, setSelectedTargetAllocationStrategy] = useState<string>(primaryStrategy || '')
 
   // Extract currentCell for use in Target Allocation
   const currentCell = indicators?.indicators?.find(i => i.name === 'current_cell')?.value
@@ -422,7 +512,12 @@ function DashboardV2() {
                       <div className="col-span-2">
                         <span className="text-gray-400 block">Max Drawdown</span>
                         <span className="text-red-400 font-medium">
-                          {formatMetricValue(perfData?.current?.max_drawdown, 'percent')}
+                          {formatMetricValue(
+                            perfData?.current?.max_drawdown != null
+                              ? -Math.abs(perfData.current.max_drawdown)
+                              : null,
+                            'percent'
+                          )}
                         </span>
                       </div>
                     </div>
@@ -454,6 +549,18 @@ function DashboardV2() {
                     <span className="text-gray-400 block">CAGR</span>
                     <span className={`font-medium ${periodMetrics.baselineAnnualizedReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                       {formatMetricValue(periodMetrics.baselineAnnualizedReturn, 'percent')}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block">Sharpe</span>
+                    <span className="text-white font-medium">
+                      {formatMetricValue(periodMetrics.baselineSharpe, 'number')}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block">Max Drawdown</span>
+                    <span className="text-red-400 font-medium">
+                      {formatMetricValue(periodMetrics.baselineMaxDrawdown, 'percent')}
                     </span>
                   </div>
                 </div>
@@ -634,7 +741,9 @@ function DashboardV2() {
                             </td>
                           )
                         })}
-                        <td className="py-3 px-4 text-center text-gray-400">—</td>
+                        <td className="py-3 px-4 text-center text-gray-200">
+                          {formatMetricValue(periodMetrics.baselineSharpe, 'number')}
+                        </td>
                       </tr>
                     )
                   })()}
@@ -643,9 +752,11 @@ function DashboardV2() {
                   {(() => {
                     const values: Record<string, number | null | undefined> = {}
                     selectedStrategies.forEach((id) => {
-                      values[id] = multiPerformanceData?.[id]?.current?.max_drawdown
+                      const rawValue = multiPerformanceData?.[id]?.current?.max_drawdown
+                      // Negate to show as negative percentage
+                      values[id] = rawValue != null ? -Math.abs(rawValue) : null
                     })
-                    const bestId = findBestValue(values, false) // Lower is better
+                    const bestId = findBestValue(values, false) // Lower (closer to 0) is better
 
                     return (
                       <tr className="border-b border-slate-700/50">
@@ -660,7 +771,9 @@ function DashboardV2() {
                             </td>
                           )
                         })}
-                        <td className="py-3 px-4 text-center text-gray-400">—</td>
+                        <td className="py-3 px-4 text-center text-red-400">
+                          {formatMetricValue(periodMetrics.baselineMaxDrawdown, 'percent')}
+                        </td>
                       </tr>
                     )
                   })()}
@@ -891,51 +1004,130 @@ function DashboardV2() {
           Current Regime
         </ResponsiveText>
 
-        <ResponsiveGrid
-          columns={{ default: 1, sm: 3 }}
-          gap="md"
-        >
-          <div className="bg-slate-700/50 rounded-lg p-3 sm:p-4">
-            <ResponsiveText variant="small" className="text-gray-400 mb-1 block">
-              Strategy Cell
-            </ResponsiveText>
-            <ResponsiveText variant="metric" className="text-blue-400">
-              {regime?.cell ?? status?.regime?.cell ?? 'N/A'}
-            </ResponsiveText>
+        {isComparisonMode ? (
+          // Multi-strategy table view
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-slate-700">
+                  <th className="text-left py-3 px-4 text-gray-400 font-medium">Metric</th>
+                  {selectedStrategies.map((strategyId, index) => (
+                    <th key={strategyId} className="text-center py-3 px-4">
+                      <div className="flex items-center justify-center gap-2">
+                        <div
+                          className="w-3 h-3 rounded-full"
+                          style={{ backgroundColor: strategyStyles[strategyId]?.color || STRATEGY_COLOR_HEX[0] }}
+                        />
+                        <span className="text-xs text-gray-500 font-mono">
+                          {getPatternIndicator(index)}
+                        </span>
+                        <span className="text-gray-200 font-medium">
+                          {getStrategyDisplayName(strategyId).replace('Hierarchical Adaptive ', '')}
+                        </span>
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {/* Strategy Cell Row */}
+                <tr className="border-b border-slate-700/50">
+                  <td className="py-3 px-4 text-gray-300">Strategy Cell</td>
+                  {selectedStrategies.map((strategyId) => {
+                    const latestSnapshot = multiPerformanceData?.[strategyId]?.history?.slice(-1)[0]
+                    const cell = latestSnapshot?.strategy_cell
+                    return (
+                      <td key={strategyId} className="py-3 px-4 text-center text-blue-400 font-medium">
+                        {cell ?? 'N/A'}
+                      </td>
+                    )
+                  })}
+                </tr>
+                {/* Trend State Row */}
+                <tr className="border-b border-slate-700/50">
+                  <td className="py-3 px-4 text-gray-300">Trend State</td>
+                  {selectedStrategies.map((strategyId) => {
+                    const latestSnapshot = multiPerformanceData?.[strategyId]?.history?.slice(-1)[0]
+                    const trend = latestSnapshot?.trend_state
+                    return (
+                      <td key={strategyId} className={`py-3 px-4 text-center font-medium ${
+                        trend === 'BULLISH' ? 'text-green-400' :
+                        trend === 'BEARISH' ? 'text-red-400' :
+                        'text-yellow-400'
+                      }`}>
+                        {trend ?? 'N/A'}
+                      </td>
+                    )
+                  })}
+                </tr>
+                {/* Volatility State Row */}
+                <tr className="border-b border-slate-700/50">
+                  <td className="py-3 px-4 text-gray-300">Volatility State</td>
+                  {selectedStrategies.map((strategyId) => {
+                    const latestSnapshot = multiPerformanceData?.[strategyId]?.history?.slice(-1)[0]
+                    const vol = latestSnapshot?.vol_state
+                    return (
+                      <td key={strategyId} className={`py-3 px-4 text-center font-medium ${
+                        vol === 'LOW' ? 'text-green-400' :
+                        vol === 'HIGH' ? 'text-red-400' :
+                        'text-yellow-400'
+                      }`}>
+                        {vol ?? 'N/A'}
+                      </td>
+                    )
+                  })}
+                </tr>
+              </tbody>
+            </table>
           </div>
+        ) : (
+          // Single strategy card view
+          <ResponsiveGrid
+            columns={{ default: 1, sm: 3 }}
+            gap="md"
+          >
+            <div className="bg-slate-700/50 rounded-lg p-3 sm:p-4">
+              <ResponsiveText variant="small" className="text-gray-400 mb-1 block">
+                Strategy Cell
+              </ResponsiveText>
+              <ResponsiveText variant="metric" className="text-blue-400">
+                {regime?.cell ?? status?.regime?.cell ?? 'N/A'}
+              </ResponsiveText>
+            </div>
 
-          <div className="bg-slate-700/50 rounded-lg p-3 sm:p-4">
-            <ResponsiveText variant="small" className="text-gray-400 mb-1 block">
-              Trend State
-            </ResponsiveText>
-            <ResponsiveText
-              variant="metric"
-              className={clsx(
-                (regime?.trend_state || status?.regime?.trend_state) === 'BULLISH' ? 'text-green-400' :
-                (regime?.trend_state || status?.regime?.trend_state) === 'BEARISH' ? 'text-red-400' :
-                'text-yellow-400'
-              )}
-            >
-              {regime?.trend_state ?? status?.regime?.trend_state ?? 'N/A'}
-            </ResponsiveText>
-          </div>
+            <div className="bg-slate-700/50 rounded-lg p-3 sm:p-4">
+              <ResponsiveText variant="small" className="text-gray-400 mb-1 block">
+                Trend State
+              </ResponsiveText>
+              <ResponsiveText
+                variant="metric"
+                className={clsx(
+                  (regime?.trend_state || status?.regime?.trend_state) === 'BULLISH' ? 'text-green-400' :
+                  (regime?.trend_state || status?.regime?.trend_state) === 'BEARISH' ? 'text-red-400' :
+                  'text-yellow-400'
+                )}
+              >
+                {regime?.trend_state ?? status?.regime?.trend_state ?? 'N/A'}
+              </ResponsiveText>
+            </div>
 
-          <div className="bg-slate-700/50 rounded-lg p-3 sm:p-4">
-            <ResponsiveText variant="small" className="text-gray-400 mb-1 block">
-              Volatility State
-            </ResponsiveText>
-            <ResponsiveText
-              variant="metric"
-              className={clsx(
-                (regime?.vol_state || status?.regime?.vol_state) === 'LOW' ? 'text-green-400' :
-                (regime?.vol_state || status?.regime?.vol_state) === 'HIGH' ? 'text-red-400' :
-                'text-yellow-400'
-              )}
-            >
-              {regime?.vol_state ?? status?.regime?.vol_state ?? 'N/A'}
-            </ResponsiveText>
-          </div>
-        </ResponsiveGrid>
+            <div className="bg-slate-700/50 rounded-lg p-3 sm:p-4">
+              <ResponsiveText variant="small" className="text-gray-400 mb-1 block">
+                Volatility State
+              </ResponsiveText>
+              <ResponsiveText
+                variant="metric"
+                className={clsx(
+                  (regime?.vol_state || status?.regime?.vol_state) === 'LOW' ? 'text-green-400' :
+                  (regime?.vol_state || status?.regime?.vol_state) === 'HIGH' ? 'text-red-400' :
+                  'text-yellow-400'
+                )}
+              >
+                {regime?.vol_state ?? status?.regime?.vol_state ?? 'N/A'}
+              </ResponsiveText>
+            </div>
+          </ResponsiveGrid>
+        )}
       </ResponsiveCard>
 
       {/* 5. Decision Tree */}
@@ -966,12 +1158,27 @@ function DashboardV2() {
 
         return (
           <ResponsiveCard padding="md">
-            <ResponsiveText variant="h2" as="h3" className="mb-4">
-              Decision Tree
-              <span className="text-xs sm:text-sm font-normal text-gray-400 ml-2">
-                ({indicators.symbol})
-              </span>
-            </ResponsiveText>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
+              <ResponsiveText variant="h2" as="h3">
+                Decision Tree
+                <span className="text-xs sm:text-sm font-normal text-gray-400 ml-2">
+                  ({indicators.symbol})
+                </span>
+              </ResponsiveText>
+              {isComparisonMode && (
+                <select
+                  value={selectedDecisionTreeStrategy}
+                  onChange={(e) => setSelectedDecisionTreeStrategy(e.target.value)}
+                  className="px-3 py-1.5 bg-slate-700 rounded-lg text-sm text-gray-200 border border-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {selectedStrategies.map((strategyId) => (
+                    <option key={strategyId} value={strategyId}>
+                      {getStrategyDisplayName(strategyId).replace('Hierarchical Adaptive ', '')}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
 
             <div className="space-y-3 sm:space-y-4">
               {/* Trend Classification Box */}
@@ -1107,9 +1314,24 @@ function DashboardV2() {
       {/* 6. Target Allocation */}
       {indicators?.target_allocation && (
         <ResponsiveCard padding="md">
-          <ResponsiveText variant="h2" as="h3" className="mb-4 text-green-400">
-            Target Allocation {currentCell ? `(Cell ${currentCell})` : ''}
-          </ResponsiveText>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
+            <ResponsiveText variant="h2" as="h3" className="text-green-400">
+              Target Allocation {currentCell ? `(Cell ${currentCell})` : ''}
+            </ResponsiveText>
+            {isComparisonMode && (
+              <select
+                value={selectedTargetAllocationStrategy}
+                onChange={(e) => setSelectedTargetAllocationStrategy(e.target.value)}
+                className="px-3 py-1.5 bg-slate-700 rounded-lg text-sm text-gray-200 border border-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {selectedStrategies.map((strategyId) => (
+                  <option key={strategyId} value={strategyId}>
+                    {getStrategyDisplayName(strategyId).replace('Hierarchical Adaptive ', '')}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
           <div className="space-y-3">
             {Object.entries(indicators.target_allocation).map(([symbol, pct]) => {
               const percentage = typeof pct === 'number' ? pct : 0

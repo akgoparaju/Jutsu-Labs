@@ -1,3 +1,17 @@
+#### **Fix: Mobile Baseline QQQ Display** (2026-01-22)
+
+Fixed missing baseline QQQ metrics in mobile view for multi-strategy comparison.
+
+**Issues Fixed**:
+- DashboardV2: Mobile Baseline Card now displays Sharpe Ratio and Max Drawdown (previously only showed Period Return and CAGR)
+- PerformanceV2: Mobile MobileComparisonCard for baseline now shows proper values for Annualized Return, Sharpe Ratio, and Max Drawdown (previously showed undefined)
+
+**Modified Files**:
+- `dashboard/src/pages/v2/DashboardV2.tsx` - Added Sharpe and Max Drawdown to mobile Baseline Card
+- `dashboard/src/pages/v2/PerformanceV2.tsx` - Passed proper baseline values to MobileComparisonCard
+
+---
+
 #### **Feature: Multi-Strategy Comparison UI** (2026-01-21)
 
 Implemented comprehensive multi-strategy comparison UI allowing users to compare up to 3 strategies side-by-side with overlaid equity curves and comparative metrics tables.

@@ -366,6 +366,10 @@ class ConfigOverride(Base):
     override_value = Column(String(100), nullable=False)  # New value
     value_type = Column(String(20), nullable=False)  # 'int', 'float', 'decimal', 'bool', 'str'
 
+    # Multi-strategy support (added 2026-01-22)
+    # Identifies which strategy this override applies to
+    strategy_id = Column(String(50), default='v3_5b')  # e.g., 'v3_5b', 'v3_5d'
+
     is_active = Column(Boolean, default=True)  # Currently applied
     reason = Column(String(200))  # Why override was created
 
@@ -373,7 +377,7 @@ class ConfigOverride(Base):
     deactivated_at = Column(DateTime(timezone=True))  # When override was removed
 
     __table_args__ = (
-        Index('idx_config_override_active', 'parameter_name', 'is_active'),
+        Index('idx_config_override_active', 'parameter_name', 'strategy_id', 'is_active'),
     )
 
     def __repr__(self):

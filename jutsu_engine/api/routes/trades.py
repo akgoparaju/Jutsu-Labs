@@ -61,6 +61,7 @@ async def get_trades(
     action: Optional[str] = Query(None, description="Filter by action (BUY/SELL)"),
     start_date: Optional[datetime] = Query(None, description="Start date filter"),
     end_date: Optional[datetime] = Query(None, description="End date filter"),
+    strategy_id: Optional[str] = Query(None, description="Filter by strategy ID"),
     _auth: bool = Depends(verify_credentials),
 ) -> TradeListResponse:
     """
@@ -71,6 +72,7 @@ async def get_trades(
     - mode: Trading mode (offline_mock, online_live)
     - action: Trade action (BUY, SELL)
     - start_date/end_date: Date range
+    - strategy_id: Strategy identifier (e.g., 'v3_5b', 'v3_5d')
     """
     try:
         # Build query with filters
@@ -92,6 +94,9 @@ async def get_trades(
 
         if end_date:
             filters.append(LiveTrade.timestamp <= end_date)
+
+        if strategy_id:
+            filters.append(LiveTrade.strategy_id == strategy_id)
 
         if filters:
             query = query.filter(and_(*filters))
@@ -158,6 +163,7 @@ async def export_trades(
     action: Optional[str] = Query(None, description="Filter by action (BUY/SELL)"),
     start_date: Optional[datetime] = Query(None, description="Start date filter"),
     end_date: Optional[datetime] = Query(None, description="End date filter"),
+    strategy_id: Optional[str] = Query(None, description="Filter by strategy ID"),
     _auth: bool = Depends(verify_credentials),
 ):
     """
@@ -185,6 +191,9 @@ async def export_trades(
 
         if end_date:
             filters.append(LiveTrade.timestamp <= end_date)
+
+        if strategy_id:
+            filters.append(LiveTrade.strategy_id == strategy_id)
 
         if filters:
             query = query.filter(and_(*filters))
@@ -318,6 +327,7 @@ async def get_trade_stats(
     mode: Optional[str] = Query(None, description="Filter by mode"),
     start_date: Optional[datetime] = Query(None, description="Start date"),
     end_date: Optional[datetime] = Query(None, description="End date"),
+    strategy_id: Optional[str] = Query(None, description="Filter by strategy ID"),
     _auth: bool = Depends(verify_credentials),
 ) -> dict:
     """
@@ -344,6 +354,8 @@ async def get_trade_stats(
             filters.append(LiveTrade.timestamp >= start_date)
         if end_date:
             filters.append(LiveTrade.timestamp <= end_date)
+        if strategy_id:
+            filters.append(LiveTrade.strategy_id == strategy_id)
 
         if filters:
             query = query.filter(and_(*filters))
