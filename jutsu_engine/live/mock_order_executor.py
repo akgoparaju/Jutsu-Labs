@@ -58,7 +58,8 @@ class MockOrderExecutor(ExecutorInterface):
         config: Dict[str, Any],
         trade_log_path: Path = Path('logs/live_trades.csv'),
         rebalance_threshold_pct: float = 5.0,
-        db_session: Optional[Session] = None
+        db_session: Optional[Session] = None,
+        strategy_id: str = 'v3_5b'
     ):
         """
         Initialize mock order executor.
@@ -68,11 +69,13 @@ class MockOrderExecutor(ExecutorInterface):
             trade_log_path: Path to trade log CSV file (backup)
             rebalance_threshold_pct: Only trade if position diff >X% of account
             db_session: Optional database session (creates own if not provided)
+            strategy_id: Strategy identifier for multi-strategy support (default: v3_5b)
         """
         self.config = config
         self.trade_log_path = trade_log_path
         self.rebalance_threshold_pct = rebalance_threshold_pct
         self._mode = TradingMode.OFFLINE_MOCK
+        self.strategy_id = strategy_id
 
         # Database connection setup
         if db_session:
@@ -106,8 +109,8 @@ class MockOrderExecutor(ExecutorInterface):
 
         db_url_for_log = getattr(self, '_database_url', 'provided session')
         logger.info(
-            f"MockOrderExecutor initialized: DB={db_url_for_log}, CSV={self.trade_log_path}, "
-            f"threshold={self.rebalance_threshold_pct}%"
+            f"MockOrderExecutor initialized: strategy_id={self.strategy_id}, DB={db_url_for_log}, "
+            f"CSV={self.trade_log_path}, threshold={self.rebalance_threshold_pct}%"
         )
 
     def _initialize_csv(self) -> None:
@@ -344,7 +347,7 @@ class MockOrderExecutor(ExecutorInterface):
 
         try:
             for fill in fills:
-                # Create LiveTrade record
+                # Create LiveTrade record with strategy_id
                 trade = LiveTrade(
                     symbol=fill['symbol'],
                     timestamp=datetime.now(timezone.utc),
@@ -360,12 +363,13 @@ class MockOrderExecutor(ExecutorInterface):
                     t_norm=float(fill['t_norm']) if fill.get('t_norm') is not None else None,
                     z_score=float(fill['z_score']) if fill.get('z_score') is not None else None,
                     reason=fill['reason'],
-                    mode=self._mode.db_value
+                    mode=self._mode.db_value,
+                    strategy_id=self.strategy_id  # Multi-strategy support
                 )
                 self._session.add(trade)
 
             self._session.commit()
-            logger.info(f"Saved {len(fills)} trades to database")
+            logger.info(f"Saved {len(fills)} trades to database (strategy_id={self.strategy_id})")
 
         except Exception as e:
             logger.error(f"Failed to save trades to database: {e}")
@@ -387,9 +391,10 @@ class MockOrderExecutor(ExecutorInterface):
             account_equity: Total account equity
         """
         try:
-            # Clear existing positions for this mode (full state replacement)
+            # Clear existing positions for this mode AND strategy (full state replacement)
             self._session.query(Position).filter(
-                Position.mode == self._mode.db_value
+                Position.mode == self._mode.db_value,
+                Position.strategy_id == self.strategy_id
             ).delete()
 
             # Insert new positions (include all, even zero quantities for tracking)
@@ -404,7 +409,8 @@ class MockOrderExecutor(ExecutorInterface):
                         avg_cost=float(price),
                         market_value=market_value,
                         unrealized_pnl=0.0,  # No PnL in mock mode at creation
-                        mode=self._mode.db_value
+                        mode=self._mode.db_value,
+                        strategy_id=self.strategy_id
                     )
                     self._session.add(position)
 
@@ -444,11 +450,12 @@ class MockOrderExecutor(ExecutorInterface):
             return
         
         try:
-            # Query previous snapshot for this mode to calculate daily P&L
+            # Query previous snapshot for this mode AND strategy to calculate daily P&L
             from sqlalchemy import desc, func
 
             previous_snapshot = self._session.query(PerformanceSnapshot).filter(
-                PerformanceSnapshot.mode == self._mode.db_value
+                PerformanceSnapshot.mode == self._mode.db_value,
+                PerformanceSnapshot.strategy_id == self.strategy_id
             ).order_by(desc(PerformanceSnapshot.timestamp)).first()
 
             # Calculate daily P&L
@@ -465,12 +472,13 @@ class MockOrderExecutor(ExecutorInterface):
             total_pnl = account_equity - initial_capital
             total_pnl_pct = float((total_pnl / initial_capital) * 100) if initial_capital > 0 else 0.0
 
-            # Calculate drawdown (peak to current)
-            # Query max equity for this mode
+            # Calculate drawdown (peak to current) for this strategy
+            # Query max equity for this mode AND strategy
             max_equity_result = self._session.query(
                 func.max(PerformanceSnapshot.total_equity)
             ).filter(
-                PerformanceSnapshot.mode == self._mode.db_value
+                PerformanceSnapshot.mode == self._mode.db_value,
+                PerformanceSnapshot.strategy_id == self.strategy_id
             ).scalar()
 
             if max_equity_result and max_equity_result > float(account_equity):
@@ -482,9 +490,10 @@ class MockOrderExecutor(ExecutorInterface):
             # Extract strategy context for regime fields
             context = strategy_context or {}
 
-            # Query current positions for position breakdown
+            # Query current positions for this strategy's position breakdown
             current_positions = self._session.query(Position).filter(
                 Position.mode == self._mode.db_value,
+                Position.strategy_id == self.strategy_id,
                 Position.quantity > 0
             ).all()
 
@@ -520,12 +529,13 @@ class MockOrderExecutor(ExecutorInterface):
                 baseline_return=baseline_return,
                 mode=self._mode.db_value,
                 snapshot_source="scheduler",  # Authoritative for regime
+                strategy_id=self.strategy_id  # Multi-strategy support
             )
             self._session.add(snapshot)
             self._session.commit()
 
             logger.info(
-                f"Saved performance snapshot: equity=${account_equity:,.2f}, "
+                f"Saved performance snapshot: strategy={self.strategy_id}, equity=${account_equity:,.2f}, "
                 f"daily_pnl={daily_pnl_pct:+.2f}%, total_pnl={total_pnl_pct:+.2f}%, "
                 f"drawdown={drawdown:.2f}%"
             )

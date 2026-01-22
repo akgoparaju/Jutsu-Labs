@@ -1,3 +1,155 @@
+#### **Documentation: Multi-Strategy Scheduler Documentation (Phase 4)** (2026-01-22)
+
+Completed Phase 4 of the multi-strategy scheduler system, updating all documentation to reflect the completed implementation.
+
+**Documentation Updates**:
+
+1. **DATABASE_MIGRATION_STAGING_TO_PRODUCTION.md** - Updated with completed status
+   - Part 6: Multi-Strategy Scheduler Infrastructure marked as ✅ COMPLETED
+   - All schema changes, data operations, and code changes documented
+   - Production migration runbook updated with actual execution results
+   - Summary section updated with completion status for all items
+
+2. **LIVE_TRADING_GUIDE.md** - Added Multi-Strategy Architecture section
+   - Strategy registration in `config/strategies_registry.yaml`
+   - Per-strategy state isolation architecture
+   - Multi-strategy scheduler execution flow
+   - Database schema changes for strategy_id columns
+   - Adding new strategies workflow
+   - Failure isolation behavior
+   - Multi-strategy data refresh process
+
+3. **HISTORICAL_SIMULATION.md** - NEW documentation file
+   - Complete guide for using `scripts/simulate_historical_trades.py`
+   - When to use historical simulation (and when not to)
+   - Prerequisites: market data, strategy registration, config files
+   - CLI arguments and examples
+   - Expected output and validation queries
+   - Troubleshooting common issues
+   - Technical details of simulation logic
+   - Best practices for running simulations
+
+**Phase 4 Tasks Completed**:
+1. ✅ Task 4.1: Update DATABASE_MIGRATION_STAGING_TO_PRODUCTION.md
+2. ✅ Task 4.2: Update Live Trading Guide with multi-strategy architecture
+3. ✅ Task 4.3: Create Historical Simulation Guide
+
+**Multi-Strategy Scheduler System Status**: ✅ ALL PHASES COMPLETE
+
+---
+
+#### **Feature: Historical Trade Simulation for v3.5d (Phase 3)** (2026-01-22)
+
+Implemented Phase 3 of the multi-strategy scheduler system, creating a historical trade simulation script that generates trades and performance snapshots for v3.5d as if the scheduler had been running since December 4, 2025.
+
+**Key Features**:
+- Full historical simulation from 2025-12-04 to present (33 trading days)
+- Database-sourced market data (no live API calls during simulation)
+- Proper trading day iteration using NYSE market calendar
+- Trade recording with `mode='offline_mock'` and `strategy_id='v3_5d'`
+- Performance snapshots with `snapshot_source='scheduler'` for regime authority
+
+**Simulation Results**:
+- Trading Days: 33
+- Trades Generated: 10
+- Snapshots Saved: 33
+- Final Equity: $9,805.88
+- Total Return: -1.94%
+- Baseline (QQQ) Return: -1.07%
+
+**New Files**:
+- `scripts/simulate_historical_trades.py` - Historical trade simulation script (~550 lines)
+  - `get_trading_days()` - NYSE trading day iterator
+  - `load_historical_data()` - Database market data loader
+  - `record_simulated_trade()` - Trade insertion to live_trades
+  - `save_simulated_snapshot()` - Performance snapshot recording
+  - CLI: `--strategy-id`, `--start-date`, `--end-date`, `--initial-capital`, `--dry-run`, `--delete-existing`
+
+**Phase 3 Tasks Completed**:
+1. ✅ Task 3.1: Created Historical Simulation Script
+2. ✅ Task 3.2: Implemented delete_existing_data function
+3. ✅ Task 3.3: Implemented Trading Day Iterator
+4. ✅ Task 3.4: Implemented Historical Data Loader
+5. ✅ Task 3.5: Implemented Trade Recording for Simulation
+6. ✅ Task 3.6: Ran Simulation and Validated Results
+
+**Next**: Phase 4 - Documentation & Migration
+
+---
+
+#### **Feature: Multi-Strategy Data Refresh (Phase 2)** (2026-01-22)
+
+Implemented Phase 2 of the multi-strategy scheduler system, enabling per-strategy position tracking and data refresh with proper isolation.
+
+**Key Features**:
+- Per-strategy position tracking: Positions now filtered by `strategy_id` for isolated portfolio management
+- Multi-strategy data refresh: Dashboard refresher updates all active strategies in parallel
+- Strategy-aware hourly refresh: Market hours refresh covers all registered strategies
+
+**Database Changes**:
+- Added `strategy_id` column to `positions` table (Alembic migration: `20260122_0001`)
+- Updated unique constraint from `(symbol, mode)` to `(symbol, mode, strategy_id)`
+- Added `idx_positions_strategy` index for efficient strategy filtering
+- Backfilled existing positions with default `strategy_id='v3_5b'`
+
+**Modified Files**:
+- `jutsu_engine/data/models.py` - Added `strategy_id` column to Position model with updated constraints
+- `jutsu_engine/live/mock_order_executor.py` - Updated position queries to filter by strategy_id
+- `jutsu_engine/live/data_refresh.py` - Added `strategy_id` parameter and multi-strategy full_refresh
+- `jutsu_engine/api/scheduler.py` - Updated data refresh jobs to iterate over all active strategies
+
+**New Files**:
+- `alembic/versions/20260122_0001_add_strategy_id_to_positions.py` - Migration for positions.strategy_id
+
+**Phase 2 Tasks Completed**:
+1. ✅ Task 2.1: Refactored DashboardDataRefresher for multi-strategy support
+2. ✅ Task 2.2: Added strategy_id to Position model with migration and query updates
+3. ✅ Task 2.3: Updated hourly refresh schedule for all strategies
+
+**Next**: Phase 3 - Multi-Strategy Dashboard Visualization
+
+---
+
+#### **Feature: Multi-Strategy Scheduler Infrastructure (Phase 1)** (2026-01-22)
+
+Implemented Phase 1 of the multi-strategy scheduler system, enabling parallel execution of multiple trading strategies with isolated state management and trade logging.
+
+**Key Features**:
+- Per-strategy state isolation: Each strategy has dedicated state directory (`state/strategies/{strategy_id}/`)
+- Multi-strategy orchestration script with shared market data fetching
+- Strategy-tagged trade logging for LiveTrade and PerformanceSnapshot records
+- Scheduler service integration for automated multi-strategy execution at 9:45 AM EST
+
+**New Files**:
+- `scripts/daily_multi_strategy_run.py` - Multi-strategy orchestration (~550 lines)
+  - Loads strategies from `config/strategies_registry.yaml`
+  - Executes strategies in order (primary first)
+  - Isolates failures: secondary strategy failures don't affect primary
+  - Supports `--check-freshness` and `--strategy` CLI flags
+
+**Modified Files**:
+- `jutsu_engine/live/state_manager.py` - Added `strategy_id` parameter for per-strategy state paths
+- `jutsu_engine/live/mock_order_executor.py` - Added `strategy_id` to constructor and database logging
+- `jutsu_engine/live/executor_router.py` - Added `strategy_id` parameter to factory methods
+- `jutsu_engine/live/live_order_executor.py` - Added `strategy_id` parameter
+- `jutsu_engine/api/scheduler.py` - Updated `_execute_trading_job` to use multi-strategy script
+
+**Configuration Files** (pre-existing):
+- `config/strategies_registry.yaml` - Strategy registry with v3_5b (primary) and v3_5d
+- `config/strategies/v3_5b.yaml` - Primary strategy configuration
+- `config/strategies/v3_5d.yaml` - Secondary strategy configuration
+
+**Phase 1 Tasks Completed**:
+1. ✅ Task 1.1: Per-strategy state management (StateManager with strategy_id)
+2. ✅ Task 1.2: Multi-strategy daily run script (daily_multi_strategy_run.py)
+3. ✅ Task 1.3: Strategy ID to Executor and Trade Logging
+4. ✅ Task 1.4: Scheduler Service Configuration update
+5. ✅ Task 1.5: Strategy-specific config loader
+
+**Next**: Phase 2 - Dashboard Multi-Strategy Features (Position tracking, UI components)
+
+---
+
 #### **Fix: Mobile Baseline QQQ Display** (2026-01-22)
 
 Fixed missing baseline QQQ metrics in mobile view for multi-strategy comparison.

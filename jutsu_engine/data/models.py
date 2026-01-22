@@ -240,10 +240,11 @@ class Position(Base):
     Current position holdings for live trading.
 
     Tracks real-time position state for each symbol. Updated after
-    each trade execution. Separate records for each trading mode.
+    each trade execution. Separate records for each trading mode and strategy.
 
     Indexes:
-        - (symbol, mode) for unique position lookup
+        - (symbol, mode, strategy_id) for unique position lookup
+        - (strategy_id, timestamp) for strategy filtering
     """
 
     __tablename__ = 'positions'
@@ -258,17 +259,23 @@ class Position(Base):
 
     mode = Column(String(20), nullable=False)  # 'offline_mock' or 'online_live'
 
+    # Multi-strategy support (added 2026-01-22 Phase 2)
+    # Identifies which strategy this position belongs to
+    strategy_id = Column(String(50), default='v3_5b')  # e.g., 'v3_5b', 'v3_5d'
+
     last_updated = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     __table_args__ = (
-        UniqueConstraint('symbol', 'mode', name='uix_position_symbol_mode'),
+        # Updated unique constraint to include strategy_id for multi-strategy support
+        UniqueConstraint('symbol', 'mode', 'strategy_id', name='uix_position_symbol_mode_strategy'),
         Index('idx_positions_mode', 'mode'),
+        Index('idx_positions_strategy', 'strategy_id'),
     )
 
     def __repr__(self):
         return (
             f"<Position(symbol={self.symbol}, qty={self.quantity}, "
-            f"mode={self.mode})>"
+            f"strategy={self.strategy_id}, mode={self.mode})>"
         )
 
 

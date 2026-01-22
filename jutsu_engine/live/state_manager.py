@@ -27,28 +27,50 @@ class StateManager:
 
     def __init__(
         self,
-        state_file: Path = Path('state/state.json'),
+        state_file: Path = None,
+        strategy_id: str = None,
         backup_enabled: bool = True,
-        backup_dir: Path = Path('state/backups')
+        backup_dir: Path = None
     ):
         """
         Initialize state manager.
 
         Args:
-            state_file: Path to state.json file
+            state_file: Path to state.json file (deprecated, use strategy_id)
+            strategy_id: Strategy identifier for per-strategy state isolation
+                         If provided, state_file becomes state/strategies/{strategy_id}/state.json
             backup_enabled: Enable automatic backups before save
-            backup_dir: Directory for state backups
+            backup_dir: Directory for state backups (auto-derived if strategy_id provided)
+        
+        Note:
+            For backward compatibility, if state_file is provided without strategy_id,
+            it will be used directly. New code should use strategy_id for proper isolation.
         """
-        self.state_file = state_file
+        # Determine paths based on strategy_id or legacy state_file
+        if strategy_id:
+            # New multi-strategy path structure
+            self.strategy_id = strategy_id
+            self.state_file = Path(f'state/strategies/{strategy_id}/state.json')
+            self.backup_dir = Path(f'state/strategies/{strategy_id}/backups')
+        elif state_file:
+            # Legacy single-strategy path (backward compatibility)
+            self.strategy_id = None
+            self.state_file = Path(state_file)
+            self.backup_dir = backup_dir or Path('state/backups')
+        else:
+            # Default legacy path
+            self.strategy_id = None
+            self.state_file = Path('state/state.json')
+            self.backup_dir = backup_dir or Path('state/backups')
+        
         self.backup_enabled = backup_enabled
-        self.backup_dir = backup_dir
 
         # Create directories if they don't exist
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         if self.backup_enabled:
             self.backup_dir.mkdir(parents=True, exist_ok=True)
 
-        logger.info(f"StateManager initialized: {self.state_file}")
+        logger.info(f"StateManager initialized: {self.state_file} (strategy_id={self.strategy_id})")
 
     def load_state(self) -> Dict[str, Any]:
         """

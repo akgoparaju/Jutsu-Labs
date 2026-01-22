@@ -317,7 +317,8 @@ class SchedulerService:
         """
         Execute the daily trading job.
 
-        Checks market hours and calls the daily_dry_run main function.
+        Checks market hours and calls the daily_multi_strategy_run main function
+        to execute all active strategies in parallel.
         """
         if self._is_running_job:
             logger.warning("Job already running, skipping")
@@ -327,7 +328,7 @@ class SchedulerService:
 
         try:
             logger.info("=" * 60)
-            logger.info("Scheduled Trading Job Starting")
+            logger.info("Multi-Strategy Trading Job Starting")
             logger.info("=" * 60)
 
             # Check if it's a trading day
@@ -338,7 +339,7 @@ class SchedulerService:
                 self.state.record_run('skipped', 'Not a trading day')
                 return
 
-            # Import and run the daily dry run main function
+            # Import and run the multi-strategy main function
             try:
                 # Import inside to avoid circular imports
                 import sys
@@ -349,22 +350,22 @@ class SchedulerService:
                 if str(scripts_path) not in sys.path:
                     sys.path.insert(0, str(scripts_path))
 
-                from scripts.daily_dry_run import main as daily_dry_run_main
+                from scripts.daily_multi_strategy_run import main as multi_strategy_main
 
-                # Run the trading workflow
+                # Run the multi-strategy trading workflow
                 # Note: This runs synchronously - for production, consider
                 # running in a thread pool to avoid blocking the event loop
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(
                     None,
-                    lambda: daily_dry_run_main(check_freshness=True)
+                    lambda: multi_strategy_main(check_freshness=True)
                 )
 
-                logger.info("Scheduled trading job completed successfully")
+                logger.info("Multi-strategy trading job completed successfully")
                 self.state.record_run('success')
 
             except Exception as e:
-                logger.error(f"Trading job failed: {e}", exc_info=True)
+                logger.error(f"Multi-strategy trading job failed: {e}", exc_info=True)
                 self.state.record_run('failed', str(e))
 
         finally:
@@ -400,13 +401,22 @@ class SchedulerService:
             
             try:
                 from jutsu_engine.live.data_refresh import get_data_refresher
+                from jutsu_engine.live.strategy_registry import StrategyRegistry
+                
+                # Load active strategies from registry
+                registry = StrategyRegistry()
+                active_strategies = registry.get_active_strategies()
+                strategy_ids = [s.id for s in active_strategies]
+                
+                logger.info(f"Refreshing data for {len(strategy_ids)} strategies: {strategy_ids}")
                 
                 refresher = get_data_refresher()
                 
-                # Perform full refresh (sync data, update prices, save snapshot)
+                # Perform full refresh for ALL active strategies
                 results = await refresher.full_refresh(
                     sync_data=True,
                     calculate_ind=True,
+                    strategy_ids=strategy_ids,
                 )
                 
                 if results['success']:
@@ -462,14 +472,23 @@ class SchedulerService:
 
             try:
                 from jutsu_engine.live.data_refresh import get_data_refresher
+                from jutsu_engine.live.strategy_registry import StrategyRegistry
+                
+                # Load active strategies from registry
+                registry = StrategyRegistry()
+                active_strategies = registry.get_active_strategies()
+                strategy_ids = [s.id for s in active_strategies]
+                
+                logger.debug(f"Hourly refresh for strategies: {strategy_ids}")
 
                 refresher = get_data_refresher()
 
-                # Perform refresh WITHOUT saving snapshot (sync_data=True to get latest prices)
-                # Snapshot is saved only at market close
+                # Perform refresh for ALL active strategies
+                # Note: full_refresh saves snapshots - consider adding a flag to skip if needed
                 results = await refresher.full_refresh(
                     sync_data=True,
                     calculate_ind=False,  # Skip indicators for hourly refresh
+                    strategy_ids=strategy_ids,
                 )
 
                 if results['success']:

@@ -107,7 +107,8 @@ class ExecutorRouter:
         config: Dict[str, Any],
         client: Any = None,
         account_hash: str = None,
-        trade_log_path: Optional[Path] = None
+        trade_log_path: Optional[Path] = None,
+        strategy_id: str = 'v3_5b'
     ) -> ExecutorInterface:
         """
         Create an executor instance based on trading mode.
@@ -118,6 +119,7 @@ class ExecutorRouter:
             client: Schwab API client (required for ONLINE_LIVE mode)
             account_hash: Schwab account hash (required for ONLINE_LIVE mode)
             trade_log_path: Optional path for trade log CSV
+            strategy_id: Strategy identifier for multi-strategy support
 
         Returns:
             ExecutorInterface implementation
@@ -126,13 +128,13 @@ class ExecutorRouter:
             ValueError: If required parameters missing for selected mode
             ImportError: If executor module not available
         """
-        logger.info(f"Creating executor for mode: {mode}")
+        logger.info(f"Creating executor for mode: {mode}, strategy_id: {strategy_id}")
 
         if mode == TradingMode.OFFLINE_MOCK:
-            return ExecutorRouter._create_mock_executor(config, trade_log_path)
+            return ExecutorRouter._create_mock_executor(config, trade_log_path, strategy_id)
         elif mode == TradingMode.ONLINE_LIVE:
             return ExecutorRouter._create_live_executor(
-                config, client, account_hash, trade_log_path
+                config, client, account_hash, trade_log_path, strategy_id
             )
         else:
             raise ValueError(f"Unknown trading mode: {mode}")
@@ -140,7 +142,8 @@ class ExecutorRouter:
     @staticmethod
     def _create_mock_executor(
         config: Dict[str, Any],
-        trade_log_path: Optional[Path] = None
+        trade_log_path: Optional[Path] = None,
+        strategy_id: str = 'v3_5b'
     ) -> ExecutorInterface:
         """
         Create MockOrderExecutor for offline/dry-run mode.
@@ -148,6 +151,7 @@ class ExecutorRouter:
         Args:
             config: Configuration dictionary
             trade_log_path: Optional path for trade log CSV
+            strategy_id: Strategy identifier for multi-strategy support
 
         Returns:
             MockOrderExecutor instance
@@ -161,14 +165,15 @@ class ExecutorRouter:
         )
 
         logger.info(
-            f"Creating MockOrderExecutor: log_path={log_path}, "
+            f"Creating MockOrderExecutor: strategy_id={strategy_id}, log_path={log_path}, "
             f"threshold={rebalance_threshold}%"
         )
 
         return MockOrderExecutor(
             config=config,
             trade_log_path=log_path,
-            rebalance_threshold_pct=rebalance_threshold
+            rebalance_threshold_pct=rebalance_threshold,
+            strategy_id=strategy_id
         )
 
     @staticmethod
@@ -176,7 +181,8 @@ class ExecutorRouter:
         config: Dict[str, Any],
         client: Any,
         account_hash: str,
-        trade_log_path: Optional[Path] = None
+        trade_log_path: Optional[Path] = None,
+        strategy_id: str = 'v3_5b'
     ) -> ExecutorInterface:
         """
         Create OrderExecutor for live trading mode.
@@ -186,6 +192,7 @@ class ExecutorRouter:
             client: Authenticated Schwab API client
             account_hash: Schwab account hash
             trade_log_path: Optional path for trade log CSV
+            strategy_id: Strategy identifier for multi-strategy support
 
         Returns:
             OrderExecutor instance (wrapped to implement ExecutorInterface)
@@ -211,14 +218,15 @@ class ExecutorRouter:
         log_path = trade_log_path or Path('logs/live_trades.csv')
 
         logger.info(
-            f"Creating LiveOrderExecutor: account={account_hash[:8]}..."
+            f"Creating LiveOrderExecutor: strategy_id={strategy_id}, account={account_hash[:8]}..."
         )
 
         return LiveOrderExecutor(
             client=client,
             account_hash=account_hash,
             config=config,
-            trade_log_path=log_path
+            trade_log_path=log_path,
+            strategy_id=strategy_id
         )
 
     @staticmethod

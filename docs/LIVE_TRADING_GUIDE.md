@@ -908,6 +908,155 @@ Currently monitor via:
 
 ---
 
+## 🔄 Multi-Strategy Architecture (v2.0)
+
+**Added**: 2026-01-22
+
+The system now supports running multiple strategies in parallel through a unified scheduler. Each strategy operates with isolated state, positions, and performance tracking.
+
+### Strategy Registration
+
+Strategies are defined in `config/strategies_registry.yaml`:
+
+```yaml
+settings:
+  isolate_failures: true  # Secondary failures don't affect primary
+
+strategies:
+  v3_5b:
+    is_primary: true
+    is_active: true
+    execution_order: 1
+    config_file: config/strategies/v3_5b.yaml
+    state_file_path: state/strategies/v3_5b/state.json
+
+  v3_5d:
+    is_primary: false
+    is_active: true
+    execution_order: 2
+    config_file: config/strategies/v3_5d.yaml
+    state_file_path: state/strategies/v3_5d/state.json
+```
+
+### Per-Strategy State Isolation
+
+Each strategy maintains its own isolated state:
+
+```
+state/
+├── strategies/
+│   ├── v3_5b/
+│   │   ├── state.json     # v3.5b positions, equity, signals
+│   │   └── backups/       # Auto-backup before each trade
+│   └── v3_5d/
+│       ├── state.json     # v3.5d positions, equity, signals
+│       └── backups/       # Auto-backup before each trade
+```
+
+### Multi-Strategy Scheduler
+
+The scheduler runs all active strategies in sequence:
+
+```bash
+# The scheduler now imports:
+from scripts.daily_multi_strategy_run import main
+
+# Execution flow:
+# 1. Load StrategyRegistry
+# 2. Fetch market data once (shared across strategies)
+# 3. For each active strategy:
+#    a. Load strategy config
+#    b. Initialize StateManager with strategy_id
+#    c. Run strategy to generate signals
+#    d. Execute trades (paper/live mode)
+#    e. Save performance snapshot with strategy_id
+# 4. Log summary
+```
+
+**Execution Time**: 9:45 AM Eastern (6:45 AM Pacific) - 15 minutes after market open.
+
+### Database Schema Changes
+
+All trading tables now include `strategy_id` column:
+
+```sql
+-- performance_snapshots table
+strategy_id VARCHAR(50) DEFAULT 'v3_5b'
+
+-- live_trades table
+strategy_id VARCHAR(50) DEFAULT 'v3_5b'
+
+-- positions table
+strategy_id VARCHAR(50) DEFAULT 'v3_5b'
+```
+
+### Adding a New Strategy
+
+1. **Create strategy class** in `jutsu_engine/strategies/`:
+   ```python
+   class My_New_Strategy(Strategy):
+       pass
+   ```
+
+2. **Create strategy config** in `config/strategies/my_new_strategy.yaml`:
+   ```yaml
+   strategy:
+     name: My_New_Strategy
+     universe:
+       signal_symbol: QQQ
+       bull_symbol: TQQQ
+   ```
+
+3. **Register in** `config/strategies_registry.yaml`:
+   ```yaml
+   strategies:
+     my_new_strategy:
+       is_primary: false
+       is_active: true
+       execution_order: 3
+       config_file: config/strategies/my_new_strategy.yaml
+       state_file_path: state/strategies/my_new_strategy/state.json
+   ```
+
+4. **Create state directory**:
+   ```bash
+   mkdir -p state/strategies/my_new_strategy/backups
+   ```
+
+5. **(Optional) Run historical simulation**:
+   ```bash
+   python scripts/simulate_historical_trades.py \
+       --strategy-id my_new_strategy \
+       --start-date 2025-12-04 \
+       --end-date 2026-01-22 \
+       --initial-capital 10000
+   ```
+
+### Failure Isolation
+
+- **Primary strategy failures** are critical and will stop the scheduler
+- **Secondary strategy failures** are logged but don't affect other strategies
+- Set `isolate_failures: true` in registry settings (default)
+
+### Multi-Strategy Data Refresh
+
+Hourly data refresh now updates ALL active strategies:
+
+```python
+# scheduler.py
+registry = StrategyRegistry()
+strategy_ids = registry.get_active_strategy_ids()
+refresher.full_refresh(strategy_ids=strategy_ids)
+```
+
+Each strategy gets its own performance snapshot with:
+- Correct `strategy_id`
+- Current market prices
+- Strategy-specific positions
+- Isolated equity calculation
+
+---
+
 ## 📝 System Architecture Overview
 
 ### Core Components
@@ -931,12 +1080,14 @@ jutsu_engine/live/
 
 ```
 scripts/
-├── daily_dry_run.py         # Phase 1: Dry-run (no orders)
-├── live_trader_paper.py     # Phase 2: Paper trading (real orders)
-├── emergency_exit.py        # Emergency position liquidation
-├── post_market_validation.py # Post-market backtest validation
-├── health_check.py          # System health monitoring
-└── hello_schwab.py          # OAuth authentication setup
+├── daily_multi_strategy_run.py   # Multi-strategy scheduler (v2.0)
+├── simulate_historical_trades.py # Historical trade simulation
+├── daily_dry_run.py              # Legacy: Single-strategy dry-run
+├── live_trader_paper.py          # Phase 2: Paper trading
+├── emergency_exit.py             # Emergency position liquidation
+├── post_market_validation.py     # Post-market backtest validation
+├── health_check.py               # System health monitoring
+└── hello_schwab.py               # OAuth authentication setup
 ```
 
 ### Data Flow

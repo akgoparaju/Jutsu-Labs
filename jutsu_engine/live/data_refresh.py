@@ -77,6 +77,7 @@ class DashboardDataRefresher:
         self,
         db_path: Optional[str] = None,
         mode: TradingMode = TradingMode.OFFLINE_MOCK,
+        strategy_id: str = 'v3_5b',
     ):
         """
         Initialize the data refresher.
@@ -84,7 +85,9 @@ class DashboardDataRefresher:
         Args:
             db_path: Path to the SQLite database (auto-detected if None)
             mode: Trading mode to filter positions/snapshots
+            strategy_id: Strategy identifier for multi-strategy support (default: v3_5b)
         """
+        self._strategy_id = strategy_id
         # Use centralized utility for database path detection
         if db_path is None:
             db_url = get_database_url()
@@ -157,9 +160,10 @@ class DashboardDataRefresher:
         session = self._get_session()
         
         try:
-            # Get the most recent performance snapshot for this mode
+            # Get the most recent performance snapshot for this mode and strategy
             latest = session.query(PerformanceSnapshot).filter(
-                PerformanceSnapshot.mode == self._mode.db_value
+                PerformanceSnapshot.mode == self._mode.db_value,
+                PerformanceSnapshot.strategy_id == self._strategy_id
             ).order_by(desc(PerformanceSnapshot.timestamp)).first()
             
             if latest is None:
@@ -469,6 +473,7 @@ class DashboardDataRefresher:
         try:
             positions = session.query(Position).filter(
                 Position.mode == self._mode.db_value,
+                Position.strategy_id == self._strategy_id,
             ).all()
             
             for pos in positions:
@@ -648,6 +653,7 @@ class DashboardDataRefresher:
             if positions is None:
                 db_positions = session.query(Position).filter(
                     Position.mode == self._mode.db_value,
+                    Position.strategy_id == self._strategy_id,
                 ).all()
                 positions = [
                     {
@@ -663,7 +669,8 @@ class DashboardDataRefresher:
             
             # Get previous snapshot for cash balance (positions value is recalculated)
             previous = session.query(PerformanceSnapshot).filter(
-                PerformanceSnapshot.mode == self._mode.db_value
+                PerformanceSnapshot.mode == self._mode.db_value,
+                PerformanceSnapshot.strategy_id == self._strategy_id
             ).order_by(desc(PerformanceSnapshot.timestamp)).first()
             
             if previous:
@@ -689,7 +696,8 @@ class DashboardDataRefresher:
             max_equity_result = session.query(
                 func.max(PerformanceSnapshot.total_equity)
             ).filter(
-                PerformanceSnapshot.mode == self._mode.db_value
+                PerformanceSnapshot.mode == self._mode.db_value,
+                PerformanceSnapshot.strategy_id == self._strategy_id
             ).scalar()
             
             if max_equity_result and max_equity_result > float(total_equity):
@@ -896,6 +904,7 @@ class DashboardDataRefresher:
                 baseline_value=baseline_value,
                 baseline_return=baseline_return,
                 mode=self._mode.db_value,
+                strategy_id=self._strategy_id,  # Multi-strategy support
                 snapshot_source="refresh",  # Mark as P/L refresh snapshot
             )
             
@@ -919,6 +928,7 @@ class DashboardDataRefresher:
         sync_data: bool = True,
         calculate_ind: bool = True,
         modes: Optional[List[TradingMode]] = None,
+        strategy_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Perform a full dashboard data refresh.
@@ -929,6 +939,7 @@ class DashboardDataRefresher:
             sync_data: Whether to sync market data first
             calculate_ind: Whether to calculate indicators
             modes: List of modes to refresh (default: current mode)
+            strategy_ids: List of strategy IDs to refresh (default: current strategy)
             
         Returns:
             Dictionary with refresh results
@@ -978,35 +989,40 @@ class DashboardDataRefresher:
                     'count': len(indicators),
                 })
             
-            # Step 4: Update positions and save snapshots for each mode
+            # Step 4: Update positions and save snapshots for each mode AND strategy
             refresh_modes = modes or [self._mode]
+            refresh_strategies = strategy_ids or [self._strategy_id]
             
             for mode in refresh_modes:
-                logger.info(f"Step 4: Refreshing mode={mode.value}...")
-                
-                # Temporarily switch mode
-                original_mode = self._mode
-                self._mode = mode
-                
-                try:
-                    # Update position values
-                    updated_positions = self.update_position_values(prices)
+                for strategy_id in refresh_strategies:
+                    logger.info(f"Step 4: Refreshing mode={mode.value}, strategy={strategy_id}...")
                     
-                    # Save performance snapshot
-                    snapshot_success = self.save_performance_snapshot(
-                        prices=prices,
-                        positions=updated_positions,
-                        indicators=indicators,
-                    )
+                    # Temporarily switch mode and strategy
+                    original_mode = self._mode
+                    original_strategy = self._strategy_id
+                    self._mode = mode
+                    self._strategy_id = strategy_id
                     
-                    results['steps'].append({
-                        'step': f'refresh_{mode.value}',
-                        'success': snapshot_success,
-                        'positions_updated': len(updated_positions),
-                    })
-                    
-                finally:
-                    self._mode = original_mode
+                    try:
+                        # Update position values
+                        updated_positions = self.update_position_values(prices)
+                        
+                        # Save performance snapshot
+                        snapshot_success = self.save_performance_snapshot(
+                            prices=prices,
+                            positions=updated_positions,
+                            indicators=indicators,
+                        )
+                        
+                        results['steps'].append({
+                            'step': f'refresh_{mode.value}_{strategy_id}',
+                            'success': snapshot_success,
+                            'positions_updated': len(updated_positions),
+                        })
+                        
+                    finally:
+                        self._mode = original_mode
+                        self._strategy_id = original_strategy
             
             results['success'] = len(results['errors']) == 0
             

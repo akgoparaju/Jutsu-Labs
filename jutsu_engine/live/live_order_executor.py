@@ -51,7 +51,8 @@ class LiveOrderExecutor(ExecutorInterface):
         client,
         account_hash: str,
         config: Dict[str, Any],
-        trade_log_path: Path = Path('logs/live_trades.csv')
+        trade_log_path: Path = Path('logs/live_trades.csv'),
+        strategy_id: str = 'v3_5b'
     ):
         """
         Initialize live order executor.
@@ -61,12 +62,14 @@ class LiveOrderExecutor(ExecutorInterface):
             account_hash: Schwab account hash for order submission
             config: Configuration dictionary
             trade_log_path: Path to trade log CSV
+            strategy_id: Strategy identifier for multi-strategy support
         """
         self.client = client
         self.account_hash = account_hash
         self.config = config
         self.trade_log_path = trade_log_path
         self._mode = TradingMode.ONLINE_LIVE
+        self.strategy_id = strategy_id
 
         # Create underlying OrderExecutor
         self._order_executor = OrderExecutor(
@@ -80,7 +83,7 @@ class LiveOrderExecutor(ExecutorInterface):
         self.trade_log_path.parent.mkdir(parents=True, exist_ok=True)
 
         logger.info(
-            f"LiveOrderExecutor initialized: account={account_hash[:8]}..."
+            f"LiveOrderExecutor initialized: strategy_id={strategy_id}, account={account_hash[:8]}..."
         )
 
     def get_mode(self) -> TradingMode:
