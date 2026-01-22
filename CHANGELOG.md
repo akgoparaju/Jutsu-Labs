@@ -1,3 +1,27 @@
+#### **Docs: Database Migration Guide Updated** (2026-01-22)
+
+Updated `claudedocs/DATABASE_MIGRATION_STAGING_TO_PRODUCTION.md` with comprehensive additions:
+
+**Added Sections**:
+- Part 4.5: Additional Configuration Files Required (3 files: strategies_registry.yaml, v3_5b.yaml, v3_5d.yaml)
+- Troubleshooting section with common issues and solutions
+- State directory migration warning (preserve live position data)
+- Scheduler job store cleanup instructions
+- Docker deployment instructions with image tags
+
+**Updated Sections**:
+- Quick Reference table: Now shows 2 Alembic migrations, 10+ code changes, 3 config files
+- Pre-Migration Checklist: Added config file verification, Schwab token check
+- Part 1: Clarified both migrations run with `alembic upgrade head`
+- Step 7: Added safe state migration script with existence check
+- Step 8: Added Docker deployment commands
+- Post-Migration Verification: Expanded to 4 categories (Database, Application, Scheduler, Config)
+
+**Files Modified**:
+- `claudedocs/DATABASE_MIGRATION_STAGING_TO_PRODUCTION.md`
+
+---
+
 #### **Fix: Dashboard Portfolio Snapshot & Strategy Comparison** (2026-01-22)
 
 Improved Dashboard tab multi-strategy comparison UI:
