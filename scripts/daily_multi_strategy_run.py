@@ -362,8 +362,9 @@ def run_single_strategy(
             logger.info(f"  Portfolio Equity: ${account_equity:,.2f}")
         
         # Initialize strategy runner with proper class
-        # Import the strategy class dynamically
-        from jutsu_engine.strategies import Hierarchical_Adaptive_v3_5b, Hierarchical_Adaptive_v3_5d
+        # Import the strategy class dynamically (must import class FROM module, not module itself)
+        from jutsu_engine.strategies.Hierarchical_Adaptive_v3_5b import Hierarchical_Adaptive_v3_5b
+        from jutsu_engine.strategies.Hierarchical_Adaptive_v3_5d import Hierarchical_Adaptive_v3_5d
         
         strategy_classes = {
             'Hierarchical_Adaptive_v3_5b': Hierarchical_Adaptive_v3_5b,

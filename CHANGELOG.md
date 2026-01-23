@@ -1,3 +1,24 @@
+#### **Fix: Scheduler Execution Time and Strategy Import Bug** (2026-01-23)
+
+Fixed two critical issues preventing scheduler from running correctly:
+
+**1. Wrong Scheduler Execution Time**
+- **Root Cause**: Database override (`config_overrides` table) had `execution_time='close'` active since Dec 2025
+- **Effect**: Scheduler ran at 4:00 PM EST instead of 9:45 AM EST (15 mins after market open)
+- **Fix**: Deactivated the database override so YAML config takes precedence
+- **Database Change**: `UPDATE config_overrides SET is_active=FALSE WHERE parameter_name='execution_time'`
+
+**2. Strategy Import Error: "'module' object is not callable"**
+- **Root Cause**: Line 366 imported modules instead of classes:
+  - Wrong: `from jutsu_engine.strategies import Hierarchical_Adaptive_v3_5b`
+  - Correct: `from jutsu_engine.strategies.Hierarchical_Adaptive_v3_5b import Hierarchical_Adaptive_v3_5b`
+- **Effect**: All scheduler runs failed with "Failed to initialize strategy"
+- **File Modified**: `scripts/daily_multi_strategy_run.py` (lines 366-367)
+
+**Action Required**: Restart Docker container to apply changes.
+
+---
+
 #### **Docs: Database Migration Guide Updated** (2026-01-22)
 
 Updated `claudedocs/DATABASE_MIGRATION_STAGING_TO_PRODUCTION.md` with comprehensive additions:
