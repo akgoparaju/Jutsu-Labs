@@ -92,6 +92,13 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
               queryClient.invalidateQueries({ queryKey: ['regime'] })
               queryClient.invalidateQueries({ queryKey: ['status'] })
               break
+            case 'data_refresh':
+              // Invalidate all data queries after hourly refresh
+              queryClient.invalidateQueries({ queryKey: ['backtest-data'] })
+              queryClient.invalidateQueries({ queryKey: ['performance-data'] })
+              queryClient.invalidateQueries({ queryKey: ['performance'] })
+              queryClient.invalidateQueries({ queryKey: ['status'] })
+              break
           }
         } catch (error) {
           console.error('Failed to parse WebSocket message:', error)
@@ -195,6 +202,8 @@ export function useLiveUpdates() {
         console.log('Trade executed:', message.data)
       } else if (message.type === 'regime_change') {
         console.log('Regime changed:', message.data)
+      } else if (message.type === 'data_refresh') {
+        console.log('Data refreshed:', message.data)
       } else if (message.type === 'error') {
         console.error('Server error:', message.message)
       }

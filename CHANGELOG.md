@@ -1,3 +1,93 @@
+#### **Fix: Scheduler Status and UI Auto-Refresh** (2026-01-23)
+
+Fixed multiple issues preventing hourly data refresh from working on the UI:
+
+**Issue 1: SchedulerStatus Schema Missing Fields**
+- Symptom: API returned `scheduler_running: false` and `next_hourly_refresh: null` even when scheduler was running
+- Root Cause: Pydantic schema was missing 4 fields that `get_status()` returned, causing silent data loss
+- Fix: Added `next_hourly_refresh`, `is_running_hourly_refresh`, `scheduler_running`, `scheduler_healthy` to schema
+- File: `jutsu_engine/api/schemas.py`
+
+**Issue 2: Multi-Strategy Mode Never Auto-Refreshed**
+- Symptom: Dashboard in comparison mode showed stale data
+- Root Cause: Frontend had no mechanism to know when backend finished hourly refresh
+- Fix: WebSocket push-based updates instead of polling
+  - Backend sends `data_refresh` WebSocket event after hourly/market-close refresh completes
+  - Frontend WebSocket handler invalidates React Query cache on `data_refresh` event
+  - More efficient than polling: updates only when data actually changes
+- Files: `jutsu_engine/api/scheduler.py`, `jutsu_engine/api/websocket.py`, `dashboard/src/hooks/useWebSocket.ts`
+
+**Issue 3: Scheduler Lost After Uvicorn Reload**
+- Symptom: `scheduler_running: false` after any code change triggered uvicorn reload
+- Root Cause: Singleton was reset but `start()` not called on new instance
+- Fix: `get_scheduler_service()` now ensures scheduler is started if not running
+- File: `jutsu_engine/api/scheduler.py`
+
+**Issue 4: Race Condition in Scheduler Pickling**
+- Symptom: `_scheduler` became `None` intermittently during job store operations
+- Root Cause: `__getstate__` set `_scheduler = None` which affected singleton during APScheduler's job pickling
+- Fix: `__getstate__` now deletes the key entirely instead of setting to None
+- File: `jutsu_engine/api/scheduler.py`
+
+---
+
+#### **Fix: v3.5d Performance Tab Data Issues** (2026-01-23)
+
+Fixed three data display issues in Performance tab for v3.5d:
+
+**Issue 1: Baseline (QQQ) Total Equity Not Shown**
+- Symptom: "Total Equity" row showed nothing for Baseline column
+- Fix: Updated `PerformanceV2.tsx` to display `baseline_value` from latest snapshot
+- Files: `dashboard/src/pages/v2/PerformanceV2.tsx` (lines 878, 928)
+
+**Issue 2: v3.5d Max Drawdown Empty**
+- Symptom: Max Drawdown showed empty/null for v3.5d
+- Root Cause: v3.5d drawdown values were stored as negative numbers (-5.82%), but API uses MAX() which returned 0.00%
+- Fix: Updated database to use consistent positive sign convention (same as v3.5b)
+- SQL: `UPDATE performance_snapshots SET drawdown = ABS(drawdown) WHERE strategy_id = 'v3_5d' AND drawdown < 0`
+- Result: MAX(drawdown) now correctly returns 5.82%
+
+**Issue 3: v3.5d Shows 0% Return on Some Days**
+- Symptom: 8 days showed identical equity as previous day (stale data)
+- Root Cause: v3.5d backfill used CSV data without day-by-day simulation
+- Affected Dates: Dec 12, 19, 24, 31, 2025; Jan 9, 16, 21, 22, 2026
+- Note: This is historical data quality issue from backfill process, not ongoing bug
+- Jan 21-22 were stale because scheduler only started Jan 23
+
+---
+
+#### **Fix: v3.5d Position Table Integrity Issue** (2026-01-23)
+
+Fixed data integrity issue causing $624.32 equity overstatement in v3.5d:
+
+**Symptom**: v3.5d showed 6.03% cumulative return (should be -0.21%), daily return 8.13% (should be 1.76%)
+
+**Root Cause**: SELL 1 QQQ trade on 2026-01-23 was recorded correctly in `live_trades` and cash was updated (+$624.32), but the Position table was NOT decremented (still showed 12 QQQ instead of 11). This caused double-counting: the sold share appeared both in positions AND in cash.
+
+**Evidence Chain**:
+- Trade record: SELL 1 QQQ @ $624.32
+- Cash change: $459.51 → $1,083.83 (+$624.32) ✅
+- Position table: 12 QQQ (should be 11) ❌
+- Snapshot inherited wrong position count
+
+**Impact**:
+| Metric | Before Fix | After Fix |
+|--------|-----------|-----------|
+| QQQ Quantity | 12 | 11 |
+| Total Equity | $10,603.27 | $9,978.95 |
+| Daily Return | 8.13% | 1.76% |
+| Cumulative Return | 6.03% | -0.21% |
+
+**Fix Applied**: `scripts/fix_v3_5d_integrity.py --apply`
+- Updated Position table: QQQ = 11 shares
+- Updated PerformanceSnapshot (ID 262): equity, positions_json, daily_return, cumulative_return
+
+**Audit Scripts Created**:
+- `scripts/audit_portfolio_integrity.py` - 10-audit comprehensive check
+- `scripts/fix_v3_5d_integrity.py` - Complete fix script
+
+---
+
 #### **Fix: Trade History Strategy Filter Not Working** (2026-01-23)
 
 Fixed Trade History page showing wrong strategy when filtering:

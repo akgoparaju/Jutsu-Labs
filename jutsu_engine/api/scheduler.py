@@ -234,11 +234,17 @@ class SchedulerService:
         
         Architecture fix 2026-01-15: Resolves "Schedulers cannot be serialized" error
         that was preventing hourly and market close refresh jobs from executing.
+        
+        Architecture fix 2026-01-23: DO NOT set _scheduler to None in state,
+        as this was causing race conditions where the singleton's _scheduler
+        attribute was being reset during job store operations.
         """
         state = self.__dict__.copy()
-        # Remove non-pickleable objects
-        state['_scheduler'] = None  # AsyncIOScheduler cannot be pickled
-        state['_config_loader'] = None  # Callables may not be pickleable
+        # Remove non-pickleable objects entirely (don't set to None)
+        if '_scheduler' in state:
+            del state['_scheduler']
+        if '_config_loader' in state:
+            del state['_config_loader']
         return state
 
     def __setstate__(self, state):
@@ -421,6 +427,16 @@ class SchedulerService:
                 
                 if results['success']:
                     logger.info("Market close data refresh completed successfully")
+                    # Notify frontend via WebSocket to refresh data
+                    try:
+                        from jutsu_engine.api.websocket import broadcast_data_refresh
+                        await broadcast_data_refresh({
+                            'refresh_type': 'market_close',
+                            'strategies': strategy_ids,
+                        })
+                        logger.debug("WebSocket data_refresh broadcast sent (market close)")
+                    except Exception as e:
+                        logger.warning(f"Failed to broadcast data refresh: {e}")
                 else:
                     logger.warning(f"Data refresh completed with errors: {results['errors']}")
                 
@@ -493,6 +509,16 @@ class SchedulerService:
 
                 if results['success']:
                     logger.info(f"Hourly refresh completed successfully ({now_est.strftime('%I:%M %p EST')})")
+                    # Notify frontend via WebSocket to refresh data
+                    try:
+                        from jutsu_engine.api.websocket import broadcast_data_refresh
+                        await broadcast_data_refresh({
+                            'refresh_type': 'hourly',
+                            'strategies': strategy_ids,
+                        })
+                        logger.debug("WebSocket data_refresh broadcast sent")
+                    except Exception as e:
+                        logger.warning(f"Failed to broadcast data refresh: {e}")
                 else:
                     logger.warning(f"Hourly refresh completed with errors: {results['errors']}")
 
@@ -943,15 +969,23 @@ class SchedulerService:
     def get_next_run_time(self) -> Optional[str]:
         """Get the next scheduled run time."""
         if self._scheduler is None or not self.state.enabled:
+            # Early return if scheduler not ready
+            logger.debug(f"get_next_run_time: scheduler not initialized or disabled")
             return None
         
         if not self._scheduler.running:
+            logger.debug(f"get_next_run_time: scheduler not running")
             return None
 
         try:
             job = self._scheduler.get_job(self._job_id)
+            logger.debug(f"get_next_run_time: job={job}, job_id={self._job_id}")
             if job and hasattr(job, 'next_run_time') and job.next_run_time:
                 return job.next_run_time.isoformat()
+            elif job:
+                logger.warning(f"Job {self._job_id} exists but has no next_run_time: {job}")
+            else:
+                logger.warning(f"Job {self._job_id} not found in scheduler")
         except AttributeError as e:
             # Job object is corrupted - this indicates jobstore issues
             logger.warning(f"Failed to get next run time (corrupted job): {e}")
@@ -1118,11 +1152,24 @@ _scheduler_service: Optional[SchedulerService] = None
 
 
 def get_scheduler_service() -> SchedulerService:
-    """Get the singleton scheduler service instance."""
+    """
+    Get the singleton scheduler service instance.
+    
+    Ensures the scheduler is started if the service exists but the scheduler
+    is not running. This handles the case where uvicorn reload kills the worker
+    process, resetting the module-level singleton, but the scheduler needs to
+    be restarted in the new worker.
+    """
     global _scheduler_service
 
     if _scheduler_service is None:
         from jutsu_engine.api.dependencies import load_config
         _scheduler_service = SchedulerService(config_loader=load_config)
+    
+    # Ensure scheduler is started (handles uvicorn reload scenario)
+    if _scheduler_service._scheduler is None or not _scheduler_service._scheduler.running:
+        logger.info("Scheduler not running, starting it now...")
+        _scheduler_service.start()
+        logger.info("Scheduler started successfully")
 
     return _scheduler_service

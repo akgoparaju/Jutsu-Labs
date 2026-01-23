@@ -268,3 +268,17 @@ async def broadcast_error(error_message: str):
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "message": error_message
     })
+
+
+async def broadcast_data_refresh(refresh_data: dict = None):
+    """
+    Broadcast data refresh event.
+
+    Called after hourly refresh completes to notify frontend
+    to invalidate cached queries and fetch fresh data.
+    """
+    await manager.broadcast({
+        "type": "data_refresh",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "data": refresh_data or {}
+    })

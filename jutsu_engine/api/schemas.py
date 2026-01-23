@@ -298,12 +298,16 @@ class SchedulerStatus(BaseModel):
     execution_time_est: str = Field(..., description="Human-readable EST time (e.g., '09:45 AM EST')")
     next_run: Optional[str] = Field(None, description="Next scheduled run (ISO format)")
     next_refresh: Optional[str] = Field(None, description="Next market close refresh (ISO format)")
+    next_hourly_refresh: Optional[str] = Field(None, description="Next hourly data refresh (ISO format)")
     last_run: Optional[str] = Field(None, description="Last execution time (ISO format)")
     last_run_status: Optional[str] = Field(None, description="Last run status: success, failed, skipped")
     last_error: Optional[str] = Field(None, description="Error message if last run failed")
     run_count: int = Field(0, description="Total number of scheduled runs")
     is_running: bool = Field(False, description="Whether a job is currently executing")
     is_running_refresh: bool = Field(False, description="Whether data refresh is running")
+    is_running_hourly_refresh: bool = Field(False, description="Whether hourly refresh is running")
+    scheduler_running: bool = Field(False, description="Whether the scheduler process is running")
+    scheduler_healthy: bool = Field(False, description="Whether the scheduler is healthy")
     valid_execution_times: List[str] = Field(
         default_factory=list,
         description="List of valid execution time keys"

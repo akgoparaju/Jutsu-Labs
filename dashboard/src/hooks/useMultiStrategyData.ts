@@ -46,7 +46,7 @@ export function useMultiStrategyData<T>(
       queryKey: [queryKeyBase, id],
       queryFn: () => fetchFn(id),
       enabled,
-      staleTime: 5 * 60 * 1000, // 5 minutes
+      staleTime: 5 * 60 * 1000, // 5 minutes - data refreshed via WebSocket push
       refetchOnWindowFocus: false,
     })),
   })
