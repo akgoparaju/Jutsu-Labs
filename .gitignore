@@ -97,8 +97,13 @@ token.json
 
 # State backups (local only)
 state/backups/
+state/**/backups/
 state/state.json
 state/scheduler_state.json
 state/*.db
 state/*.sqlite
 claudedocs/
+
+# One-off audit/fix scripts (not part of codebase)
+scripts/audit_*.py
+scripts/fix_*.py
