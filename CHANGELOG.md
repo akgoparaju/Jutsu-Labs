@@ -1,3 +1,46 @@
+#### **Fix: Position Query Missing strategy_id Filter (CRITICAL)** (2026-01-23)
+
+Fixed critical bug causing cross-strategy position contamination and data corruption:
+
+**Symptom**: v3.5d dashboard showed $11,192 equity (wrong) instead of ~$9,979 (correct). Daily return showed impossible 14.14%.
+
+**Root Cause**: Scheduler scripts loaded positions without filtering by `strategy_id`:
+```python
+# BUG: Loads ALL positions, not just current strategy
+db_positions = db_session.query(Position).filter(
+    Position.mode == 'offline_mock'
+).all()  # Returns v3_5b AND v3_5d positions!
+```
+
+When v3_5d scheduler ran, it loaded v3_5b's QQQ=13 position, mixed with v3_5d's data, then saved corrupted state back.
+
+**Evidence Chain**:
+- Snapshot 262 (9:14 AM): $9,978.95, QQQ=11 ✅ Correct
+- Snapshot 266 (12:17 PM): $11,189.60, QQQ=12 ❌ Corrupted (QQQ jumped back to 12)
+- Position table showed QQQ=12 (contaminated from v3_5b processing)
+
+**Fix Applied**:
+```python
+# FIXED: Filter by strategy_id to isolate strategy data
+db_positions = db_session.query(Position).filter(
+    Position.mode == 'offline_mock',
+    Position.strategy_id == strategy_id  # ← CRITICAL: Added filter
+).all()
+```
+
+**Files Modified**:
+- `scripts/daily_multi_strategy_run.py` (lines 328-335) - Multi-strategy scheduler
+- `scripts/daily_dry_run.py` (lines 374-391) - Single-strategy scheduler
+
+**Data Fixes Applied**:
+- Position table: v3_5d QQQ corrected from 12 → 10
+- Deleted corrupted snapshots: IDs 266, 268, 270
+
+**Why This Was a Regression**:
+Previous fix (v3_5d_integrity_fix) only corrected the data but not the code. This code bug caused the same corruption pattern to recur when scheduler ran again.
+
+---
+
 #### **Fix: Scheduler Status and UI Auto-Refresh** (2026-01-23)
 
 Fixed multiple issues preventing hourly data refresh from working on the UI:

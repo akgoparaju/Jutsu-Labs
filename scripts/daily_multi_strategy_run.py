@@ -326,13 +326,14 @@ def run_single_strategy(
         db_session = Session()
         
         try:
-            # Query positions - filter by mode (strategy_id filtering for positions is Phase 2)
+            # Query positions for this specific strategy
+            # BUG FIX (2026-01-23): Must filter by strategy_id to prevent position collision
+            # between multiple strategies. Previously loaded all positions, causing v3_5d to
+            # read v3_5b's position counts and corrupt data.
             db_positions = db_session.query(Position).filter(
-                Position.mode == 'offline_mock'
+                Position.mode == 'offline_mock',
+                Position.strategy_id == strategy_id
             ).all()
-            
-            # TODO (Phase 2): Filter by strategy_id when Position model is updated
-            # For now, each strategy shares position table but has isolated snapshots/trades
             
             if db_positions:
                 current_positions = {p.symbol: p.quantity for p in db_positions}

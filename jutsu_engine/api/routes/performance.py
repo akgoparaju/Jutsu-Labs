@@ -208,26 +208,33 @@ async def get_performance(
 
         max_drawdown = float(max_dd_result[0]) if max_dd_result and max_dd_result[0] else None
 
-        # Calculate Sharpe Ratio from daily returns
+        # Calculate Sharpe Ratio from equity-based daily returns
         # Sharpe = (Mean Return - Risk Free Rate) / Std Dev of Returns
         # Using annualized Sharpe with risk-free rate ≈ 0
-        # IMPORTANT: Deduplicate to one snapshot per day (latest) to avoid skewing metrics
+        # FIX (2026-01-23): Calculate returns from equity changes, not stored daily_return
+        # The stored daily_return values are inconsistent due to multiple snapshot sources
         sharpe_ratio = None
         if history:
             import math
-            # Deduplicate: take latest snapshot per day for accurate daily returns
+            # Deduplicate: take latest snapshot per day for equity-based return calculation
             daily_snapshots = {}
             for snap in history:
-                if snap.daily_return is not None and snap.timestamp:
+                if snap.total_equity is not None and snap.timestamp:
                     day_key = snap.timestamp.date()
                     # Keep the latest snapshot for each day
                     if day_key not in daily_snapshots or snap.timestamp > daily_snapshots[day_key].timestamp:
                         daily_snapshots[day_key] = snap
-            
-            daily_returns = [
-                float(snap.daily_return)
-                for snap in daily_snapshots.values()
-            ]
+
+            # Sort by date and calculate returns from equity changes
+            sorted_days = sorted(daily_snapshots.keys())
+            daily_returns = []
+            for i in range(1, len(sorted_days)):
+                prev_equity = float(daily_snapshots[sorted_days[i-1]].total_equity)
+                curr_equity = float(daily_snapshots[sorted_days[i]].total_equity)
+                if prev_equity > 0:
+                    daily_return = (curr_equity - prev_equity) / prev_equity
+                    daily_returns.append(daily_return)
+
             if len(daily_returns) >= 2:
                 mean_return = sum(daily_returns) / len(daily_returns)
                 variance = sum((r - mean_return) ** 2 for r in daily_returns) / (len(daily_returns) - 1)

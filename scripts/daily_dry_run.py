@@ -384,10 +384,19 @@ def main(check_freshness: bool = False):
         Session = sessionmaker(bind=engine)
         db_session = Session()
 
+        # Derive strategy_id from config name (e.g., Hierarchical_Adaptive_v3_5b -> v3_5b)
+        strategy_name = strategy_config['name']
+        strategy_id = strategy_name.replace('Hierarchical_Adaptive_', '')
+        logger.info(f"  Strategy ID for position lookup: {strategy_id}")
+
         try:
-            # Query positions table for offline_mock mode
+            # Query positions for this specific strategy
+            # BUG FIX (2026-01-23): Must filter by strategy_id to prevent position collision
+            # between multiple strategies. Previously loaded all positions, causing strategies
+            # to read each other's position counts and corrupt data.
             db_positions = db_session.query(Position).filter(
-                Position.mode == 'offline_mock'
+                Position.mode == 'offline_mock',
+                Position.strategy_id == strategy_id
             ).all()
 
             if db_positions:
