@@ -1,3 +1,62 @@
+#### **Fix: Trade History Strategy Filter Not Working** (2026-01-23)
+
+Fixed Trade History page showing wrong strategy when filtering:
+
+**Symptom**: Selecting "v3.5d" in Strategy dropdown showed v3.5b trades
+
+**Root Cause**: API endpoint returned `strategy_id: null` for all trades despite database having correct values. The `TradeRecord` Pydantic model construction in `trades.py` was missing `strategy_id=trade.strategy_id` field mapping.
+
+**Files Modified**:
+- `jutsu_engine/api/routes/trades.py` (3 locations):
+  - `get_trades` endpoint (line 138): Added `strategy_id=trade.strategy_id`
+  - `get_trade` endpoint (line 314): Added `strategy_id=trade.strategy_id`
+  - CSV export: Added `strategy_id` to header and data rows
+
+**Verification**: API now returns correct `strategy_id` ("v3_5d", "v3_5b") and UI filter works correctly.
+
+---
+
+#### **Fix: v3.5d Daily Return Showing 2207%** (2026-01-23)
+
+Fixed unrealistic daily return calculation for v3.5d strategy:
+
+**Symptom**: v3.5d showed +2207% daily return after corrupted snapshot fix
+
+**Root Cause**: Snapshot ID 262 calculated daily_return using corrupted previous snapshot ($459.51) instead of correct previous value ($9,805.88)
+
+**Fix Applied**:
+```sql
+-- Corrected calculation: (10603.27 - 9805.88) / 9805.88 * 100 = 8.13%
+UPDATE performance_snapshots SET daily_return = 8.131754 WHERE id = 262;
+```
+
+---
+
+#### **Fix: Database Schema & Corrupted v3.5d Data** (2026-01-23)
+
+Fixed two database issues causing Dashboard errors:
+
+**1. Configuration Page 500 Error**
+- **Root Cause**: `config_overrides` table missing `strategy_id` column (added in v2.0.0 code, but production DB never migrated)
+- **Effect**: `/api/config` endpoint returned 500 Internal Server Error; scheduler DB override check failed
+- **Fix Applied**: Added `strategy_id` column with default 'v3_5b' and created performance index
+
+**2. v3.5d Dashboard Showing Wrong Data**
+- **Symptom**: v3.5d showed $460 equity, -95.40% return, N/A regime (should be $10,603, +6%, Cell 3)
+- **Root Cause**: Corrupted performance_snapshots rows (IDs 258, 260) saved at 07:15 and 08:15 AM when scheduler was misconfigured
+- **Fix Applied**: Deleted 2 corrupted snapshot rows
+
+**Database Changes Applied**:
+```sql
+ALTER TABLE config_overrides ADD COLUMN IF NOT EXISTS strategy_id VARCHAR(50) DEFAULT 'v3_5b';
+CREATE INDEX idx_config_override_active ON config_overrides(parameter_name, strategy_id, is_active);
+DELETE FROM performance_snapshots WHERE id IN (258, 260);
+```
+
+**Action Required**: Refresh dashboard to see corrected v3.5d data.
+
+---
+
 #### **Fix: Scheduler Execution Time and Strategy Import Bug** (2026-01-23)
 
 Fixed two critical issues preventing scheduler from running correctly:

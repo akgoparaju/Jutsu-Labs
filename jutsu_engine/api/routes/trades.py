@@ -135,6 +135,7 @@ async def get_trades(
                 z_score=float(trade.z_score) if trade.z_score else None,
                 reason=trade.reason,
                 mode=trade.mode,
+                strategy_id=trade.strategy_id,
             ))
 
         return TradeListResponse(
@@ -224,6 +225,7 @@ async def export_trades(
             'z_score',
             'reason',
             'mode',
+            'strategy_id',
         ])
 
         # Write data rows
@@ -246,6 +248,7 @@ async def export_trades(
                 float(trade.z_score) if trade.z_score else '',
                 trade.reason or '',
                 trade.mode,
+                trade.strategy_id or '',
             ])
 
         # Generate filename
@@ -308,6 +311,7 @@ async def get_trade(
             z_score=float(trade.z_score) if trade.z_score else None,
             reason=trade.reason,
             mode=trade.mode,
+            strategy_id=trade.strategy_id,
         )
 
     except HTTPException:
