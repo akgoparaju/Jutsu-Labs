@@ -875,7 +875,8 @@ function PerformanceV2() {
                 annualized: multiPeriodMetrics[selectedStrategies[0]]?.baselineAnnualized,
                 sharpe: multiPeriodMetrics[selectedStrategies[0]]?.baselineSharpe,
                 maxDrawdown: multiPeriodMetrics[selectedStrategies[0]]?.baselineMaxDrawdown,
-                totalEquity: undefined,
+                // Show baseline (QQQ) total equity from latest snapshot
+                totalEquity: multiPerformanceData?.[selectedStrategies[0]]?.history?.slice(-1)[0]?.baseline_value,
               }}
             />
           </div>
@@ -925,7 +926,10 @@ function PerformanceV2() {
                     strategyStyles={strategyStyles}
                     format="currency"
                     higherIsBetter={true}
-                    baselineValue={undefined}
+                    baselineValue={
+                      // Show baseline (QQQ) total equity from latest snapshot
+                      multiPerformanceData?.[selectedStrategies[0]]?.history?.slice(-1)[0]?.baseline_value
+                    }
                     strategyOrder={selectedStrategies}
                   />
                   <ComparisonRow

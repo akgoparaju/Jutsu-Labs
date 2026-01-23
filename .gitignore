@@ -102,6 +102,7 @@ state/state.json
 state/scheduler_state.json
 state/*.db
 state/*.sqlite
+state/strategies/*/state.json
 claudedocs/
 
 # One-off audit/fix scripts (not part of codebase)
