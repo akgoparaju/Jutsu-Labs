@@ -3,10 +3,13 @@
 Fixed two critical issues preventing scheduler from running correctly:
 
 **1. Wrong Scheduler Execution Time**
-- **Root Cause**: Database override (`config_overrides` table) had `execution_time='close'` active since Dec 2025
+- **Root Cause**: Docker volume-mounted config (`/Volumes/appdata/jutsu/config/live_trading_config.yaml`) had stale `execution_time: "close"` value from before Dec 12, 2025
+- **Why It Happened**: When `config/live_trading_config.yaml` was changed from "close" to "15min_after_open" in commit `95ef95e` (Dec 12, 2025), the Docker volume mount was never updated
 - **Effect**: Scheduler ran at 4:00 PM EST instead of 9:45 AM EST (15 mins after market open)
-- **Fix**: Deactivated the database override so YAML config takes precedence
-- **Database Change**: `UPDATE config_overrides SET is_active=FALSE WHERE parameter_name='execution_time'`
+- **Additional Finding**: DB override check failed due to missing `strategy_id` column (added in v2.0.0), causing fallback to the stale YAML config
+- **Fix Applied**: Updated `/Volumes/appdata/jutsu/config/live_trading_config.yaml`:
+  - `execution_time`: "close" → "15min_after_open"
+  - `vol_baseline_window`: 160 → 200
 
 **2. Strategy Import Error: "'module' object is not callable"**
 - **Root Cause**: Line 366 imported modules instead of classes:
