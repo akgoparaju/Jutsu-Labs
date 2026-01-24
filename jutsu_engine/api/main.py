@@ -52,6 +52,7 @@ from jutsu_engine.api.routes import (
     invitations_router,
     backtest_router,
     strategies_router,
+    daily_performance_v2_router,
 )
 
 # ==============================================================================
@@ -475,6 +476,7 @@ def create_app(
     app.include_router(invitations_router)  # Invitation acceptance (public)
     app.include_router(backtest_router)  # Backtest results display
     app.include_router(strategies_router)  # Live trading strategies management
+    app.include_router(daily_performance_v2_router)  # v2 Daily performance (EOD finalized)
 
     # WebSocket endpoint for live updates
     @app.websocket("/ws")

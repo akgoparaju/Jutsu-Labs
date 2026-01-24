@@ -1,3 +1,371 @@
+#### **Feature: EOD Daily Performance Phase 6 - Corner Case Handling & v2 API** (2026-01-23)
+
+Implemented Phase 6 (Corner Case Handling) of the EOD Daily Performance architecture - helper functions for edge cases and v2 API endpoints with fallback behavior.
+
+**Helper Functions Added** (`jutsu_engine/jobs/eod_finalization.py`):
+- `handle_first_day()` - Initialize first trading day with proper defaults (daily_return=0, is_first_day=True)
+- `handle_data_gap()` - Structured logging for data gaps at appropriate levels (DEBUG/INFO/WARNING)
+- `log_edge_case()` - Generic edge case logging with structured format and case types
+- `get_latest_daily_performance()` - API fallback logic returning previous day if today not finalized
+- `get_eod_finalization_status()` - EOD job status for a specific date
+
+**v2 API Endpoints** (`jutsu_engine/api/routes/daily_performance_v2.py` - new file ~350 lines):
+- `GET /api/v2/performance/{strategy_id}/daily` - Pre-computed KPIs with fallback behavior
+- `GET /api/v2/performance/{strategy_id}/daily/history` - Historical daily records
+- `GET /api/v2/performance/comparison` - Multi-strategy comparison with shared baseline
+- `GET /api/v2/performance/eod-status/{date}` - EOD finalization status for specific date
+- `GET /api/v2/performance/eod-status/today` - Today's EOD status
+
+**Key Features**:
+- **Fallback Behavior**: Returns previous day with `is_finalized=False` before EOD completes
+- **Structured Logging**: Edge case types (FIRST_DAY, DATA_GAP, NO_SNAPSHOT, STRATEGY_MISSING, etc.)
+- **Baseline Comparison**: Includes baseline data (QQQ) for strategy comparison
+- **EOD Status Endpoints**: Monitor finalization progress and completion
+
+**Files Created**:
+- `jutsu_engine/api/routes/daily_performance_v2.py` (new)
+
+**Files Modified**:
+- `jutsu_engine/jobs/eod_finalization.py` (added corner case helper functions)
+- `jutsu_engine/jobs/__init__.py` (added exports for new functions)
+- `jutsu_engine/api/routes/__init__.py` (added v2 router export)
+- `jutsu_engine/api/main.py` (included v2 router)
+- `claudedocs/eod_daily_performance_workflow.md` (marked Phase 6 complete)
+
+---
+
+#### **Feature: EOD Daily Performance Phase 5 - EOD Finalization Job** (2026-01-23)
+
+Implemented Phase 5 (EOD Finalization Job) of the EOD Daily Performance architecture - scheduled job for daily KPI calculation with failure recovery.
+
+**Module Files Created**:
+
+| File | Purpose | Lines |
+|------|---------|-------|
+| `jutsu_engine/jobs/__init__.py` | Package initialization with exports | ~25 |
+| `jutsu_engine/jobs/eod_finalization.py` | Main EOD finalization module | ~600 |
+
+**Key Functions** (`eod_finalization.py`):
+- `run_eod_finalization(target_date)` - Main orchestration, processes all strategies and baselines
+- `run_eod_finalization_with_recovery()` - Detects missed trading days and auto-backfills
+- `process_strategy_eod(db, strategy_id, mode, trading_date)` - Process individual strategy with incremental KPIs
+- `process_baseline_eod(db, symbol, mode, trading_date)` - Process baseline with deduplication
+- `monitor_eod_health()` - Health check for alerting and monitoring
+
+**Scheduler Integration** (`jutsu_engine/api/scheduler.py`):
+- Added `_eod_finalization_job_id` and `_is_running_eod_finalization` state tracking
+- EOD job at 4:15 PM EST via CronTrigger (Mon-Fri)
+- Half-day job at 1:15 PM EST with `is_half_day()` self-check
+- `trigger_eod_finalization(target_date)` for manual triggers
+- `_get_next_eod_finalization_time()` helper for status API
+- `get_status()` includes `is_running_eod_finalization` and `next_eod_finalization`
+
+**Key Features**:
+- **UPSERT Pattern**: Uses `pg_insert().on_conflict_do_update()` for safe re-runs
+- **Baseline Deduplication**: One row per symbol per date (not per strategy)
+- **First-Day Handling**: Detects new strategies via `initialize_kpi_state()`
+- **Data Gap Detection**: Calculates `days_since_previous` from trading calendar
+- **Job Status Tracking**: EODJobStatus records with progress_pct and duration
+- **Failure Recovery**: Auto-detects missed days via `days_since_last_trading_day()`
+- **Half-Day Support**: Separate job at 1:15 PM that self-checks via `is_half_day()`
+- **Race Condition Prevention**: Database-level constraints via unique key
+
+**APScheduler Configuration**:
+```python
+# 4:15 PM EST for normal market close
+CronTrigger(hour=16, minute=15, day_of_week='mon-fri', timezone=EASTERN)
+
+# 1:15 PM EST for half-days
+CronTrigger(hour=13, minute=15, day_of_week='mon-fri', timezone=EASTERN)
+
+# Job options: misfire_grace_time=3600, coalesce=True, max_instances=1
+```
+
+**Files Created**:
+- `jutsu_engine/jobs/__init__.py` (new)
+- `jutsu_engine/jobs/eod_finalization.py` (new)
+
+**Files Modified**:
+- `jutsu_engine/api/scheduler.py` (scheduler integration)
+- `claudedocs/eod_daily_performance_workflow.md` (Phase 5 marked complete)
+
+**Next Steps**: Phase 6 (Corner Case Handling), Phase 7 (API Migration)
+
+---
+
+#### **Fix: Backfill Scripts Database Connection & Type Errors** (2026-01-23)
+
+Fixed issues in Phase 4 backfill scripts that prevented execution.
+
+**Issues Fixed**:
+
+| Issue | Root Cause | Fix |
+|-------|------------|-----|
+| `no such table: performance_snapshots` | Scripts falling back to SQLite instead of PostgreSQL | Updated `get_database_url()` to load from `.env` with `dotenv` and `quote_plus` for password encoding |
+| `AttributeError: 'date' object has no attribute 'date'` | Calling `.date()` on `trading_date` which is already a `date` type | Removed redundant `.date()` calls |
+
+**Files Modified**:
+- `scripts/backfill_daily_performance.py`
+- `scripts/verify_kpis.py`
+
+**Verification**:
+- Backfill: 68 records created for 2 strategies ✅
+- Validation: All checks passed (Sharpe, cumulative return, gaps, HWM, incremental state) ✅
+
+---
+
+#### **Feature: EOD Daily Performance Phase 4 - Backfill System** (2026-01-23)
+
+Implemented Phase 4 (Backfill System) of the EOD Daily Performance architecture - scripts for historical data population and KPI validation.
+
+**Scripts Created**:
+
+| Script | Purpose | Lines |
+|--------|---------|-------|
+| `scripts/backfill_daily_performance.py` | Historical data backfill | ~600 |
+| `scripts/verify_kpis.py` | KPI validation & gap detection | ~400 |
+
+**Backfill Script Features** (`backfill_daily_performance.py`):
+- Strategy backfill from `performance_snapshots` table
+- Baseline backfill (QQQ, SPY) from same source
+- Dry-run mode for testing without database writes
+- Date range filtering with `--start` and `--end`
+- Uses Welford's algorithm for incremental KPI state
+- UPSERT pattern for idempotent operations
+- MAX() aggregation for multiple snapshots per day
+
+**CLI Usage**:
+```bash
+# Dry-run all strategies
+python scripts/backfill_daily_performance.py --all --dry-run
+
+# Backfill specific strategy with baselines
+python scripts/backfill_daily_performance.py --strategy 1 --include-baselines
+
+# Backfill date range (live mode)
+python scripts/backfill_daily_performance.py --strategy 1 --mode live --start 2025-01-01
+
+# Validate only (no backfill)
+python scripts/backfill_daily_performance.py --all --validate-only
+```
+
+**Validation Script Features** (`scripts/verify_kpis.py`):
+- Sharpe ratio verification (expected vs actual comparison)
+- Cumulative return validation
+- Data gap detection using trading calendar
+- High water mark consistency checks
+- Incremental state integrity validation
+- Full recalculation comparison mode
+
+**CLI Usage**:
+```bash
+# Verify all strategies
+python scripts/verify_kpis.py --all --verbose
+
+# Verify with expected Sharpe ratio
+python scripts/verify_kpis.py --strategy 1 --expected-sharpe 0.82
+
+# Full recalculation comparison
+python scripts/verify_kpis.py --strategy 1 --recalculate
+```
+
+**Key Implementation Details**:
+- Handles deduplication for baselines (one row per symbol per date)
+- Excludes non-trading days from gap detection
+- Validates incremental state (mean_return, m2, trading_days_count)
+- Tolerance-based comparisons for floating-point KPIs
+- Detailed logging with summary statistics
+
+**Files Created**:
+- `scripts/backfill_daily_performance.py` (new)
+- `scripts/verify_kpis.py` (new)
+
+**Files Modified**:
+- `claudedocs/eod_daily_performance_workflow.md` (Phase 4 marked complete)
+
+**Next Steps**: Phase 5 (EOD Finalization Job), Phase 6 (API Endpoint)
+
+---
+
+#### **Feature: EOD Daily Performance Phase 3 - Trading Calendar** (2026-01-23)
+
+Implemented Phase 3 (Infrastructure) of the EOD Daily Performance architecture - trading calendar module for NYSE calendar integration with half-day support.
+
+**Module**: `jutsu_engine/utils/trading_calendar.py`
+- Uses `zoneinfo.ZoneInfo` for timezone handling (Python 3.9+ standard library)
+- Caches NYSE calendar at module level for efficiency
+- All returned datetimes are timezone-aware (Eastern Time)
+- EOD trigger time is market close + 15 minutes
+
+**Functions Implemented**:
+| Function | Description | Return Type |
+|----------|-------------|-------------|
+| `is_trading_day` | Check if NYSE trading day | bool |
+| `get_market_close_time` | 4 PM normal, 1 PM half-day | datetime (ET) |
+| `is_half_day` | Detect early close days | bool |
+| `get_trading_date` | Current date in Eastern Time | date |
+| `get_eod_trigger_time` | Market close + 15 min | datetime (ET) |
+| `get_trading_days_between` | List of trading days in range | List[date] |
+| `get_previous_trading_day` | Previous NYSE trading day | date |
+| `get_next_trading_day` | Next NYSE trading day | date |
+| `count_trading_days_between` | Count of trading days | int |
+| `days_since_last_trading_day` | Gap detection helper | int |
+
+**Key Features**:
+- Weekend detection (Saturday, Sunday): ✅
+- Holiday detection (Thanksgiving, Christmas): ✅
+- Half-day close time (1:00 PM): ✅
+- Normal close time (4:00 PM): ✅
+- EOD trigger times (close + 15 min): ✅
+- Trading days exclusion of holidays: ✅
+
+**Verification**:
+- Day after Thanksgiving (2025-11-28) correctly detects 1:00 PM close
+- Thanksgiving (2025-11-27) correctly detected as non-trading day
+- Trading days between 2025-11-24 and 2025-11-28: 4 days (excluding Thanksgiving)
+
+**Files Created**:
+- `jutsu_engine/utils/trading_calendar.py` (new)
+
+**Files Modified**:
+- `claudedocs/eod_daily_performance_workflow.md` (Phase 3 marked complete)
+
+**Next Steps**: Phase 4 (Backfill System), Phase 5 (EOD Finalization Job)
+
+---
+
+#### **Feature: EOD Daily Performance Phase 2 - KPI Calculations** (2026-01-23)
+
+Implemented Phase 2 (Core Logic) of the EOD Daily Performance architecture - KPI calculation functions module.
+
+**Module**: `jutsu_engine/utils/kpi_calculations.py`
+- ~500 lines implementing all 10 KPI calculation functions
+- Uses `Decimal` for financial calculations, `float` for statistical ratios
+- Welford's algorithm for numerically stable O(1) incremental variance
+- FIFO trade matching for win rate calculation
+
+**Functions Implemented**:
+| Function | Description | Return Type |
+|----------|-------------|-------------|
+| `calculate_daily_return` | (today - yesterday) / yesterday | Decimal |
+| `calculate_cumulative_return` | (current - initial) / initial | Decimal |
+| `calculate_sharpe_ratio` | (mean - rf) / std * sqrt(252) | Optional[float] |
+| `calculate_sortino_ratio` | CAGR / downside_deviation | Optional[float] |
+| `calculate_calmar_ratio` | CAGR / abs(max_drawdown) | Optional[float] |
+| `calculate_max_drawdown` | min((equity - peak) / peak) | Optional[float] |
+| `calculate_volatility` | std(returns) * sqrt(252) | Optional[float] |
+| `calculate_cagr` | (final/initial)^(1/years) - 1 | Optional[float] |
+| `calculate_trade_statistics` | FIFO matching from trades list | Dict |
+| `update_kpis_incremental` | Welford's algorithm for O(1) updates | Dict |
+
+**Helper Functions**:
+- `initialize_kpi_state(initial_equity)` - Initial state for first trading day
+- `calculate_all_kpis_batch(daily_equities, initial_capital)` - Full batch calculation
+- `calculate_cagr_from_returns(total_return, years)` - CAGR from total return
+- `validate_sharpe_calculation(kpi_state)` - Debug validation helper
+
+**Edge Cases Handled**:
+- Division by zero (returns 0 or None appropriately)
+- Insufficient data (< 2 points returns None for ratios)
+- First day initialization (no previous record)
+- Negative equity/drawdown values
+
+**Verification**:
+- All 10 functions verified with test cases
+- Daily return: 10000 → 10100 = 0.01 (1%) ✅
+- Trade statistics FIFO: 2 trades, 50% win rate ✅
+- Incremental updates maintain running statistics ✅
+
+**Files Created**:
+- `jutsu_engine/utils/kpi_calculations.py` (new)
+
+**Files Modified**:
+- `claudedocs/eod_daily_performance_workflow.md` (Phase 2 marked complete)
+
+**Next Steps**: Phase 3 (Trading Calendar), Phase 4 (Backfill System)
+
+---
+
+#### **Feature: EOD Daily Performance Phase 1 - Schema & Models** (2026-01-23)
+
+Implemented Phase 1 (Foundation) of the EOD Daily Performance architecture to fix the Sharpe ratio bug (showing -4 instead of ~0.82).
+
+**Migration**: `alembic/versions/20260123_0001_add_daily_performance.py`
+- Revision: `20260123_0001`, down_revision: `20260122_0001`
+- Creates `daily_performance` table (40 columns) - single source of truth for EOD metrics
+- Creates `eod_job_status` table (10 columns) - job execution tracking
+- Idempotent with safe re-run checks (`_table_exists`, `_index_exists`)
+- PostgreSQL comments with SQLite fallback
+
+**daily_performance Table**:
+- Composite natural key: `(trading_date, entity_type, entity_id, mode)`
+- Portfolio state: `total_equity`, `cash`, `positions_value`, `positions_json`
+- Daily metrics: `daily_return`, `cumulative_return`, `drawdown`
+- Pre-computed KPIs: `sharpe_ratio`, `sortino_ratio`, `calmar_ratio`, `max_drawdown`, `volatility`, `cagr`
+- Strategy state: `strategy_cell`, `trend_state`, `vol_state`, `t_norm`, `z_score`
+- Trade statistics: `total_trades`, `winning_trades`, `losing_trades`, `win_rate`
+- Corner case handling: `days_since_previous`, `is_first_day`
+- Incremental KPI state (Welford's algorithm): `returns_sum`, `returns_sum_sq`, `downside_sum_sq`, `returns_count`
+
+**Indexes Created**:
+- `idx_daily_perf_date` (trading_date DESC)
+- `idx_daily_perf_entity` (entity_type, entity_id)
+- `idx_daily_perf_mode_entity` (mode, entity_type, entity_id, trading_date DESC)
+- `idx_daily_perf_strategy_date` - partial index for strategies only
+
+**Models**: `jutsu_engine/data/models.py`
+- `EntityTypeEnum`: 'strategy', 'baseline'
+- `EODJobStatusEnum`: 'running', 'completed', 'failed', 'partial'
+- `DailyPerformance`: 40-column model with `to_dict()`, `get_latest()`, `get_history()` methods
+- `EODJobStatus`: 10-column model with `is_complete`, `duration`, `progress_pct` properties
+
+**Files Modified**:
+- `alembic/versions/20260123_0001_add_daily_performance.py` (new)
+- `jutsu_engine/data/models.py` (added 2 models + 2 enums)
+- `claudedocs/eod_daily_performance_workflow.md` (Phase 1 marked complete)
+
+**Next Steps**: Phase 2 (KPI Calculations), Phase 3 (Trading Calendar)
+
+---
+
+#### **Doc: EOD Daily Performance Implementation Workflow** (2026-01-23)
+
+Created comprehensive implementation workflow document from the EOD Daily Performance Architecture v1.1.
+
+**Document**: `claudedocs/eod_daily_performance_workflow.md`
+
+**Workflow Structure**:
+- **9 Phases** with **54 discrete tasks**
+- **~8 days** critical path timeline
+- **12 parallel task groups** for optimization
+
+**Phase Summary**:
+1. **Foundation (Schema)**: Database migrations, SQLAlchemy models
+2. **Core Logic (KPIs)**: 10 calculation functions (Sharpe, Sortino, Calmar, etc.)
+3. **Infrastructure (Calendar)**: NYSE calendar, timezone handling, half-day support
+4. **Backfill System**: Historical data migration scripts
+5. **EOD Finalization Job**: Scheduler, recovery, race condition prevention
+6. **Corner Cases**: First-day handling, data gaps, API fallback
+7. **API Migration**: v2 endpoints, feature flags, backward compatibility
+8. **Testing**: Unit, integration, E2E tests
+9. **Deployment**: Staging, shadow mode, gradual rollout
+
+**Key Deliverables per Phase**:
+- SQL migrations for `daily_performance` and `eod_job_status` tables
+- `kpi_calculations.py` module with Welford's algorithm for O(1) updates
+- `trading_calendar.py` module with pandas_market_calendars integration
+- Backfill scripts with dry-run mode
+- APScheduler configuration (4:15 PM ET + half-day support)
+- v2 API endpoints with baseline comparison
+
+**Includes**:
+- Task dependency matrix
+- Risk register
+- Success criteria
+- Quick start commands
+
+---
+
 #### **Fix: Position Query Missing strategy_id Filter (CRITICAL)** (2026-01-23)
 
 Fixed critical bug causing cross-strategy position contamination and data corruption:

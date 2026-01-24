@@ -32,6 +32,7 @@ from jutsu_engine.api.routes.users import router as users_router
 from jutsu_engine.api.routes.invitations import router as invitations_router
 from jutsu_engine.api.routes.backtest import router as backtest_router
 from jutsu_engine.api.routes.strategies import router as strategies_router
+from jutsu_engine.api.routes.daily_performance_v2 import router as daily_performance_v2_router
 
 __all__ = [
     'auth_router',
@@ -48,4 +49,5 @@ __all__ = [
     'invitations_router',
     'backtest_router',
     'strategies_router',
+    'daily_performance_v2_router',
 ]

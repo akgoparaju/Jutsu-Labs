@@ -1,0 +1,461 @@
+"""
+Daily Performance API v2 Routes
+
+GET /api/v2/performance/{strategy_id}/daily - Get daily performance metrics
+GET /api/v2/performance/{strategy_id}/daily/history - Get historical daily metrics
+
+These endpoints use the pre-computed daily_performance table for fast, consistent
+KPI retrieval. Implements fallback behavior to return previous day's data if
+today's finalization has not yet occurred.
+
+Reference: claudedocs/eod_daily_performance_architecture.md Section 10
+Workflow: claudedocs/eod_daily_performance_workflow.md Phase 6 & 7
+"""
+
+import logging
+from datetime import datetime, timezone, timedelta, date as date_type
+from typing import Optional, List
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from sqlalchemy import desc, and_
+
+from jutsu_engine.api.dependencies import (
+    get_db,
+    get_engine_state,
+    verify_credentials,
+    EngineState,
+)
+from jutsu_engine.data.models import DailyPerformance
+from jutsu_engine.jobs.eod_finalization import (
+    get_latest_daily_performance,
+    get_eod_finalization_status,
+)
+from jutsu_engine.utils.trading_calendar import (
+    get_trading_date,
+    is_trading_day,
+    get_previous_trading_day,
+)
+
+logger = logging.getLogger('API.DAILY_PERFORMANCE_V2')
+
+router = APIRouter(prefix="/api/v2/performance", tags=["performance-v2"])
+
+
+# =============================================================================
+# Response Models
+# =============================================================================
+
+
+class BaselineData(BaseModel):
+    """Baseline performance data for comparison."""
+    symbol: str
+    total_equity: float
+    daily_return: Optional[float] = None
+    cumulative_return: Optional[float] = None
+    sharpe_ratio: Optional[float] = None
+    max_drawdown: Optional[float] = None
+
+
+class DailyPerformanceData(BaseModel):
+    """Daily performance metrics from daily_performance table."""
+    trading_date: str
+    total_equity: float
+    cash: Optional[float] = None
+    positions_value: Optional[float] = None
+    daily_return: float
+    cumulative_return: float
+    
+    # KPI metrics
+    sharpe_ratio: Optional[float] = None
+    sortino_ratio: Optional[float] = None
+    calmar_ratio: Optional[float] = None
+    max_drawdown: Optional[float] = None
+    volatility: Optional[float] = None
+    cagr: Optional[float] = None
+    
+    # Strategy state
+    strategy_cell: Optional[str] = None
+    trend_state: Optional[str] = None
+    vol_state: Optional[str] = None
+    
+    # Metadata
+    trading_days_count: int
+    is_first_day: bool = False
+    days_since_previous: int = 0
+
+
+class DailyPerformanceResponse(BaseModel):
+    """Response for GET /api/v2/performance/{strategy_id}/daily."""
+    strategy_id: str
+    mode: str
+    data: DailyPerformanceData
+    baseline: Optional[BaselineData] = None
+    
+    # Fallback indicators
+    is_finalized: bool
+    data_as_of: str
+    finalized_at: Optional[str] = None
+
+
+class DailyPerformanceHistoryResponse(BaseModel):
+    """Response for GET /api/v2/performance/{strategy_id}/daily/history."""
+    strategy_id: str
+    mode: str
+    count: int
+    history: List[DailyPerformanceData]
+    baseline_symbol: Optional[str] = None
+
+
+class EODStatusResponse(BaseModel):
+    """Response for EOD finalization status."""
+    date: str
+    finalized: bool
+    status: str
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    error: Optional[str] = None
+    progress_pct: Optional[float] = None
+
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+
+def _record_to_data(record: DailyPerformance) -> DailyPerformanceData:
+    """Convert DailyPerformance record to API response data."""
+    trading_date = (
+        record.trading_date.strftime('%Y-%m-%d')
+        if hasattr(record.trading_date, 'strftime')
+        else str(record.trading_date)
+    )
+    
+    return DailyPerformanceData(
+        trading_date=trading_date,
+        total_equity=float(record.total_equity),
+        cash=float(record.cash) if record.cash else None,
+        positions_value=float(record.positions_value) if record.positions_value else None,
+        daily_return=float(record.daily_return) if record.daily_return else 0.0,
+        cumulative_return=float(record.cumulative_return) if record.cumulative_return else 0.0,
+        sharpe_ratio=float(record.sharpe_ratio) if record.sharpe_ratio else None,
+        sortino_ratio=float(record.sortino_ratio) if record.sortino_ratio else None,
+        calmar_ratio=float(record.calmar_ratio) if record.calmar_ratio else None,
+        max_drawdown=float(record.max_drawdown) if record.max_drawdown else None,
+        volatility=float(record.volatility) if record.volatility else None,
+        cagr=float(record.cagr) if record.cagr else None,
+        strategy_cell=str(record.strategy_cell) if record.strategy_cell else None,
+        trend_state=str(record.trend_state) if record.trend_state else None,
+        vol_state=str(record.vol_state) if record.vol_state else None,
+        trading_days_count=int(record.trading_days_count) if record.trading_days_count else 1,
+        is_first_day=bool(record.is_first_day) if record.is_first_day else False,
+        days_since_previous=int(record.days_since_previous) if record.days_since_previous else 0,
+    )
+
+
+def _get_baseline_data(
+    db: Session,
+    baseline_symbol: str,
+    mode: str,
+    trading_date: date_type,
+) -> Optional[BaselineData]:
+    """Get baseline performance data for comparison."""
+    baseline_record = db.query(DailyPerformance).filter(
+        DailyPerformance.entity_type == 'baseline',
+        DailyPerformance.entity_id == baseline_symbol,
+        DailyPerformance.mode == mode,
+        DailyPerformance.trading_date == datetime.combine(trading_date, datetime.min.time()),
+    ).first()
+    
+    if not baseline_record:
+        # Try previous trading day
+        prev_date = get_previous_trading_day(trading_date)
+        baseline_record = db.query(DailyPerformance).filter(
+            DailyPerformance.entity_type == 'baseline',
+            DailyPerformance.entity_id == baseline_symbol,
+            DailyPerformance.mode == mode,
+            DailyPerformance.trading_date == datetime.combine(prev_date, datetime.min.time()),
+        ).first()
+    
+    if not baseline_record:
+        return None
+    
+    return BaselineData(
+        symbol=baseline_symbol,
+        total_equity=float(baseline_record.total_equity),
+        daily_return=float(baseline_record.daily_return) if baseline_record.daily_return else None,
+        cumulative_return=float(baseline_record.cumulative_return) if baseline_record.cumulative_return else None,
+        sharpe_ratio=float(baseline_record.sharpe_ratio) if baseline_record.sharpe_ratio else None,
+        max_drawdown=float(baseline_record.max_drawdown) if baseline_record.max_drawdown else None,
+    )
+
+
+# =============================================================================
+# API Endpoints
+# =============================================================================
+
+
+@router.get(
+    "/{strategy_id}/daily",
+    response_model=DailyPerformanceResponse,
+    summary="Get daily performance metrics",
+    description="""
+    Get pre-computed daily performance metrics from the daily_performance table.
+    
+    Fallback Behavior:
+    - If today's finalized row exists: Returns it with is_finalized=True
+    - If not (market still open): Returns yesterday's data with is_finalized=False
+    
+    The response includes:
+    - Pre-computed KPIs (Sharpe, Sortino, Calmar, etc.)
+    - Strategy state (regime cell, trend, volatility)
+    - Baseline comparison data
+    - Finalization status and timing
+    """
+)
+async def get_daily_performance(
+    strategy_id: str,
+    db: Session = Depends(get_db),
+    engine_state: EngineState = Depends(get_engine_state),
+    mode: Optional[str] = Query(None, description="Trading mode (defaults to engine state)"),
+    baseline_symbol: str = Query("QQQ", description="Baseline symbol for comparison"),
+    _auth: bool = Depends(verify_credentials),
+) -> DailyPerformanceResponse:
+    """
+    Get daily performance metrics for a strategy.
+    
+    Returns pre-computed KPIs from the daily_performance table.
+    Implements fallback to previous day if today's data is not yet finalized.
+    """
+    try:
+        effective_mode = mode or engine_state.mode
+        today = get_trading_date()
+        
+        # Get latest performance with fallback
+        record, is_finalized, data_as_of = get_latest_daily_performance(
+            db=db,
+            entity_type='strategy',
+            entity_id=strategy_id,
+            mode=effective_mode,
+            trading_date=today,
+            include_fallback=True,
+        )
+        
+        if record is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No daily performance data found for strategy '{strategy_id}'"
+            )
+        
+        # Convert record to response data
+        data = _record_to_data(record)
+        
+        # Get baseline comparison
+        effective_date = data_as_of if data_as_of else today
+        baseline = _get_baseline_data(db, baseline_symbol, effective_mode, effective_date)
+        
+        # Get finalization timestamp
+        finalized_at = None
+        if record.finalized_at:
+            finalized_at = record.finalized_at.isoformat()
+        
+        return DailyPerformanceResponse(
+            strategy_id=strategy_id,
+            mode=effective_mode,
+            data=data,
+            baseline=baseline,
+            is_finalized=is_finalized,
+            data_as_of=data_as_of.isoformat() if data_as_of else today.isoformat(),
+            finalized_at=finalized_at,
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting daily performance for {strategy_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get(
+    "/{strategy_id}/daily/history",
+    response_model=DailyPerformanceHistoryResponse,
+    summary="Get historical daily performance",
+    description="""
+    Get historical daily performance metrics for a strategy.
+    
+    Returns a list of daily performance records in descending date order.
+    Supports pagination via the `days` parameter.
+    """
+)
+async def get_daily_history(
+    strategy_id: str,
+    db: Session = Depends(get_db),
+    engine_state: EngineState = Depends(get_engine_state),
+    mode: Optional[str] = Query(None, description="Trading mode"),
+    days: int = Query(30, ge=1, le=365, description="Number of days of history"),
+    baseline_symbol: str = Query("QQQ", description="Baseline symbol"),
+    _auth: bool = Depends(verify_credentials),
+) -> DailyPerformanceHistoryResponse:
+    """
+    Get historical daily performance metrics.
+    
+    Returns records in descending date order (most recent first).
+    """
+    try:
+        effective_mode = mode or engine_state.mode
+        today = get_trading_date()
+        start_date = today - timedelta(days=days)
+        
+        # Query historical records
+        records = db.query(DailyPerformance).filter(
+            DailyPerformance.entity_type == 'strategy',
+            DailyPerformance.entity_id == strategy_id,
+            DailyPerformance.mode == effective_mode,
+            DailyPerformance.trading_date >= datetime.combine(start_date, datetime.min.time()),
+        ).order_by(
+            desc(DailyPerformance.trading_date)
+        ).all()
+        
+        # Convert to response data
+        history = [_record_to_data(r) for r in records]
+        
+        return DailyPerformanceHistoryResponse(
+            strategy_id=strategy_id,
+            mode=effective_mode,
+            count=len(history),
+            history=history,
+            baseline_symbol=baseline_symbol,
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting history for {strategy_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get(
+    "/comparison",
+    summary="Compare multiple strategies",
+    description="""
+    Compare daily performance across multiple strategies.
+    
+    Returns performance data for multiple strategies on the same trading date,
+    plus their shared baseline for comparison.
+    """
+)
+async def get_performance_comparison(
+    strategies: str = Query(..., description="Comma-separated strategy IDs"),
+    db: Session = Depends(get_db),
+    engine_state: EngineState = Depends(get_engine_state),
+    mode: Optional[str] = Query(None, description="Trading mode"),
+    baseline_symbol: str = Query("QQQ", description="Baseline symbol"),
+    _auth: bool = Depends(verify_credentials),
+) -> dict:
+    """
+    Compare performance across multiple strategies.
+    
+    All strategies are compared using data from the same trading date.
+    """
+    try:
+        effective_mode = mode or engine_state.mode
+        today = get_trading_date()
+        
+        strategy_ids = [s.strip() for s in strategies.split(',')]
+        
+        results = []
+        data_as_of = None
+        
+        for strategy_id in strategy_ids:
+            record, is_finalized, record_date = get_latest_daily_performance(
+                db=db,
+                entity_type='strategy',
+                entity_id=strategy_id,
+                mode=effective_mode,
+                trading_date=today,
+                include_fallback=True,
+            )
+            
+            if record:
+                results.append({
+                    'strategy_id': strategy_id,
+                    'data': _record_to_data(record).model_dump(),
+                    'is_finalized': is_finalized,
+                })
+                
+                # Use the oldest data_as_of for baseline matching
+                if data_as_of is None or (record_date and record_date < data_as_of):
+                    data_as_of = record_date
+            else:
+                results.append({
+                    'strategy_id': strategy_id,
+                    'data': None,
+                    'error': 'No data found',
+                })
+        
+        # Get baseline for comparison
+        baseline = None
+        if data_as_of:
+            baseline = _get_baseline_data(db, baseline_symbol, effective_mode, data_as_of)
+        
+        return {
+            'mode': effective_mode,
+            'data_as_of': data_as_of.isoformat() if data_as_of else None,
+            'strategies': results,
+            'baseline': baseline.model_dump() if baseline else None,
+        }
+        
+    except Exception as e:
+        logger.error(f"Error comparing strategies: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get(
+    "/eod-status/{date}",
+    response_model=EODStatusResponse,
+    summary="Get EOD finalization status",
+    description="Get the status of EOD finalization for a specific date."
+)
+async def get_eod_status(
+    date: str,
+    db: Session = Depends(get_db),
+    _auth: bool = Depends(verify_credentials),
+) -> EODStatusResponse:
+    """
+    Get EOD finalization status for a specific date.
+    
+    Returns whether finalization has completed, timing, and any errors.
+    """
+    try:
+        target_date = datetime.fromisoformat(date).date()
+        status = get_eod_finalization_status(db, target_date)
+        return EODStatusResponse(**status)
+        
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use ISO format (YYYY-MM-DD).")
+    except Exception as e:
+        logger.error(f"Error getting EOD status: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get(
+    "/eod-status/today",
+    response_model=EODStatusResponse,
+    summary="Get today's EOD finalization status",
+    description="Get the status of EOD finalization for today."
+)
+async def get_today_eod_status(
+    db: Session = Depends(get_db),
+    _auth: bool = Depends(verify_credentials),
+) -> EODStatusResponse:
+    """
+    Get today's EOD finalization status.
+    """
+    try:
+        today = get_trading_date()
+        status = get_eod_finalization_status(db, today)
+        return EODStatusResponse(**status)
+        
+    except Exception as e:
+        logger.error(f"Error getting today's EOD status: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")

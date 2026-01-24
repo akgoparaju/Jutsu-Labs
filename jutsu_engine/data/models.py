@@ -663,3 +663,303 @@ class UserInvitation(Base):
     def __repr__(self):
         status = "used" if self.accepted_at else "pending"
         return f"<UserInvitation(role={self.role}, status={status}, expires={self.expires_at})>"
+
+
+# ==============================================================================
+# EOD DAILY PERFORMANCE MODELS (Phase 1 - Foundation)
+# ==============================================================================
+
+
+class EntityTypeEnum(str, enum.Enum):
+    """Entity type enumeration for daily_performance table."""
+    STRATEGY = "strategy"
+    BASELINE = "baseline"
+
+
+class EODJobStatusEnum(str, enum.Enum):
+    """EOD job status enumeration."""
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    PARTIAL = "partial"
+
+
+class DailyPerformance(Base):
+    """
+    Authoritative end-of-day performance metrics.
+
+    Single source of truth for daily strategy and baseline performance.
+    One row per entity (strategy/baseline) per trading day per mode.
+    Pre-computed KPIs calculated at 4:15 PM ET via EOD finalization job.
+
+    This table fixes the Sharpe ratio bug (showing -4 instead of ~0.82) by:
+    - Calculating daily returns from equity changes (not stored daily_return values)
+    - Having exactly one row per day (not 5-13 snapshots)
+    - Pre-computing all KPIs at EOD instead of on-the-fly
+
+    Entity Types:
+        - 'strategy': Trading strategies (v3_5b, v3_5d, etc.)
+        - 'baseline': Buy-and-hold benchmarks (QQQ, SPY, etc.)
+
+    Corner Cases Handled:
+        - First day (cold start): is_first_day=True, daily_return=0
+        - Data gaps: days_since_previous > 1, warning logged
+        - Half-days: Triggered at 1:15 PM ET instead of 4:15 PM ET
+
+    Scalability:
+        - Incremental KPI state (returns_sum, etc.) enables O(1) daily updates
+        - Uses Welford's algorithm for numerically stable variance calculation
+
+    Reference: claudedocs/eod_daily_performance_architecture.md v1.1
+    """
+
+    __tablename__ = 'daily_performance'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Composite Natural Key
+    trading_date = Column(DateTime(timezone=False), nullable=False)  # DATE type - no time component
+    entity_type = Column(String(10), nullable=False)  # 'strategy' or 'baseline'
+    entity_id = Column(String(50), nullable=False)    # 'v3_5b', 'v3_5d', 'QQQ', etc.
+    mode = Column(String(20), nullable=False)         # 'offline_mock' or 'online_live'
+
+    # Portfolio State (End of Day)
+    total_equity = Column(Numeric(18, 6), nullable=False)
+    cash = Column(Numeric(18, 6), nullable=True)
+    positions_value = Column(Numeric(18, 6), nullable=True)
+    positions_json = Column(Text, nullable=True)  # JSON: [{symbol, quantity, value, weight}]
+
+    # Daily Metrics (Equity-Based) - CRITICAL: These are decimals, not percentages
+    # 0.01 = 1%, NOT 1.0 = 1%
+    daily_return = Column(Numeric(10, 6), nullable=False)     # (today - yesterday) / yesterday
+    cumulative_return = Column(Numeric(10, 6), nullable=False) # (today - initial) / initial
+    drawdown = Column(Numeric(10, 6), nullable=True)          # (equity - HWM) / HWM
+
+    # Pre-Computed KPIs (All-Time from Inception)
+    sharpe_ratio = Column(Numeric(10, 6), nullable=True)      # Annualized, risk-free rate = 0
+    sortino_ratio = Column(Numeric(10, 6), nullable=True)     # Downside deviation based
+    calmar_ratio = Column(Numeric(10, 6), nullable=True)      # CAGR / Max Drawdown
+    max_drawdown = Column(Numeric(10, 6), nullable=True)      # Maximum peak-to-trough decline
+    volatility = Column(Numeric(10, 6), nullable=True)        # Annualized standard deviation
+    cagr = Column(Numeric(10, 6), nullable=True)              # Compound Annual Growth Rate
+
+    # Strategy State (Strategies Only - NULL for baselines)
+    strategy_cell = Column(Integer, nullable=True)            # Current regime cell (1-6)
+    trend_state = Column(String(20), nullable=True)           # BullStrong, Sideways, BearStrong
+    vol_state = Column(String(10), nullable=True)             # Low, High
+
+    # Indicator Values (Strategies Only - NULL for baselines)
+    t_norm = Column(Numeric(10, 6), nullable=True)
+    z_score = Column(Numeric(10, 6), nullable=True)
+    sma_fast = Column(Numeric(18, 6), nullable=True)
+    sma_slow = Column(Numeric(18, 6), nullable=True)
+
+    # Trade Statistics (Strategies Only - NULL for baselines)
+    total_trades = Column(Integer, default=0, nullable=True)
+    winning_trades = Column(Integer, default=0, nullable=True)
+    losing_trades = Column(Integer, default=0, nullable=True)
+    win_rate = Column(Numeric(5, 2), nullable=True)           # winning_trades / total_trades * 100
+
+    # Baseline Reference (Strategies Only - which baseline to compare against)
+    baseline_symbol = Column(String(20), nullable=True)       # 'QQQ', 'SPY', etc.
+
+    # Metadata
+    initial_capital = Column(Numeric(18, 6), nullable=True)   # Starting capital for return calcs
+    high_water_mark = Column(Numeric(18, 6), nullable=True)   # Peak equity for drawdown calc
+    trading_days_count = Column(Integer, nullable=True)       # Number of trading days since inception
+
+    # Corner Case Handling (v1.1)
+    days_since_previous = Column(Integer, default=1, nullable=True)  # 1 = consecutive, >1 = gap
+    is_first_day = Column(Boolean, default=False, nullable=True)     # True for first trading day
+
+    # Incremental KPI State for O(1) updates (v1.1 - Welford's algorithm)
+    returns_sum = Column(Numeric(18, 8), nullable=True)       # Running sum of daily_returns
+    returns_sum_sq = Column(Numeric(18, 8), nullable=True)    # Running sum of daily_returns squared
+    downside_sum_sq = Column(Numeric(18, 8), nullable=True)   # Running sum of min(return, 0) squared
+    returns_count = Column(Integer, nullable=True)            # Count of returns (excludes first day)
+
+    finalized_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('trading_date', 'entity_type', 'entity_id', 'mode', name='uix_daily_perf'),
+        Index('idx_daily_perf_date', 'trading_date'),
+        Index('idx_daily_perf_entity', 'entity_type', 'entity_id'),
+        Index('idx_daily_perf_mode_entity', 'mode', 'entity_type', 'entity_id', 'trading_date'),
+    )
+
+    def to_dict(self) -> dict:
+        """
+        Convert to JSON-serializable dictionary for API responses.
+
+        Returns:
+            dict: All columns as JSON-serializable values
+        """
+        return {
+            'trading_date': self.trading_date.isoformat() if self.trading_date else None,
+            'entity_type': self.entity_type,
+            'entity_id': self.entity_id,
+            'mode': self.mode,
+            'total_equity': float(self.total_equity) if self.total_equity else None,
+            'cash': float(self.cash) if self.cash else None,
+            'positions_value': float(self.positions_value) if self.positions_value else None,
+            'daily_return': float(self.daily_return) if self.daily_return is not None else None,
+            'cumulative_return': float(self.cumulative_return) if self.cumulative_return is not None else None,
+            'drawdown': float(self.drawdown) if self.drawdown else None,
+            'sharpe_ratio': float(self.sharpe_ratio) if self.sharpe_ratio else None,
+            'sortino_ratio': float(self.sortino_ratio) if self.sortino_ratio else None,
+            'calmar_ratio': float(self.calmar_ratio) if self.calmar_ratio else None,
+            'max_drawdown': float(self.max_drawdown) if self.max_drawdown else None,
+            'volatility': float(self.volatility) if self.volatility else None,
+            'cagr': float(self.cagr) if self.cagr else None,
+            'strategy_cell': self.strategy_cell,
+            'trend_state': self.trend_state,
+            'vol_state': self.vol_state,
+            'total_trades': self.total_trades,
+            'winning_trades': self.winning_trades,
+            'losing_trades': self.losing_trades,
+            'win_rate': float(self.win_rate) if self.win_rate else None,
+            'baseline_symbol': self.baseline_symbol,
+            'trading_days_count': self.trading_days_count,
+            'days_since_previous': self.days_since_previous,
+            'is_first_day': self.is_first_day,
+            'finalized_at': self.finalized_at.isoformat() if self.finalized_at else None,
+        }
+
+    @classmethod
+    def get_latest(cls, session, entity_id: str, mode: str = 'offline_mock') -> 'DailyPerformance':
+        """
+        Get the latest daily performance record for an entity.
+
+        Args:
+            session: SQLAlchemy session
+            entity_id: Strategy ID or baseline symbol
+            mode: Trading mode (offline_mock or online_live)
+
+        Returns:
+            DailyPerformance: Latest record or None
+        """
+        from sqlalchemy import desc
+        return session.query(cls).filter(
+            cls.entity_id == entity_id,
+            cls.mode == mode
+        ).order_by(desc(cls.trading_date)).first()
+
+    @classmethod
+    def get_history(
+        cls,
+        session,
+        entity_id: str,
+        mode: str = 'offline_mock',
+        days: int = 30
+    ) -> list:
+        """
+        Get historical daily performance records.
+
+        Args:
+            session: SQLAlchemy session
+            entity_id: Strategy ID or baseline symbol
+            mode: Trading mode
+            days: Number of days of history (max 365)
+
+        Returns:
+            list[DailyPerformance]: Records in descending date order
+        """
+        from sqlalchemy import desc
+        days = min(days, 365)
+        return session.query(cls).filter(
+            cls.entity_id == entity_id,
+            cls.mode == mode
+        ).order_by(desc(cls.trading_date)).limit(days).all()
+
+    def __repr__(self):
+        return (
+            f"<DailyPerformance(date={self.trading_date}, entity={self.entity_id}, "
+            f"equity={self.total_equity}, sharpe={self.sharpe_ratio}, mode={self.mode})>"
+        )
+
+
+class EODJobStatus(Base):
+    """
+    EOD finalization job execution tracking.
+
+    Tracks the status of daily EOD finalization jobs for:
+    - Failure recovery (auto-backfill missed days)
+    - Progress monitoring (strategies_processed checkpoints)
+    - Alerting and health checks
+
+    Job Lifecycle:
+        1. Job starts: status='running', started_at set
+        2. Progress: strategies_processed incremented after each strategy
+        3. Success: status='completed', completed_at set
+        4. Failure: status='failed' or 'partial', error_message set
+
+    Recovery Logic:
+        - If 'running' for >1 hour: Consider as failed, retry
+        - If 'partial': Some strategies succeeded, retry failed ones
+        - If 'failed': Retry all with exponential backoff
+
+    Reference: claudedocs/eod_daily_performance_architecture.md Section 8.3
+    """
+
+    __tablename__ = 'eod_job_status'
+
+    job_date = Column(DateTime(timezone=False), primary_key=True)  # DATE type - trading day
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    status = Column(String(20), nullable=False)  # 'running', 'completed', 'failed', 'partial'
+
+    strategies_total = Column(Integer, nullable=True)
+    strategies_processed = Column(Integer, default=0, nullable=True)
+    baselines_total = Column(Integer, nullable=True)
+    baselines_processed = Column(Integer, default=0, nullable=True)
+
+    error_message = Column(Text, nullable=True)
+    retry_count = Column(Integer, default=0, nullable=True)
+
+    __table_args__ = (
+        Index('idx_eod_job_status', 'status', 'job_date'),
+    )
+
+    @property
+    def is_complete(self) -> bool:
+        """Check if job completed successfully."""
+        return self.status == 'completed'
+
+    @property
+    def duration(self):
+        """Calculate job duration."""
+        if self.started_at and self.completed_at:
+            return self.completed_at - self.started_at
+        return None
+
+    @property
+    def progress_pct(self) -> float:
+        """Calculate completion percentage."""
+        total = (self.strategies_total or 0) + (self.baselines_total or 0)
+        processed = (self.strategies_processed or 0) + (self.baselines_processed or 0)
+        if total == 0:
+            return 0.0
+        return (processed / total) * 100
+
+    def to_dict(self) -> dict:
+        """Convert to JSON-serializable dictionary."""
+        return {
+            'job_date': self.job_date.isoformat() if self.job_date else None,
+            'started_at': self.started_at.isoformat() if self.started_at else None,
+            'completed_at': self.completed_at.isoformat() if self.completed_at else None,
+            'status': self.status,
+            'strategies_total': self.strategies_total,
+            'strategies_processed': self.strategies_processed,
+            'baselines_total': self.baselines_total,
+            'baselines_processed': self.baselines_processed,
+            'error_message': self.error_message,
+            'retry_count': self.retry_count,
+            'progress_pct': self.progress_pct,
+            'duration_seconds': self.duration.total_seconds() if self.duration else None,
+        }
+
+    def __repr__(self):
+        return (
+            f"<EODJobStatus(date={self.job_date}, status={self.status}, "
+            f"progress={self.strategies_processed}/{self.strategies_total})>"
+        )

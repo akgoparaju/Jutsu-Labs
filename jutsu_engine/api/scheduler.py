@@ -22,7 +22,7 @@ Execution Time Mapping:
 import json
 import logging
 import asyncio
-from datetime import datetime, time, timezone, timedelta
+from datetime import datetime, date, time, timezone, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any, Callable
 from threading import Lock
@@ -217,9 +217,11 @@ class SchedulerService:
         self._refresh_job_id = 'market_close_refresh_job'  # Market close refresh job
         self._hourly_refresh_job_id = 'hourly_refresh_job'  # Hourly price refresh job
         self._token_check_job_id = 'token_expiration_check_job'  # Schwab token monitoring
+        self._eod_finalization_job_id = 'eod_finalization_job'  # EOD daily performance metrics
         self._is_running_job = False
         self._is_running_refresh = False  # Track refresh job state
         self._is_running_hourly_refresh = False  # Track hourly refresh state
+        self._is_running_eod_finalization = False  # Track EOD finalization state
         self._initialized = True
 
         logger.info("SchedulerService initialized")
@@ -644,6 +646,174 @@ class SchedulerService:
         except Exception as e:
             logger.warning(f"Failed to save notification state: {e}")
 
+    async def _execute_eod_finalization_job(self):
+        """
+        Execute the EOD finalization job at 4:15 PM EST.
+
+        Calculates daily performance metrics for all active strategies
+        and stores them in the daily_performance table. This fixes the
+        Sharpe ratio bug by using equity-based returns instead of stored values.
+
+        Reference: claudedocs/eod_daily_performance_architecture.md
+        Workflow: claudedocs/eod_daily_performance_workflow.md Phase 5
+        """
+        if self._is_running_eod_finalization:
+            logger.warning("EOD finalization job already running, skipping")
+            return
+
+        self._is_running_eod_finalization = True
+
+        try:
+            logger.info("=" * 60)
+            logger.info("EOD Finalization Job Starting (4:15 PM EST)")
+            logger.info("=" * 60)
+
+            # Check if it's a trading day
+            from jutsu_engine.live.market_calendar import is_trading_day
+
+            if not is_trading_day():
+                logger.info("Not a trading day - skipping EOD finalization")
+                return
+
+            # Check if it's a half-day (if so, skip - half-day job handles it)
+            from jutsu_engine.utils.trading_calendar import is_half_day, get_trading_date
+
+            trading_date = get_trading_date()
+            if is_half_day(trading_date):
+                logger.info("Half-day detected - skipping 4:15 PM job (1:15 PM job handles)")
+                return
+
+            try:
+                from jutsu_engine.jobs.eod_finalization import run_eod_finalization_with_recovery
+
+                # Run with recovery to catch any missed days
+                loop = asyncio.get_event_loop()
+                result = await run_eod_finalization_with_recovery()
+
+                if result['today_result'].get('success'):
+                    logger.info("EOD finalization completed successfully")
+                else:
+                    logger.warning(f"EOD finalization completed with issues: {result['today_result'].get('errors', [])}")
+
+                # Notify frontend via WebSocket
+                try:
+                    from jutsu_engine.api.websocket import broadcast_data_refresh
+                    await broadcast_data_refresh({
+                        'refresh_type': 'eod_finalization',
+                        'date': result['today_result'].get('date'),
+                    })
+                    logger.debug("WebSocket data_refresh broadcast sent (EOD finalization)")
+                except Exception as e:
+                    logger.warning(f"Failed to broadcast EOD finalization: {e}")
+
+            except Exception as e:
+                logger.error(f"EOD finalization job failed: {e}", exc_info=True)
+
+        finally:
+            self._is_running_eod_finalization = False
+
+    async def _execute_eod_finalization_halfday_job(self):
+        """
+        Execute the EOD finalization job at 1:15 PM EST for half-days.
+
+        Only runs if today is a half-day (early close). Normal days skip this.
+        """
+        if self._is_running_eod_finalization:
+            logger.warning("EOD finalization job already running, skipping half-day trigger")
+            return
+
+        try:
+            # Check if it's a trading day first
+            from jutsu_engine.live.market_calendar import is_trading_day
+
+            if not is_trading_day():
+                logger.debug("Not a trading day - skipping half-day EOD finalization")
+                return
+
+            # Check if it's actually a half-day
+            from jutsu_engine.utils.trading_calendar import is_half_day, get_trading_date
+
+            trading_date = get_trading_date()
+            if not is_half_day(trading_date):
+                logger.debug("Not a half-day - skipping 1:15 PM EOD finalization")
+                return
+
+            logger.info("=" * 60)
+            logger.info("EOD Finalization Job Starting (1:15 PM EST - Half-Day)")
+            logger.info("=" * 60)
+
+            self._is_running_eod_finalization = True
+
+            try:
+                from jutsu_engine.jobs.eod_finalization import run_eod_finalization_with_recovery
+
+                result = await run_eod_finalization_with_recovery()
+
+                if result['today_result'].get('success'):
+                    logger.info("EOD finalization (half-day) completed successfully")
+                else:
+                    logger.warning(f"EOD finalization (half-day) completed with issues: {result['today_result'].get('errors', [])}")
+
+                # Notify frontend via WebSocket
+                try:
+                    from jutsu_engine.api.websocket import broadcast_data_refresh
+                    await broadcast_data_refresh({
+                        'refresh_type': 'eod_finalization_halfday',
+                        'date': result['today_result'].get('date'),
+                    })
+                except Exception as e:
+                    logger.warning(f"Failed to broadcast EOD finalization: {e}")
+
+            except Exception as e:
+                logger.error(f"EOD finalization (half-day) failed: {e}", exc_info=True)
+
+        finally:
+            self._is_running_eod_finalization = False
+
+    async def trigger_eod_finalization(self, target_date: Optional[date] = None) -> Dict[str, Any]:
+        """
+        Manually trigger EOD finalization for a specific date.
+
+        Args:
+            target_date: Date to process (defaults to today's trading date)
+
+        Returns:
+            Result dict with finalization status
+        """
+        logger.info(f"Manual EOD finalization triggered for {target_date or 'today'}")
+
+        if self._is_running_eod_finalization:
+            return {
+                'success': False,
+                'message': 'EOD finalization is already running',
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+            }
+
+        self._is_running_eod_finalization = True
+
+        try:
+            from jutsu_engine.jobs.eod_finalization import run_eod_finalization
+
+            result = await run_eod_finalization(target_date)
+
+            return {
+                'success': result.get('success', False),
+                'message': 'EOD finalization triggered manually',
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'result': result,
+            }
+
+        except Exception as e:
+            logger.error(f"Manual EOD finalization failed: {e}", exc_info=True)
+            return {
+                'success': False,
+                'message': f'EOD finalization failed: {str(e)}',
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+            }
+
+        finally:
+            self._is_running_eod_finalization = False
+
     def start(self, max_retries: int = 5, initial_delay: float = 2.0):
         """
         Start the scheduler with retry logic for database connection.
@@ -882,6 +1052,47 @@ class SchedulerService:
 
         logger.info("Token expiration check job scheduled: Every 12 hours")
 
+        # Add EOD finalization job at 4:15 PM EST (market close + 15 min)
+        # Calculates daily performance metrics and stores in daily_performance table
+        # Reference: claudedocs/eod_daily_performance_architecture.md
+        eod_trigger = CronTrigger(
+            hour=16, minute=15,
+            day_of_week='mon-fri',
+            timezone=EASTERN,
+        )
+
+        self._scheduler.add_job(
+            self._execute_eod_finalization_job,
+            trigger=eod_trigger,
+            id=self._eod_finalization_job_id,
+            name='EOD Daily Performance Finalization',
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
+
+        logger.info("EOD finalization job scheduled: 4:15 PM EST (Mon-Fri)")
+
+        # Also add a half-day EOD finalization job at 1:15 PM EST
+        # For early close days (day after Thanksgiving, Christmas Eve, etc.)
+        eod_halfday_trigger = CronTrigger(
+            hour=13, minute=15,
+            day_of_week='mon-fri',
+            timezone=EASTERN,
+        )
+
+        self._scheduler.add_job(
+            self._execute_eod_finalization_halfday_job,
+            trigger=eod_halfday_trigger,
+            id=f"{self._eod_finalization_job_id}_halfday",
+            name='EOD Finalization (Half-Day)',
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
+
+        logger.info("EOD finalization half-day job scheduled: 1:15 PM EST (Mon-Fri)")
+
     def _remove_job(self):
         """Remove the trading job, data refresh job, hourly refresh job, and token check job from the scheduler."""
         if self._scheduler is None:
@@ -909,7 +1120,19 @@ class SchedulerService:
             self._scheduler.remove_job(self._token_check_job_id)
             logger.info("Token expiration check job removed from scheduler")
         except Exception:
-            pass  # Job may not exist  # Job may not exist
+            pass  # Job may not exist
+
+        try:
+            self._scheduler.remove_job(self._eod_finalization_job_id)
+            logger.info("EOD finalization job removed from scheduler")
+        except Exception:
+            pass  # Job may not exist
+
+        try:
+            self._scheduler.remove_job(f"{self._eod_finalization_job_id}_halfday")
+            logger.info("EOD finalization half-day job removed from scheduler")
+        except Exception:
+            pass  # Job may not exist
 
     def enable(self) -> Dict[str, Any]:
         """
@@ -1035,6 +1258,8 @@ class SchedulerService:
             'is_running': self._is_running_job,
             'is_running_refresh': self._is_running_refresh,
             'is_running_hourly_refresh': self._is_running_hourly_refresh,
+            'is_running_eod_finalization': self._is_running_eod_finalization,
+            'next_eod_finalization': self._get_next_eod_finalization_time(),
             'valid_execution_times': list(EXECUTION_TIME_MAP.keys()),
             'scheduler_running': scheduler_running,
             'scheduler_healthy': scheduler_healthy,
@@ -1075,6 +1300,26 @@ class SchedulerService:
             logger.warning(f"Failed to get next hourly refresh time (corrupted job): {e}")
         except Exception as e:
             logger.warning(f"Failed to get next hourly refresh time: {e}")
+
+        return None
+
+
+    def _get_next_eod_finalization_time(self) -> Optional[str]:
+        """Get the next scheduled EOD finalization time."""
+        if self._scheduler is None or not self.state.enabled:
+            return None
+        
+        if not self._scheduler.running:
+            return None
+
+        try:
+            job = self._scheduler.get_job(self._eod_finalization_job_id)
+            if job and hasattr(job, 'next_run_time') and job.next_run_time:
+                return job.next_run_time.isoformat()
+        except AttributeError as e:
+            logger.warning(f"Failed to get next EOD finalization time (corrupted job): {e}")
+        except Exception as e:
+            logger.warning(f"Failed to get next EOD finalization time: {e}")
 
         return None
     
