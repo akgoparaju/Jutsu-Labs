@@ -38,7 +38,8 @@ function DecisionTreeV2() {
   const { strategies: availableStrategies } = useStrategy()
 
   // Get selected strategies from URL params (same pattern as Dashboard)
-  const selectedStrategies = searchParams.get('strategies')?.split(',').filter(Boolean) || []
+  // Support both + and , separators for backwards compatibility
+  const selectedStrategies = searchParams.get('strategies')?.split(/[+,]/).filter(Boolean) || []
 
   // State for selected strategy in Decision Tree view
   const [selectedStrategy, setSelectedStrategy] = useState<string>('')

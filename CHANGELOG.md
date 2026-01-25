@@ -1,3 +1,29 @@
+#### **Bug Fix: Multi-Strategy URL Separator and Unselect Race Condition** (2026-01-25)
+
+Fixed two issues with multi-strategy selection UI:
+
+**Issue 1: URL Separator**
+- URLs used comma separator which got encoded to `%2C` (e.g., `?strategies=v3_5b%2Cv3_5d`)
+- Changed to `+` separator which is cleaner (`?strategies=v3_5b%2Bv3_5d`)
+- Added backwards compatibility to parse both `+` and `,` separators
+
+**Issue 2: Strategy Unselect Blinking/Race Condition**
+- When unselecting a strategy, UI would blink and revert to original state
+- Root cause: Initialization effect had `compareStrategies.length` in dependency array
+- Race condition: toggle → state update → length change → effect re-runs → reads old URL → restores old state
+- Fix: Added `isInitializedFromUrl` ref to prevent re-initialization after initial load
+- Removed `compareStrategies.length` from dependency array
+
+**Evidence (Playwright)**:
+- Before fix: Clicking "Remove v3.5d" caused blinking, strategy reappeared
+- After fix: `urlBefore=v3_5b%2Bv3_5d` → click remove → `urlAfter=v3_5b`, success=true
+
+**Files Modified**:
+- `dashboard/src/contexts/StrategyContext.tsx` (URL_SEPARATOR constant, isInitializedFromUrl ref, updateUrlWithStrategies, loadStrategiesFromUrl, initialization effect)
+- `dashboard/src/pages/v2/DecisionTreeV2.tsx` (split pattern for backwards compatibility)
+
+---
+
 #### **Bug Fix: Portfolio Holdings Shows "No Positions" Despite Data** (2026-01-25)
 
 Fixed bug where Portfolio Holdings section showed "No positions currently held" even when positions existed.

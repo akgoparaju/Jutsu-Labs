@@ -11,7 +11,7 @@
  * @part Multi-Strategy UI - Phase 4
  */
 
-import { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react'
+import { createContext, useContext, useState, useEffect, ReactNode, useCallback, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { strategiesApi, StrategyInfo } from '../api/client'
 import {
@@ -25,6 +25,7 @@ import {
 const STORAGE_KEY = 'jutsu_selected_strategy'
 const COMPARE_KEY = 'jutsu_compare_strategies'
 const URL_STRATEGIES_PARAM = 'strategies'
+const URL_SEPARATOR = '+'  // Use + instead of , for cleaner URLs (no %2C encoding)
 
 interface StrategyContextType {
   // Strategy list
@@ -67,6 +68,9 @@ interface StrategyContextType {
 const StrategyContext = createContext<StrategyContextType | null>(null)
 
 export function StrategyProvider({ children }: { children: ReactNode }) {
+  // Track if we've already initialized from URL to prevent re-initialization race conditions
+  const isInitializedFromUrl = useRef(false)
+
   // Initialize from localStorage
   const [selectedStrategy, setSelectedStrategyState] = useState<string>(() => {
     return localStorage.getItem(STORAGE_KEY) || 'v3_5b'
@@ -157,7 +161,7 @@ export function StrategyProvider({ children }: { children: ReactNode }) {
     if (compareStrategies.length === 0) return
 
     const params = new URLSearchParams(window.location.search)
-    params.set(URL_STRATEGIES_PARAM, compareStrategies.join(','))
+    params.set(URL_STRATEGIES_PARAM, compareStrategies.join(URL_SEPARATOR))
     const newUrl = `${window.location.pathname}?${params.toString()}`
     window.history.replaceState({}, '', newUrl)
   }, [compareStrategies])
@@ -169,8 +173,8 @@ export function StrategyProvider({ children }: { children: ReactNode }) {
 
     if (!strategiesParam) return null
 
-    // Parse and validate strategy IDs
-    const strategyIds = strategiesParam.split(',').slice(0, MAX_COMPARE_STRATEGIES)
+    // Parse and validate strategy IDs (support both + and , separators for backwards compatibility)
+    const strategyIds = strategiesParam.split(/[+,]/).slice(0, MAX_COMPARE_STRATEGIES)
     const validIds = strategyIds.filter(id =>
       strategies.some(s => s.id === id)
     )
@@ -179,8 +183,11 @@ export function StrategyProvider({ children }: { children: ReactNode }) {
   }, [strategies])
 
   // Initialize compare strategies from URL or with defaults
+  // IMPORTANT: This effect should only run once when strategies are first loaded
+  // to prevent race conditions when toggling strategy selection
   useEffect(() => {
     if (strategies.length === 0) return
+    if (isInitializedFromUrl.current) return  // Already initialized, skip
 
     // First, try to load from URL
     const urlStrategies = loadStrategiesFromUrl()
@@ -190,15 +197,19 @@ export function StrategyProvider({ children }: { children: ReactNode }) {
       if (urlStrategies.length > 1) {
         setCompareModeState(true)
       }
+      isInitializedFromUrl.current = true
       return
     }
 
     // Otherwise, initialize with default (primary strategy) if empty
-    if (compareStrategies.length === 0) {
+    // Only do this on first load when localStorage is also empty
+    const storedStrategies = localStorage.getItem(COMPARE_KEY)
+    if (!storedStrategies || JSON.parse(storedStrategies).length === 0) {
       const defaultStrategy = primaryStrategyId || strategies[0]?.id || 'v3_5b'
       setCompareStrategies([defaultStrategy])
     }
-  }, [strategies, loadStrategiesFromUrl, primaryStrategyId, compareStrategies.length, setCompareStrategies])
+    isInitializedFromUrl.current = true
+  }, [strategies, loadStrategiesFromUrl, primaryStrategyId, setCompareStrategies])
 
   // Sync URL when compare strategies change
   useEffect(() => {
