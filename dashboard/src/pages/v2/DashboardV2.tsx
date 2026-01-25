@@ -100,13 +100,15 @@ function calculateAnnualizedReturn(periodReturnPct: number, calendarDays: number
 /**
  * Calculate calendar days between first and last snapshot in history.
  */
-function calculateCalendarDays(history: Array<{ timestamp?: string }>): number {
+function calculateCalendarDays(history: Array<{ timestamp?: string; trading_date?: string }>): number {
   if (!history || history.length < 2) return history?.length || 0
-  const firstDate = history[0].timestamp?.slice(0, 10)
-  const lastDate = history[history.length - 1].timestamp?.slice(0, 10)
-  if (!firstDate || !lastDate) return 0
-  const start = new Date(firstDate)
-  const end = new Date(lastDate)
+  // v2 API returns history in DESC order (newest first), so:
+  // history[0] = newest date, history[length-1] = oldest date
+  const newestDate = (history[0].trading_date || history[0].timestamp)?.slice(0, 10)
+  const oldestDate = (history[history.length - 1].trading_date || history[history.length - 1].timestamp)?.slice(0, 10)
+  if (!newestDate || !oldestDate) return 0
+  const start = new Date(oldestDate)
+  const end = new Date(newestDate)
   const diffMs = end.getTime() - start.getTime()
   return Math.floor(diffMs / (1000 * 60 * 60 * 24)) + 1
 }
@@ -247,9 +249,10 @@ function DashboardV2() {
 
   // Get latest baseline from most recent snapshot
   // In comparison mode, get from first strategy's data
+  // NOTE: v2 API returns history in DESC order (newest first at index 0)
   const latestSnapshot = isComparisonMode && primaryStrategy
-    ? multiPerformanceData?.[primaryStrategy]?.history?.slice(-1)[0]
-    : performanceData?.history?.[performanceData.history.length - 1]
+    ? multiPerformanceData?.[primaryStrategy]?.history?.[0]
+    : performanceData?.history?.[0]
   const baselineValue = latestSnapshot?.baseline_value
 
   // Calculate period-specific returns and baseline metrics
@@ -274,8 +277,10 @@ function DashboardV2() {
     }
 
     const history = historySource
-    const firstSnapshot = history[0]
-    const lastSnapshot = history[history.length - 1]
+    // v2 API returns history in DESC order (newest first)
+    // firstSnapshot = oldest date, lastSnapshot = newest date (chronologically)
+    const firstSnapshot = history[history.length - 1]
+    const lastSnapshot = history[0]
     const calendarDays = calculateCalendarDays(history)
 
     // Calculate daily baseline returns for Sharpe ratio
@@ -306,8 +311,9 @@ function DashboardV2() {
     if (timeRange === 'all') {
       const cumReturn = lastSnapshot.cumulative_return ?? 0
       const baseReturn = lastSnapshot.baseline_return ?? 0
-      const annualizedReturn = calculateAnnualizedReturn(cumReturn, calendarDays)
-      const baselineAnnualizedReturn = calculateAnnualizedReturn(baseReturn, calendarDays)
+      // v2 API returns decimals, calculateAnnualizedReturn expects percentages
+      const annualizedReturn = calculateAnnualizedReturn(cumReturn * 100, calendarDays)
+      const baselineAnnualizedReturn = calculateAnnualizedReturn(baseReturn * 100, calendarDays)
       return {
         periodReturn: cumReturn,
         periodBaselineReturn: baseReturn,
@@ -328,8 +334,9 @@ function DashboardV2() {
       lastSnapshot.baseline_return ?? 0,
       firstSnapshot.baseline_return ?? 0
     )
-    const annualizedReturn = calculateAnnualizedReturn(periodReturn, calendarDays)
-    const baselineAnnualizedReturn = calculateAnnualizedReturn(periodBaselineReturn, calendarDays)
+    // v2 API returns decimals, calculateAnnualizedReturn expects percentages
+    const annualizedReturn = calculateAnnualizedReturn(periodReturn * 100, calendarDays)
+    const baselineAnnualizedReturn = calculateAnnualizedReturn(periodBaselineReturn * 100, calendarDays)
 
     return {
       periodReturn,
@@ -459,11 +466,12 @@ function DashboardV2() {
                 const perfData = multiPerformanceData?.[strategyId]
                 const style = strategyStyles[strategyId]
                 const history = perfData?.history || []
-                const lastSnapshot = history[history.length - 1]
-                const firstSnapshot = history[0]
+                // v2 API returns history in DESC order (newest first)
+                const lastSnapshot = history[0]  // newest = chronologically last
+                const firstSnapshot = history[history.length - 1]  // oldest = chronologically first
                 const calendarDays = calculateCalendarDays(history)
 
-                // Calculate period return
+                // Calculate period return (decimal form)
                 let periodReturn = 0
                 if (history.length > 0 && timeRange === 'all') {
                   periodReturn = lastSnapshot?.cumulative_return ?? 0
@@ -473,7 +481,9 @@ function DashboardV2() {
                     firstSnapshot?.cumulative_return ?? 0
                   )
                 }
-                const annualizedReturn = calculateAnnualizedReturn(periodReturn, calendarDays)
+                // Convert to percentage for display and CAGR calculation
+                const periodReturnPct = periodReturn * 100
+                const annualizedReturn = calculateAnnualizedReturn(periodReturnPct, calendarDays)
 
                 return (
                   <div
@@ -503,8 +513,8 @@ function DashboardV2() {
                       </div>
                       <div>
                         <span className="text-gray-400 block">{getTimeRangeLabel(timeRange)} Return</span>
-                        <span className={`font-medium ${periodReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                          {formatMetricValue(periodReturn, 'percent')}
+                        <span className={`font-medium ${periodReturnPct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {formatMetricValue(periodReturnPct, 'percent')}
                         </span>
                       </div>
                       <div>
@@ -524,7 +534,7 @@ function DashboardV2() {
                         <span className="text-red-400 font-medium">
                           {formatMetricValue(
                             perfData?.data?.max_drawdown != null
-                              ? -Math.abs(perfData.data.max_drawdown)
+                              ? -Math.abs(perfData.data.max_drawdown) * 100
                               : null,
                             'percent'
                           )}
@@ -552,7 +562,7 @@ function DashboardV2() {
                   <div>
                     <span className="text-gray-400 block">{getTimeRangeLabel(timeRange)} Return</span>
                     <span className={`font-medium ${periodMetrics.periodBaselineReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      {formatMetricValue(periodMetrics.periodBaselineReturn, 'percent')}
+                      {formatMetricValue(periodMetrics.periodBaselineReturn * 100, 'percent')}
                     </span>
                   </div>
                   <div>
@@ -646,15 +656,16 @@ function DashboardV2() {
                       const perfData = multiPerformanceData?.[id]
                       const history = perfData?.history || []
                       if (history.length > 0) {
-                        const lastSnapshot = history[history.length - 1]
-                        const firstSnapshot = history[0]
+                        // v2 API returns history in DESC order (newest first)
+                        const lastSnapshot = history[0]  // newest = chronologically last
+                        const firstSnapshot = history[history.length - 1]  // oldest = chronologically first
                         if (timeRange === 'all') {
-                          values[id] = lastSnapshot?.cumulative_return ?? 0
+                          values[id] = (lastSnapshot?.cumulative_return ?? 0) * 100
                         } else if (history.length > 1) {
                           values[id] = calculatePeriodReturn(
                             lastSnapshot?.cumulative_return ?? 0,
                             firstSnapshot?.cumulative_return ?? 0
-                          )
+                          ) * 100
                         }
                       }
                     })
@@ -678,7 +689,7 @@ function DashboardV2() {
                         <td className={`py-3 px-4 text-center ${
                           periodMetrics.periodBaselineReturn >= 0 ? 'text-green-400' : 'text-red-400'
                         }`}>
-                          {formatMetricValue(periodMetrics.periodBaselineReturn, 'percent')}
+                          {formatMetricValue(periodMetrics.periodBaselineReturn * 100, 'percent')}
                         </td>
                       </tr>
                     )
@@ -691,8 +702,9 @@ function DashboardV2() {
                       const perfData = multiPerformanceData?.[id]
                       const history = perfData?.history || []
                       if (history.length > 0) {
-                        const lastSnapshot = history[history.length - 1]
-                        const firstSnapshot = history[0]
+                        // v2 API returns history in DESC order (newest first)
+                        const lastSnapshot = history[0]  // newest
+                        const firstSnapshot = history[history.length - 1]  // oldest
                         const calendarDays = calculateCalendarDays(history)
                         let periodReturn = 0
                         if (timeRange === 'all') {
@@ -703,7 +715,8 @@ function DashboardV2() {
                             firstSnapshot?.cumulative_return ?? 0
                           )
                         }
-                        values[id] = calculateAnnualizedReturn(periodReturn, calendarDays)
+                        // Convert to percentage for CAGR calculation
+                        values[id] = calculateAnnualizedReturn(periodReturn * 100, calendarDays)
                       }
                     })
                     const bestId = findBestValue(values, true)
@@ -765,8 +778,8 @@ function DashboardV2() {
                     const values: Record<string, number | null | undefined> = {}
                     selectedStrategies.forEach((id) => {
                       const rawValue = multiPerformanceData?.[id]?.data?.max_drawdown
-                      // Negate to show as negative percentage
-                      values[id] = rawValue != null ? -Math.abs(rawValue) : null
+                      // Negate to show as negative percentage, multiply by 100 for display
+                      values[id] = rawValue != null ? -Math.abs(rawValue) * 100 : null
                     })
                     const bestId = findBestValue(values, false) // Lower (closer to 0) is better
 
@@ -931,7 +944,7 @@ function DashboardV2() {
           >
             <MetricCard
               label="Portfolio"
-              value={periodMetrics.periodReturn}
+              value={periodMetrics.periodReturn * 100}
               format="percent"
             />
             <MetricCard
@@ -941,7 +954,7 @@ function DashboardV2() {
             />
             <MetricCard
               label="QQQ Baseline"
-              value={periodMetrics.periodBaselineReturn}
+              value={periodMetrics.periodBaselineReturn * 100}
               format="percent"
               variant="baseline"
             />
@@ -953,7 +966,7 @@ function DashboardV2() {
             />
             <MetricCard
               label="Alpha"
-              value={periodMetrics.periodAlpha}
+              value={periodMetrics.periodAlpha * 100}
               format="percent"
               className="xs:col-span-2 md:col-span-1"
             />
@@ -1141,7 +1154,8 @@ function DashboardV2() {
                 <tr className="border-b border-slate-700/50">
                   <td className="py-3 px-4 text-gray-300">Strategy Cell</td>
                   {selectedStrategies.map((strategyId) => {
-                    const latestSnapshot = multiPerformanceData?.[strategyId]?.history?.slice(-1)[0]
+                    // v2 API returns history in DESC order (newest first at index 0)
+                    const latestSnapshot = multiPerformanceData?.[strategyId]?.history?.[0]
                     const cell = latestSnapshot?.strategy_cell
                     return (
                       <td key={strategyId} className="py-3 px-4 text-center text-blue-400 font-medium">
@@ -1154,7 +1168,8 @@ function DashboardV2() {
                 <tr className="border-b border-slate-700/50">
                   <td className="py-3 px-4 text-gray-300">Trend State</td>
                   {selectedStrategies.map((strategyId) => {
-                    const latestSnapshot = multiPerformanceData?.[strategyId]?.history?.slice(-1)[0]
+                    // v2 API returns history in DESC order (newest first at index 0)
+                    const latestSnapshot = multiPerformanceData?.[strategyId]?.history?.[0]
                     const trend = latestSnapshot?.trend_state
                     return (
                       <td key={strategyId} className={`py-3 px-4 text-center font-medium ${
@@ -1171,7 +1186,8 @@ function DashboardV2() {
                 <tr className="border-b border-slate-700/50">
                   <td className="py-3 px-4 text-gray-300">Volatility State</td>
                   {selectedStrategies.map((strategyId) => {
-                    const latestSnapshot = multiPerformanceData?.[strategyId]?.history?.slice(-1)[0]
+                    // v2 API returns history in DESC order (newest first at index 0)
+                    const latestSnapshot = multiPerformanceData?.[strategyId]?.history?.[0]
                     const vol = latestSnapshot?.vol_state
                     return (
                       <td key={strategyId} className={`py-3 px-4 text-center font-medium ${

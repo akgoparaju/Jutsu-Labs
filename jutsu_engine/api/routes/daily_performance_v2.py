@@ -12,13 +12,14 @@ Reference: claudedocs/eod_daily_performance_architecture.md Section 10
 Workflow: claudedocs/eod_daily_performance_workflow.md Phase 6 & 7
 """
 
+import json
 import logging
 from datetime import datetime, timezone, timedelta, date as date_type
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 from sqlalchemy import desc, and_
 
 from jutsu_engine.api.dependencies import (
@@ -58,6 +59,14 @@ class BaselineData(BaseModel):
     max_drawdown: Optional[float] = None
 
 
+class HoldingInfo(BaseModel):
+    """Individual position holding information."""
+    symbol: str
+    quantity: float
+    value: float
+    weight_pct: float  # Position as % of total portfolio
+
+
 class DailyPerformanceData(BaseModel):
     """Daily performance metrics from daily_performance table."""
     trading_date: str
@@ -84,6 +93,37 @@ class DailyPerformanceData(BaseModel):
     trading_days_count: int
     is_first_day: bool = False
     days_since_previous: int = 0
+    
+    # === NEW FIELDS (Phase 1: Missing from database model) ===
+    
+    # Per-day drawdown (different from max_drawdown which is all-time)
+    drawdown: Optional[float] = None  # (equity - HWM) / HWM for this day
+    
+    # Position breakdown
+    positions_json: Optional[str] = None  # JSON: [{symbol, quantity, value, weight}]
+    holdings: Optional[List[HoldingInfo]] = None  # Parsed positions for frontend
+    cash_weight_pct: Optional[float] = None  # Cash as % of total portfolio
+
+    # Trade statistics
+    total_trades: Optional[int] = None
+    winning_trades: Optional[int] = None
+    losing_trades: Optional[int] = None
+    win_rate: Optional[float] = None  # winning_trades / total_trades * 100
+    
+    # Reference tracking
+    high_water_mark: Optional[float] = None  # Peak equity for drawdown calc
+    initial_capital: Optional[float] = None  # Starting capital for return calcs
+    
+    # Indicator values (strategies only)
+    t_norm: Optional[float] = None
+    z_score: Optional[float] = None
+    sma_fast: Optional[float] = None
+    sma_slow: Optional[float] = None
+    
+    # === BASELINE FIELDS (Phase 2: Joined from baseline rows) ===
+    baseline_value: Optional[float] = None        # Baseline total_equity for same date
+    baseline_return: Optional[float] = None       # Baseline cumulative_return (as %)
+    baseline_daily_return: Optional[float] = None # Baseline daily_return (as %)
 
 
 class DailyPerformanceResponse(BaseModel):
@@ -125,8 +165,54 @@ class EODStatusResponse(BaseModel):
 # =============================================================================
 
 
+def _parse_holdings(positions_json: Optional[str], total_equity: float) -> Optional[List[HoldingInfo]]:
+    """Parse positions_json string into HoldingInfo list with weight percentages.
+
+    Args:
+        positions_json: JSON string like '[{"symbol": "QQQ", "quantity": 10, "value": 6200.0}]'
+        total_equity: Total portfolio value for calculating weight percentages
+
+    Returns:
+        List of HoldingInfo objects, or None if no positions
+    """
+    if not positions_json:
+        return None
+
+    try:
+        positions = json.loads(positions_json)
+        if not positions:
+            return None
+
+        holdings = []
+        for pos in positions:
+            value = float(pos.get('value', 0))
+            weight_pct = (value / total_equity * 100) if total_equity > 0 else 0
+            holdings.append(HoldingInfo(
+                symbol=pos.get('symbol', ''),
+                quantity=float(pos.get('quantity', 0)),
+                value=value,
+                weight_pct=round(weight_pct, 2),
+            ))
+        return holdings if holdings else None
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        logger.warning(f"Failed to parse positions_json: {e}")
+        return None
+
+
+def _compute_cash_weight(cash: Optional[float], total_equity: Optional[float]) -> Optional[float]:
+    """Compute cash as percentage of total portfolio."""
+    if cash is None or total_equity is None or total_equity <= 0:
+        return None
+    return round((float(cash) / float(total_equity)) * 100, 2)
+
+
 def _record_to_data(record: DailyPerformance) -> DailyPerformanceData:
-    """Convert DailyPerformance record to API response data."""
+    """Convert DailyPerformance record to API response data.
+    
+    Maps all fields from the database model to the API response schema.
+    Phase 1 adds: drawdown, positions_json, trade stats, indicators, reference fields.
+    Baseline fields (baseline_value, baseline_return) are populated separately via JOIN.
+    """
     trading_date = (
         record.trading_date.strftime('%Y-%m-%d')
         if hasattr(record.trading_date, 'strftime')
@@ -134,24 +220,62 @@ def _record_to_data(record: DailyPerformance) -> DailyPerformanceData:
     )
     
     return DailyPerformanceData(
+        # Core fields
         trading_date=trading_date,
         total_equity=float(record.total_equity),
         cash=float(record.cash) if record.cash else None,
         positions_value=float(record.positions_value) if record.positions_value else None,
         daily_return=float(record.daily_return) if record.daily_return else 0.0,
         cumulative_return=float(record.cumulative_return) if record.cumulative_return else 0.0,
+        
+        # KPI metrics
         sharpe_ratio=float(record.sharpe_ratio) if record.sharpe_ratio else None,
         sortino_ratio=float(record.sortino_ratio) if record.sortino_ratio else None,
         calmar_ratio=float(record.calmar_ratio) if record.calmar_ratio else None,
         max_drawdown=float(record.max_drawdown) if record.max_drawdown else None,
         volatility=float(record.volatility) if record.volatility else None,
         cagr=float(record.cagr) if record.cagr else None,
+        
+        # Strategy state
         strategy_cell=str(record.strategy_cell) if record.strategy_cell else None,
         trend_state=str(record.trend_state) if record.trend_state else None,
         vol_state=str(record.vol_state) if record.vol_state else None,
+        
+        # Metadata
         trading_days_count=int(record.trading_days_count) if record.trading_days_count else 1,
         is_first_day=bool(record.is_first_day) if record.is_first_day else False,
         days_since_previous=int(record.days_since_previous) if record.days_since_previous else 0,
+        
+        # === NEW FIELDS (Phase 1) ===
+
+        # Per-day drawdown
+        drawdown=float(record.drawdown) if record.drawdown else None,
+
+        # Position breakdown - parse JSON to holdings array
+        positions_json=record.positions_json if record.positions_json else None,
+        holdings=_parse_holdings(record.positions_json, float(record.total_equity) if record.total_equity else 10000.0),
+        cash_weight_pct=_compute_cash_weight(record.cash, record.total_equity),
+
+        # Trade statistics
+        total_trades=int(record.total_trades) if record.total_trades else None,
+        winning_trades=int(record.winning_trades) if record.winning_trades else None,
+        losing_trades=int(record.losing_trades) if record.losing_trades else None,
+        win_rate=float(record.win_rate) if record.win_rate else None,
+        
+        # Reference tracking
+        high_water_mark=float(record.high_water_mark) if record.high_water_mark else None,
+        initial_capital=float(record.initial_capital) if record.initial_capital else None,
+        
+        # Indicator values
+        t_norm=float(record.t_norm) if record.t_norm else None,
+        z_score=float(record.z_score) if record.z_score else None,
+        sma_fast=float(record.sma_fast) if record.sma_fast else None,
+        sma_slow=float(record.sma_slow) if record.sma_slow else None,
+        
+        # Baseline fields (populated via JOIN in Phase 2, None here)
+        baseline_value=None,
+        baseline_return=None,
+        baseline_daily_return=None,
     )
 
 
@@ -287,6 +411,9 @@ async def get_daily_performance(
     
     Returns a list of daily performance records in descending date order.
     Supports pagination via the `days` parameter.
+    
+    Phase 2: Includes LEFT JOIN to baseline rows for baseline_value, 
+    baseline_return, and baseline_daily_return per-row comparison.
     """
 )
 async def get_daily_history(
@@ -302,14 +429,32 @@ async def get_daily_history(
     Get historical daily performance metrics.
     
     Returns records in descending date order (most recent first).
+    Phase 2: Includes baseline data via LEFT JOIN for per-row comparison.
     """
     try:
         effective_mode = mode or engine_state.mode
         today = get_trading_date()
         start_date = today - timedelta(days=days)
         
-        # Query historical records
-        records = db.query(DailyPerformance).filter(
+        # Create alias for baseline self-join (Phase 2)
+        BaselinePerf = aliased(DailyPerformance, name='baseline_perf')
+        
+        # Query with LEFT JOIN to baseline rows
+        # Strategy rows joined to baseline rows by trading_date and mode
+        query_results = db.query(
+            DailyPerformance,
+            BaselinePerf.total_equity.label('baseline_value'),
+            BaselinePerf.cumulative_return.label('baseline_cumulative_return'),
+            BaselinePerf.daily_return.label('baseline_daily_return'),
+        ).outerjoin(
+            BaselinePerf,
+            and_(
+                BaselinePerf.trading_date == DailyPerformance.trading_date,
+                BaselinePerf.entity_type == 'baseline',
+                BaselinePerf.entity_id == baseline_symbol,
+                BaselinePerf.mode == DailyPerformance.mode,
+            )
+        ).filter(
             DailyPerformance.entity_type == 'strategy',
             DailyPerformance.entity_id == strategy_id,
             DailyPerformance.mode == effective_mode,
@@ -318,8 +463,26 @@ async def get_daily_history(
             desc(DailyPerformance.trading_date)
         ).all()
         
-        # Convert to response data
-        history = [_record_to_data(r) for r in records]
+        # Convert to response data with baseline fields populated
+        history = []
+        for row in query_results:
+            # row is a tuple: (DailyPerformance, baseline_value, baseline_cumulative_return, baseline_daily_return)
+            strategy_record = row[0]
+            baseline_value = row[1]
+            baseline_cumulative_return = row[2]
+            baseline_daily_return = row[3]
+            
+            # Convert strategy record to response data
+            data = _record_to_data(strategy_record)
+            
+            # Populate baseline fields from JOIN results (Phase 2)
+            # Return as decimal (e.g., 0.0125 for 1.25%) for consistency with cumulative_return/daily_return
+            # Frontend will multiply by 100 for display
+            data.baseline_value = float(baseline_value) if baseline_value is not None else None
+            data.baseline_return = float(baseline_cumulative_return) if baseline_cumulative_return is not None else None
+            data.baseline_daily_return = float(baseline_daily_return) if baseline_daily_return is not None else None
+            
+            history.append(data)
         
         return DailyPerformanceHistoryResponse(
             strategy_id=strategy_id,

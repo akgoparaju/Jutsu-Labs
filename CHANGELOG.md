@@ -1,3 +1,385 @@
+#### **Bug Fix: Portfolio Holdings Shows "No Positions" Despite Data** (2026-01-25)
+
+Fixed bug where Portfolio Holdings section showed "No positions currently held" even when positions existed.
+
+**Root Cause**:
+- V2 API returned `positions_json` as raw JSON string
+- Frontend expected `holdings` as parsed array with `weight_pct` field
+- No parsing/transformation happened between API and UI
+
+**Fix**:
+- Added `HoldingInfo` model to V2 API schema
+- Added `holdings` field (parsed array) and `cash_weight_pct` field
+- Added helper functions `_parse_holdings()` and `_compute_cash_weight()`
+- API now returns both `positions_json` (raw) and `holdings` (parsed with weight_pct)
+
+**Verification**:
+- API returns: `holdings: [{symbol: "TQQQ", quantity: 37, value: 2032.04, weight_pct: 19.74}, ...]`
+- UI displays: Cash $137.73 (1.3%), TQQQ $2,032.04 (19.7%), QQQ $8,122.47 (78.9%)
+
+**Files Modified**:
+- `jutsu_engine/api/routes/daily_performance_v2.py` (lines 16, 62-67, 101-103, 163-203, 217-219)
+
+---
+
+#### **Bug Fix: Daily Performance Table Cum % and Alpha Columns Wrong Values** (2026-01-25)
+
+Fixed bug where Cum % and Alpha columns displayed near-zero values (0.01%, +0.03%) instead of actual percentages (~3%, +3%).
+
+**Root Cause**:
+- API returns `cumulative_return` and `baseline_return` as decimals (0.029223 = 2.92%)
+- Display code showed raw decimals without `* 100` conversion
+- Alpha calculation was correct but display also missed `* 100`
+
+**Evidence (Playwright)**:
+- Cum % showed: 0.00%, 0.01%, 0.02% (wrong)
+- Alpha showed: +0.00%, +0.03% (wrong)
+- API confirmed: `cumulative_return=0.029223` (decimal format)
+
+**Fix**:
+- Line 1435 (mobile): `alpha.toFixed(2)` → `(alpha * 100).toFixed(2)`
+- Line 1496 (desktop Cum %): Added `* 100` to cumulative_return display
+- Line 1511 (desktop Alpha): `alpha.toFixed(2)` → `(alpha * 100).toFixed(2)`
+
+**Verification (Playwright)**:
+- Cum % now shows: 0.82%, 1.64%, 2.92% (correct)
+- Alpha now shows: +0.41%, +1.22%, +2.96% (correct)
+
+**Files Modified**:
+- `dashboard/src/pages/v2/PerformanceV2.tsx` (lines 1435, 1496, 1511)
+
+---
+
+#### **Bug Fix: Performance Page Baseline Showing Flat Values** (2026-01-25)
+
+Fixed multiple bugs where baseline (QQQ) displayed as flat line/near-zero values instead of actual cumulative returns.
+
+**Issues Fixed**:
+1. **Daily Performance Table**: Baseline column showed 0.00%, -0.01% (looked flat)
+2. **90-Day Performance Chart**: QQQ baseline was a flat horizontal line
+3. **Data Mapping**: `singleEquityCurve` didn't include `baseline_return` field
+
+**Root Cause**:
+- Table: `baseline_return` displayed without `* 100` conversion (0.003157 → "0.00%")
+- Chart (Single Mode): Used `baseline_value` equity math instead of `baseline_return`
+- Chart (Comparison Mode): Created 2-point line instead of using per-day data
+- Data: `singleEquityCurve` only mapped `baseline_value`, not `baseline_return`
+
+**Evidence (API)**:
+- `baseline_return: -0.000353` (decimal = -0.0353% cumulative)
+- `baseline_return: -0.036167` (decimal = -3.62% on Dec 17)
+- UI showed 0.00% because `-0.000353.toFixed(2)` = "0.00"
+
+**Fix**:
+- Table: Added `* 100` to convert decimal to percentage
+- Chart: Use `baseline_return * 100` directly (not equity-based calculation)
+- Data: Added `baseline_return` to `singleEquityCurve` mapping
+
+**Verification (Playwright)**:
+- Table Baseline column: 0.00% → 0.41% → -1.50% → -1.99% (varying)
+- Chart: Orange QQQ line shows actual movement (drops to -2%, recovers)
+
+**Files Modified**:
+- `dashboard/src/pages/v2/PerformanceV2.tsx` (lines 374-383, 716-733, 782-798, 1490-1497)
+
+---
+
+#### **Bug Fix: Dashboard Baseline Showing Old Data Instead of Latest** (2026-01-25)
+
+Fixed bug where baseline (QQQ) Total Equity displayed $10,000 instead of current value ($9,996).
+
+**Root Cause**:
+- v2 API returns history in DESC order (newest first at index 0)
+- Code used `history.slice(-1)[0]` and `history[history.length - 1]` to get "latest"
+- These actually get the LAST array element = OLDEST record (Dec 26: $10,015)
+- Should use `history[0]` to get NEWEST record (Jan 23: $9,996)
+
+**Evidence**:
+- API `history[0]` = Jan 23, baseline_value = $9,996.47
+- API `history[18]` = Dec 26, baseline_value = $10,015.25
+- UI displayed ~$10,000 (oldest) instead of ~$9,996 (newest)
+
+**Fix**:
+- Changed all `slice(-1)[0]` patterns to `[0]` for getting latest snapshot
+- Added comments explaining v2 API DESC order convention
+
+**Files Modified**:
+- `dashboard/src/pages/v2/DashboardV2.tsx` (lines 253-254, 1157, 1170, 1187)
+- `dashboard/src/pages/v2/PerformanceV2.tsx` (lines 902, 954)
+
+**Verification**:
+- QQQ Total Equity now correctly shows $9,996 (was $10,000)
+- Strategy Cell, Trend State, Volatility State now show current values
+
+---
+
+#### **Bug Fix: EOD Baseline Timestamp Query Incompatible with Schwab Convention** (2026-01-25)
+
+Fixed critical bug where baseline records were not being created due to naive datetime queries failing to match Schwab's timestamp convention.
+
+**Root Cause**:
+- Schwab API timestamps daily bars at 06:00 UTC (22:00 PST previous calendar day, 01:00 ET same day)
+- Bar for trading day Jan 23 stored as `2026-01-22 22:00:00-08:00` PST
+- EOD job queried with naive datetime `>= 2026-01-23 00:00:00` (interpreted as PST)
+- Comparison `22:00 Jan 22 PST` >= `00:00 Jan 23 PST` = FALSE → Query returned no rows
+- Result: Baseline records not created for any trading day
+
+**Evidence**:
+- `jutsu sync -l` showed "Last Bar: 2026-01-23" for QQQ 1D (data EXISTS)
+- Bar ID 578830: timestamp `2026-01-22 22:00:00-08:00`, close $622.72
+- PostgreSQL server timezone: `America/Los_Angeles` (PST)
+- Query simulation confirmed the mismatch
+
+**Fix**:
+- Changed naive datetime to UTC-aware timestamps in `process_baseline_eod()`
+- Today's bar query: `datetime.combine(trading_date, datetime.min.time()).replace(tzinfo=timezone.utc)`
+- Previous bar query: Same UTC-aware pattern
+- Query range [T 00:00 UTC, T+1 00:00 UTC) now correctly captures 06:00 UTC bar
+
+**Data Rebuild**:
+- Deleted all 34 corrupted baseline records (accumulated errors from buggy queries)
+- Rebuilt all baseline records using fixed code
+- Verified calculations match expected buy-and-hold equity
+
+**Verification**:
+- API: Jan 23 baseline_value $9,996.47, baseline_return -0.0353%
+- UI: QQQ 90-Day Return now shows -0.04% (previously +0.00%)
+
+**Files Modified**:
+- `jutsu_engine/jobs/eod_finalization.py` (lines 565-579, 617-620)
+
+**Investigation Document**: `claudedocs/debug/baseline_jan23_investigation_2026-01-25.md`
+
+---
+
+#### **Bug Fix: Deleted Invalid Jan 23 Baseline Record** (2026-01-25)
+
+Fixed incorrect baseline data for Jan 23 that was created without valid 1D market data.
+
+**Root Cause**:
+- Jan 23 baseline record (ID: 102) showed equity $10,124.78 with 1.33% daily return
+- No 1D bar exists for Jan 23 QQQ (only 15m and 5m intraday data)
+- The stored values were mathematically impossible (implied QQQ at $630.71 vs actual max $625.32)
+- Record was created during a backfill process that didn't properly validate market data existence
+
+**Evidence**:
+- Jan 22 QQQ 1D close: $622.72
+- Jan 23 max intraday price: $625.32
+- Maximum possible daily return: 0.42% (not 1.33%)
+
+**Fix**:
+- Deleted the invalid Jan 23 baseline record from `daily_performance` table
+- Latest valid baseline is now Jan 22 with equity $9,991.82, return -0.0818%
+- API now correctly returns `null` for Jan 23 baseline values
+
+**Verification**:
+- API `/history` endpoint returns correct baseline values for Jan 20-22
+- Jan 23 shows `baseline_value: null` as expected (no 1D data)
+
+---
+
+#### **Bug Fix: V2 API Baseline Percentage Double Conversion** (2026-01-25)
+
+Fixed baseline values displaying incorrectly on Dashboard (e.g., 124.78% instead of 1.25%).
+
+**Root Cause**:
+- API multiplied `baseline_return` by 100 (line 427)
+- Frontend also multiplied by 100 (expecting decimal format)
+- Result: 1.2478 × 100 = 124.78% shown on UI
+
+**Fix**:
+- Removed `* 100` from API baseline fields to return decimal format (0.012478)
+- Now consistent with `cumulative_return` format
+
+**Files Modified**:
+- `jutsu_engine/api/routes/daily_performance_v2.py` (lines 427-428)
+
+---
+
+#### **Bug Fix: EOD Baseline Finalization Function Bugs** (2026-01-25)
+
+Fixed multiple bugs in `process_baseline_eod()` that prevented baseline rows from being created.
+
+**Bugs Fixed**:
+1. **MarketData.date → MarketData.timestamp** (lines 573, 621):
+   - `MarketData` model uses `timestamp` column, not `date`
+   - Changed to date range query to handle market close timestamps (22:00)
+
+2. **days_since_last_trading_day() signature mismatch** (lines 387, 638):
+   - Function only takes 1 optional arg, code passed 2
+   - Fixed: `days_since_previous = (trading_date - prev_date).days`
+
+3. **update_kpis_incremental() signature mismatch** (line 641):
+   - Function expects individual keyword params, code passed dict
+   - Fixed: Changed to use individual keyword arguments
+
+**Files Modified**:
+- `jutsu_engine/jobs/eod_finalization.py`
+
+---
+
+#### **Feature: V2 API Phase 2 - Baseline LEFT JOIN** (2026-01-25)
+
+Implemented Phase 2 of V2 API baseline fix: added LEFT JOIN to baseline rows in `/daily/history` endpoint.
+
+**Changes**:
+
+1. **Added `aliased` import** (daily_performance_v2.py:21):
+   - `from sqlalchemy.orm import Session, aliased`
+
+2. **Updated `get_daily_history()` function** (daily_performance_v2.py:350-442):
+   - Create `BaselinePerf = aliased(DailyPerformance)` for self-join
+   - Query with LEFT JOIN matching: trading_date, entity_type='baseline', entity_id=baseline_symbol, mode
+   - Extract baseline fields from JOIN result: `baseline_value`, `baseline_cumulative_return`, `baseline_daily_return`
+   - Populate `DailyPerformanceData` baseline fields with percentage conversion (×100)
+
+**Validation**:
+- ✅ Syntax validation passed
+- ✅ Module imports successfully
+- ✅ `aliased` import verified
+- ✅ All 27 integration tests pass
+
+**Files Modified**:
+- `jutsu_engine/api/routes/daily_performance_v2.py`
+
+**Result**: `/api/v2/performance/{strategy_id}/daily/history` now returns baseline comparison data per-row.
+
+---
+
+#### **Feature: V2 API Phase 1 - Add Missing Fields** (2026-01-25)
+
+Implemented Phase 1 of V2 API baseline fix: added 15 missing fields to API response.
+
+**Changes**:
+
+1. **Updated `DailyPerformanceData` schema** (daily_performance_v2.py:60-110):
+   - Added `drawdown` - per-day drawdown (different from max_drawdown)
+   - Added `positions_json` - position breakdown JSON
+   - Added trade stats: `total_trades`, `winning_trades`, `losing_trades`, `win_rate`
+   - Added reference fields: `high_water_mark`, `initial_capital`
+   - Added indicator fields: `t_norm`, `z_score`, `sma_fast`, `sma_slow`
+   - Added baseline fields (for Phase 2): `baseline_value`, `baseline_return`, `baseline_daily_return`
+
+2. **Updated `_record_to_data()` function** (daily_performance_v2.py:127-185):
+   - Maps all 15 new fields from DailyPerformance model to API response
+   - Baseline fields set to None (populated via JOIN in Phase 2)
+
+**Validation**:
+- ✅ Syntax validation passed
+- ✅ All 15 new fields present in schema
+- ✅ All 15 new fields mapped in _record_to_data()
+- ✅ Pydantic model instantiation OK (33 total fields)
+
+**Files Modified**:
+- `jutsu_engine/api/routes/daily_performance_v2.py`
+
+**Next**: Phase 2 - Add baseline JOIN to get_daily_history endpoint
+
+---
+
+#### **Analysis: V2 API Comprehensive Gap Analysis** (2026-01-25)
+
+Performed comprehensive evidence-based analysis of V2 API data gaps compared to V1 API and database model.
+
+**Key Findings**:
+
+1. **Category 1 - Fields in Database but NOT in V2 API Response**:
+   - `drawdown` - stored but not returned
+   - `positions_json` - stored but not returned
+   - `total_trades`, `winning_trades`, `losing_trades`, `win_rate` - stored but not returned
+   - `t_norm`, `z_score`, `sma_fast`, `sma_slow` - stored but not returned
+   - `high_water_mark`, `initial_capital` - stored but not returned
+
+2. **Category 2 - Baseline Requires JOIN (Not Implemented)**:
+   - `baseline_value`, `baseline_return`, `baseline_daily_return`
+   - Baseline stored as separate `entity_type='baseline'` rows
+   - V2 `/history` endpoint queries ONLY strategy rows, no JOIN
+
+3. **V1 to V2 Regressions**:
+   - Historical baseline per-row: ✅ V1 → ❌ V2
+   - Trade statistics: ✅ V1 → ❌ V2
+   - Position breakdown: ✅ V1 → ❌ V2
+   - Drawdown in history: ✅ V1 → ❌ V2
+
+**Root Causes**:
+- `_record_to_data()` at `daily_performance_v2.py:127-154` returns minimal fields
+- `get_daily_history()` at `daily_performance_v2.py:310-318` has no baseline JOIN
+
+**Document Updated**:
+- `docs/V2_API_BASELINE_LIMITATION.md` - Comprehensive problem statement + implementation plan
+
+---
+
+#### **Docs: V2 API Baseline Data Limitation** (2026-01-25)
+
+Created documentation describing the baseline (benchmark) data limitation in the v2 API.
+
+**Issue**: v2 API does not include `baseline_return` or `baseline_value` in history entries, causing baseline comparisons (e.g., QQQ) to show as 0% on dashboard and performance pages.
+
+**Documentation Includes**:
+- Current state and missing fields
+- Impact on frontend components
+- Three proposed backend solutions with pros/cons
+- Implementation priority matrix
+- Temporary UI handling suggestions
+
+**File Created**:
+- `docs/V2_API_BASELINE_LIMITATION.md`
+
+---
+
+#### **Fix: Dashboard v2 API - Percentage Conversion and Calendar Days** (2026-01-25)
+
+Fixed critical bugs where metrics displayed wrong values (Return showed ~0% instead of 2.92%, CAGR showed 0%).
+
+**Bug 1: Decimal vs Percentage conversion** - v2 API returns returns as decimals (0.029223), but display expected percentages (2.92%)
+- **Fix**: Multiply by 100 when displaying: `periodReturn * 100`
+- **Fix**: Pass `periodReturn * 100` to `calculateAnnualizedReturn()` which expects percentage input
+- **Fix**: Remove double `* 100` from CAGR displays since `calculateAnnualizedReturn` already returns percentage
+
+**Bug 2: Calendar days negative** - `calculateCalendarDays()` was calculating `oldestDate - newestDate` (negative) due to DESC order
+- **Fix**: Corrected to calculate `newestDate - oldestDate` for proper positive day count
+
+**Bug 3: Dashboard Return Row still had swapped snapshots** - The comparison table Return Row still used wrong order
+- **Fix**: Corrected `lastSnapshot = history[0]` (newest) and `firstSnapshot = history[length-1]` (oldest)
+
+**Verified Values** (v3.5b, 90-day):
+- Return: +2.92% ✅
+- CAGR: +22.89% ✅
+- Max Drawdown: -2.58% ✅
+- Sharpe: 2.08 ✅
+
+**Files Modified**:
+- `dashboard/src/pages/v2/PerformanceV2.tsx`
+- `dashboard/src/pages/v2/DashboardV2.tsx`
+
+---
+
+#### **Fix: Dashboard v2 API Migration - Data Ordering and Field Names** (2026-01-25)
+
+Fixed critical bugs where dashboard/performance pages showed no data after v2 API migration.
+
+**Bug 1: Wrong date field** - `calculateCalendarDays()` only looked for `timestamp` but v2 API returns `trading_date`
+- **Fix**: Updated function signature to use `trading_date || timestamp` fallback pattern
+
+**Bug 2: Chart data ordering** - v2 API returns history in DESC order (newest first), but chart library requires ASC order
+- **Fix**: Reverse history array before passing to chart: `[...history].reverse()`
+
+**Bug 3: Period metrics calculation** - `firstSnapshot` and `lastSnapshot` were swapped due to DESC order
+- **Fix**: For DESC data, `history[length-1]` is oldest (first) and `history[0]` is newest (last)
+
+**Files Modified**:
+- `dashboard/src/pages/v2/PerformanceV2.tsx`:
+  - `calculateCalendarDays()` - uses `trading_date || timestamp`
+  - `singleEquityCurve` useMemo - reverses history for chart
+  - Multi-strategy chart useEffect - reverses history with `historyAsc`
+  - `periodMetrics` useMemo - swaps first/last snapshot indices
+  - `multiPeriodMetrics` useMemo - swaps first/last snapshot indices
+- `dashboard/src/pages/v2/DashboardV2.tsx`:
+  - `calculateCalendarDays()` - uses `trading_date || timestamp`
+
+---
+
 #### **Feature: Dashboard Migration to Performance API v2** (2026-01-24)
 
 Migrated the dashboard frontend from v1 Performance API to v2 Performance API which uses pre-computed daily_performance table for fast, consistent KPI retrieval.

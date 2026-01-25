@@ -88,13 +88,15 @@ function calculateAnnualizedReturn(periodReturnPct: number, calendarDays: number
   return annualized * 100
 }
 
-function calculateCalendarDays(history: Array<{ timestamp?: string }>): number {
+function calculateCalendarDays(history: Array<{ timestamp?: string; trading_date?: string }>): number {
   if (!history || history.length < 2) return history?.length || 0
-  const firstDate = history[0].timestamp?.slice(0, 10)
-  const lastDate = history[history.length - 1].timestamp?.slice(0, 10)
-  if (!firstDate || !lastDate) return 0
-  const start = new Date(firstDate)
-  const end = new Date(lastDate)
+  // v2 API returns history in DESC order (newest first), so:
+  // history[0] = newest date, history[length-1] = oldest date
+  const newestDate = (history[0].trading_date || history[0].timestamp)?.slice(0, 10)
+  const oldestDate = (history[history.length - 1].trading_date || history[history.length - 1].timestamp)?.slice(0, 10)
+  if (!newestDate || !oldestDate) return 0
+  const start = new Date(oldestDate)
+  const end = new Date(newestDate)
   const diffMs = end.getTime() - start.getTime()
   return Math.floor(diffMs / (1000 * 60 * 60 * 24)) + 1
 }
@@ -271,7 +273,7 @@ function MobileComparisonCard({
             <span className={`font-medium ${
               (metrics.periodReturn ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
             }`}>
-              {formatMetricValue(metrics.periodReturn, 'percent')}
+              {formatMetricValue((metrics.periodReturn ?? 0) * 100, 'percent')}
             </span>
           </div>
           <div>
@@ -368,13 +370,15 @@ function PerformanceV2() {
   })
 
   // Equity curve data derived from v2 history (for chart compatibility)
+  // NOTE: v2 API returns history in DESC order, chart needs ASC order
   const singleEquityCurve = useMemo(() => {
     if (!singlePerformance?.history) return null
     return {
-      data: singlePerformance.history.map((snapshot) => ({
+      data: [...singlePerformance.history].reverse().map((snapshot) => ({
         time: snapshot.trading_date || snapshot.timestamp?.slice(0, 10) || '',
         value: snapshot.total_equity ?? 0,
         baseline_value: snapshot.baseline_value,
+        baseline_return: snapshot.baseline_return,  // Cumulative baseline return (decimal)
       })),
     }
   }, [singlePerformance?.history])
@@ -413,14 +417,17 @@ function PerformanceV2() {
       return { periodReturn: 0, periodBaselineReturn: 0, periodAlpha: 0, annualizedReturn: 0, calendarDays: 0 }
     }
 
-    const firstSnapshot = performance.history[0]
-    const lastSnapshot = performance.history[performance.history.length - 1]
+    // v2 API returns history in DESC order (newest first)
+    // firstSnapshot = oldest date, lastSnapshot = newest date (chronologically)
+    const firstSnapshot = performance.history[performance.history.length - 1]
+    const lastSnapshot = performance.history[0]
     const calendarDays = calculateCalendarDays(performance.history)
 
     if (timeRange === 'all') {
       const cumReturn = lastSnapshot.cumulative_return ?? 0
       const baselineReturn = lastSnapshot.baseline_return ?? 0
-      const annualizedReturn = calculateAnnualizedReturn(cumReturn, calendarDays)
+      // v2 API returns decimals, calculateAnnualizedReturn expects percentages
+      const annualizedReturn = calculateAnnualizedReturn(cumReturn * 100, calendarDays)
       return {
         periodReturn: cumReturn,
         periodBaselineReturn: baselineReturn,
@@ -438,7 +445,8 @@ function PerformanceV2() {
       lastSnapshot.baseline_return ?? 0,
       firstSnapshot.baseline_return ?? 0
     )
-    const annualizedReturn = calculateAnnualizedReturn(periodReturn, calendarDays)
+    // v2 API returns decimals, calculateAnnualizedReturn expects percentages
+    const annualizedReturn = calculateAnnualizedReturn(periodReturn * 100, calendarDays)
 
     return {
       periodReturn,
@@ -471,8 +479,10 @@ function PerformanceV2() {
         return
       }
 
-      const firstSnapshot = perfData.history[0]
-      const lastSnapshot = perfData.history[perfData.history.length - 1]
+      // v2 API returns history in DESC order (newest first)
+      // firstSnapshot = oldest date, lastSnapshot = newest date (chronologically)
+      const firstSnapshot = perfData.history[perfData.history.length - 1]
+      const lastSnapshot = perfData.history[0]
       const calendarDays = calculateCalendarDays(perfData.history)
 
       // Calculate baseline max drawdown from history
@@ -509,8 +519,9 @@ function PerformanceV2() {
       if (timeRange === 'all') {
         const cumReturn = lastSnapshot.cumulative_return ?? 0
         const baselineReturn = lastSnapshot.baseline_return ?? 0
-        const annualized = calculateAnnualizedReturn(cumReturn, calendarDays)
-        const baselineAnnualized = calculateAnnualizedReturn(baselineReturn, calendarDays)
+        // v2 API returns decimals, calculateAnnualizedReturn expects percentages
+        const annualized = calculateAnnualizedReturn(cumReturn * 100, calendarDays)
+        const baselineAnnualized = calculateAnnualizedReturn(baselineReturn * 100, calendarDays)
         metricsMap[strategyId] = {
           periodReturn: cumReturn,
           annualized,
@@ -530,8 +541,9 @@ function PerformanceV2() {
           lastSnapshot.baseline_return ?? 0,
           firstSnapshot.baseline_return ?? 0
         )
-        const annualized = calculateAnnualizedReturn(periodReturn, calendarDays)
-        const baselineAnnualized = calculateAnnualizedReturn(baselineReturn, calendarDays)
+        // v2 API returns decimals, calculateAnnualizedReturn expects percentages
+        const annualized = calculateAnnualizedReturn(periodReturn * 100, calendarDays)
+        const baselineAnnualized = calculateAnnualizedReturn(baselineReturn * 100, calendarDays)
         metricsMap[strategyId] = {
           periodReturn,
           annualized,
@@ -672,6 +684,9 @@ function PerformanceV2() {
         const perfData = multiPerformanceData?.[strategyId]
         if (!perfData?.history || perfData.history.length === 0) return
 
+        // v2 API returns history in DESC order, chart needs ASC order
+        const historyAsc = [...perfData.history].reverse()
+
         const style = STRATEGY_COLORS[idx] || STRATEGY_COLORS[0]
         const series = chartRef.current!.addLineSeries({
           color: style.color,
@@ -680,17 +695,17 @@ function PerformanceV2() {
           priceFormat: { type: 'custom', formatter: priceFormatter },
         })
 
-        const firstPoint = perfData.history[0]
+        const firstPoint = historyAsc[0]
         const firstEquity = firstPoint?.total_equity ?? 1
 
         if (isAllTime) {
-          const chartData: LineData[] = perfData.history.map((point: DailyPerformanceData) => ({
+          const chartData: LineData[] = historyAsc.map((point: DailyPerformanceData) => ({
             time: (point.trading_date || point.timestamp || '').slice(0, 10) as string,
             value: point.total_equity ?? 0,
           }))
           series.setData(deduplicateChartData(chartData))
         } else {
-          const chartData: LineData[] = perfData.history.map((point: DailyPerformanceData) => ({
+          const chartData: LineData[] = historyAsc.map((point: DailyPerformanceData) => ({
             time: (point.trading_date || point.timestamp || '').slice(0, 10) as string,
             value: firstEquity > 0 ? ((point.total_equity ?? firstEquity) / firstEquity - 1) * 100 : 0,
           }))
@@ -699,21 +714,26 @@ function PerformanceV2() {
 
         strategySeriesRef.current.set(strategyId, series)
 
-        // Extract baseline data from first strategy
-        // Note: v2 API doesn't have per-day baseline in history, use baseline from daily endpoint
-        if (idx === 0 && perfData.baseline) {
-          const baselineEquity = perfData.baseline.total_equity ?? 1
-          // For comparison view, we don't have historical baseline, only current
-          // Show baseline as flat line at current value for reference
-          if (perfData.history.length > 0) {
-            const firstDate = (perfData.history[0]?.trading_date || '').slice(0, 10)
-            const lastDate = (perfData.history[perfData.history.length - 1]?.trading_date || '').slice(0, 10)
-            if (firstDate && lastDate) {
-              baselineData = [
-                { time: firstDate as string, value: isAllTime ? baselineEquity : 0 },
-                { time: lastDate as string, value: isAllTime ? baselineEquity : (perfData.baseline.cumulative_return ?? 0) * 100 },
-              ]
-            }
+        // Extract baseline data from first strategy's history
+        // V2 API includes baseline_return (cumulative) and baseline_value per row
+        if (idx === 0 && historyAsc.length > 0) {
+          const firstBaseline = historyAsc[0]?.baseline_value ?? 1
+          if (isAllTime) {
+            // All-time view: show baseline equity values
+            baselineData = historyAsc
+              .filter((point: DailyPerformanceData) => point.baseline_value != null)
+              .map((point: DailyPerformanceData) => ({
+                time: (point.trading_date || '').slice(0, 10) as string,
+                value: point.baseline_value ?? 0,
+              }))
+          } else {
+            // Percentage view: use baseline_return directly (cumulative return in decimal)
+            baselineData = historyAsc
+              .filter((point: DailyPerformanceData) => point.baseline_return != null)
+              .map((point: DailyPerformanceData) => ({
+                time: (point.trading_date || '').slice(0, 10) as string,
+                value: (point.baseline_return ?? 0) * 100,  // Convert decimal to percentage
+              }))
           }
         }
       })
@@ -765,6 +785,7 @@ function PerformanceV2() {
       })
 
       if (isAllTime) {
+        // All-time view: show baseline equity values
         const baselineData: LineData[] = singleEquityCurve.data
           .filter((point: { time: string; baseline_value?: number }) => point.baseline_value != null)
           .map((point: { time: string; value: number; baseline_value?: number }) => ({
@@ -773,11 +794,12 @@ function PerformanceV2() {
           }))
         baselineSeriesRef.current.setData(deduplicateChartData(baselineData))
       } else {
+        // Percentage view: use baseline_return directly (already cumulative return in decimal)
         const baselineData: LineData[] = singleEquityCurve.data
-          .filter((point: { time: string; baseline_value?: number }) => point.baseline_value != null)
-          .map((point: { time: string; value: number; baseline_value?: number }) => ({
+          .filter((point: { time: string; baseline_return?: number }) => point.baseline_return != null)
+          .map((point: { time: string; value: number; baseline_return?: number }) => ({
             time: point.time as string,
-            value: firstBaseline > 0 ? ((point.baseline_value ?? 0) / firstBaseline - 1) * 100 : 0,
+            value: (point.baseline_return ?? 0) * 100,  // Convert decimal to percentage
           }))
         baselineSeriesRef.current.setData(deduplicateChartData(baselineData))
       }
@@ -885,7 +907,8 @@ function PerformanceV2() {
                 sharpe: multiPeriodMetrics[selectedStrategies[0]]?.baselineSharpe,
                 maxDrawdown: multiPeriodMetrics[selectedStrategies[0]]?.baselineMaxDrawdown,
                 // Show baseline (QQQ) total equity from latest snapshot
-                totalEquity: multiPerformanceData?.[selectedStrategies[0]]?.history?.slice(-1)[0]?.baseline_value,
+                // v2 API returns history in DESC order (newest first at index 0)
+                totalEquity: multiPerformanceData?.[selectedStrategies[0]]?.history?.[0]?.baseline_value,
               }}
             />
           </div>
@@ -937,30 +960,31 @@ function PerformanceV2() {
                     higherIsBetter={true}
                     baselineValue={
                       // Show baseline (QQQ) total equity from latest snapshot
-                      multiPerformanceData?.[selectedStrategies[0]]?.history?.slice(-1)[0]?.baseline_value
+                      // v2 API returns history in DESC order (newest first at index 0)
+                      multiPerformanceData?.[selectedStrategies[0]]?.history?.[0]?.baseline_value
                     }
                     strategyOrder={selectedStrategies}
                   />
                   <ComparisonRow
                     label={`${getTimeRangeLabel(timeRange)} Return`}
                     values={Object.fromEntries(
-                      selectedStrategies.map((id) => [id, multiPeriodMetrics[id]?.periodReturn])
+                      selectedStrategies.map((id) => [id, (multiPeriodMetrics[id]?.periodReturn ?? 0) * 100])
                     )}
                     strategyStyles={strategyStyles}
                     format="percent"
                     higherIsBetter={true}
-                    baselineValue={multiPeriodMetrics[selectedStrategies[0]]?.baselineReturn}
+                    baselineValue={(multiPeriodMetrics[selectedStrategies[0]]?.baselineReturn ?? 0) * 100}
                     strategyOrder={selectedStrategies}
                   />
                   <ComparisonRow
-                    label="Annualized"
+                    label="CAGR"
                     values={Object.fromEntries(
-                      selectedStrategies.map((id) => [id, multiPeriodMetrics[id]?.annualized])
+                      selectedStrategies.map((id) => [id, multiPeriodMetrics[id]?.annualized ?? 0])
                     )}
                     strategyStyles={strategyStyles}
                     format="percent"
                     higherIsBetter={true}
-                    baselineValue={multiPeriodMetrics[selectedStrategies[0]]?.baselineAnnualized}
+                    baselineValue={multiPeriodMetrics[selectedStrategies[0]]?.baselineAnnualized ?? 0}
                     strategyOrder={selectedStrategies}
                   />
                   <ComparisonRow
@@ -979,19 +1003,19 @@ function PerformanceV2() {
                     values={Object.fromEntries(
                       selectedStrategies.map((id) => {
                         const rawValue = multiPerformanceData?.[id]?.data?.max_drawdown
-                        return [id, rawValue != null ? -Math.abs(rawValue) : null]
+                        return [id, rawValue != null ? -Math.abs(rawValue) * 100 : null]
                       })
                     )}
                     strategyStyles={strategyStyles}
                     format="percent"
                     higherIsBetter={false}
-                    baselineValue={multiPeriodMetrics[selectedStrategies[0]]?.baselineMaxDrawdown}
+                    baselineValue={(multiPeriodMetrics[selectedStrategies[0]]?.baselineMaxDrawdown ?? 0)}
                     strategyOrder={selectedStrategies}
                   />
                   <ComparisonRow
                     label="Alpha"
                     values={Object.fromEntries(
-                      selectedStrategies.map((id) => [id, multiPeriodMetrics[id]?.alpha])
+                      selectedStrategies.map((id) => [id, (multiPeriodMetrics[id]?.alpha ?? 0) * 100])
                     )}
                     strategyStyles={strategyStyles}
                     format="percent"
@@ -1015,11 +1039,11 @@ function PerformanceV2() {
             />
             <MetricCard
               label={`${getTimeRangeLabel(timeRange)} Return`}
-              value={periodMetrics.periodReturn}
+              value={periodMetrics.periodReturn * 100}
               format="percent"
             />
             <MetricCard
-              label="Annualized"
+              label="CAGR"
               value={periodMetrics.annualizedReturn}
               format="percent"
             />
@@ -1031,7 +1055,7 @@ function PerformanceV2() {
             <MetricCard
               label="Max Drawdown"
               value={performance.data.max_drawdown != null
-                ? -Math.abs(performance.data.max_drawdown)
+                ? -Math.abs(performance.data.max_drawdown) * 100
                 : 0}
               format="percent"
               className="col-span-2 md:col-span-1"
@@ -1408,7 +1432,7 @@ function PerformanceV2() {
                         <div className={`text-xs ${
                           alpha >= 0 ? 'text-green-400/70' : 'text-red-400/70'
                         }`}>
-                          α: {alpha >= 0 ? '+' : ''}{alpha.toFixed(2)}%
+                          α: {alpha >= 0 ? '+' : ''}{(alpha * 100).toFixed(2)}%
                         </div>
                       </div>
                     </div>
@@ -1469,14 +1493,14 @@ function PerformanceV2() {
                           <td className={`py-2 pr-4 ${
                             (snapshot.cumulative_return ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
                           }`}>
-                            {((snapshot.cumulative_return ?? 0)).toFixed(2)}%
+                            {((snapshot.cumulative_return ?? 0) * 100).toFixed(2)}%
                           </td>
                           {!isTablet && (
                             <td className={`py-2 pr-4 ${
                               (snapshot.baseline_return ?? 0) >= 0 ? 'text-amber-400' : 'text-amber-600'
                             }`}>
                               {snapshot.baseline_return != null
-                                ? `${snapshot.baseline_return.toFixed(2)}%`
+                                ? `${(snapshot.baseline_return * 100).toFixed(2)}%`
                                 : '-'}
                             </td>
                           )}
@@ -1484,7 +1508,7 @@ function PerformanceV2() {
                             alpha >= 0 ? 'text-green-400' : 'text-red-400'
                           }`}>
                             {snapshot.baseline_return != null
-                              ? `${alpha >= 0 ? '+' : ''}${alpha.toFixed(2)}%`
+                              ? `${alpha >= 0 ? '+' : ''}${(alpha * 100).toFixed(2)}%`
                               : '-'}
                           </td>
                           <td className="py-2 text-red-400">

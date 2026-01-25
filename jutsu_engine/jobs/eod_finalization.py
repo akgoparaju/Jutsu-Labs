@@ -384,7 +384,7 @@ async def process_strategy_eod(
 
             # Calculate days since previous
             prev_date = prev_record.trading_date.date() if hasattr(prev_record.trading_date, 'date') else prev_record.trading_date
-            days_since_previous = days_since_last_trading_day(trading_date, prev_date)
+            days_since_previous = (trading_date - prev_date).days
 
             if days_since_previous > 5:
                 logger.warning(
@@ -396,17 +396,15 @@ async def process_strategy_eod(
 
             # Calculate incremental KPIs using Welford's algorithm
             kpi_state = update_kpis_incremental(
-                prev_state={
-                    'returns_sum': float(prev_record.returns_sum or 0),
-                    'returns_sum_sq': float(prev_record.returns_sum_sq or 0),
-                    'downside_sum_sq': float(prev_record.downside_sum_sq or 0),
-                    'returns_count': prev_record.returns_count or 0,
-                    'high_water_mark': float(prev_record.high_water_mark or initial_capital),
-                    'initial_capital': float(initial_capital),
-                },
+                prev_returns_sum=float(prev_record.returns_sum or 0),
+                prev_returns_sum_sq=float(prev_record.returns_sum_sq or 0),
+                prev_downside_sum_sq=float(prev_record.downside_sum_sq or 0),
+                prev_returns_count=prev_record.returns_count or 0,
+                prev_high_water_mark=float(prev_record.high_water_mark or initial_capital),
+                prev_max_drawdown=float(prev_record.max_drawdown or 0),
                 today_return=float(daily_return),
                 today_equity=float(today_equity),
-                trading_days_count=trading_days_count,
+                initial_capital=float(initial_capital),
             )
 
         # Get strategy metadata from snapshot
@@ -567,10 +565,20 @@ async def process_baseline_eod(
         # Get baseline price data
         # For baselines, we calculate buy-and-hold from market data
         from jutsu_engine.data.models import MarketData
+        from sqlalchemy import func
+
+        # Use UTC-aware date range to find market data
+        # Schwab timestamps daily bars at 06:00 UTC of the trading date
+        # (which is 22:00 PST previous calendar day, 01:00 ET same day)
+        # Query range [T 00:00 UTC, T+1 00:00 UTC) captures the 06:00 UTC bar
+        start_of_day = datetime.combine(trading_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+        end_of_day = datetime.combine(trading_date + timedelta(days=1), datetime.min.time()).replace(tzinfo=timezone.utc)
 
         today_bar = db.query(MarketData).filter(
             MarketData.symbol == symbol,
-            MarketData.date == datetime.combine(trading_date, datetime.min.time()),
+            MarketData.timeframe == '1D',
+            MarketData.timestamp >= start_of_day,
+            MarketData.timestamp < end_of_day,
         ).first()
 
         if not today_bar:
@@ -606,11 +614,15 @@ async def process_baseline_eod(
             initial_capital = prev_record.initial_capital
             shares = Decimal(str(initial_capital)) / Decimal(str(prev_record.total_equity)) * Decimal(str(prev_record.total_equity)) / today_price
 
-            # Get previous day's price
+            # Get previous day's price (use UTC-aware timestamps for Schwab convention)
             prev_date = prev_record.trading_date.date() if hasattr(prev_record.trading_date, 'date') else prev_record.trading_date
+            prev_start = datetime.combine(prev_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+            prev_end = datetime.combine(prev_date + timedelta(days=1), datetime.min.time()).replace(tzinfo=timezone.utc)
             prev_bar = db.query(MarketData).filter(
                 MarketData.symbol == symbol,
-                MarketData.date == datetime.combine(prev_date, datetime.min.time()),
+                MarketData.timeframe == '1D',
+                MarketData.timestamp >= prev_start,
+                MarketData.timestamp < prev_end,
             ).first()
 
             if prev_bar:
@@ -624,21 +636,19 @@ async def process_baseline_eod(
             cumulative_return = calculate_cumulative_return(today_equity, Decimal(str(initial_capital)))
 
             is_first_day = False
-            days_since_previous = days_since_last_trading_day(trading_date, prev_date)
+            days_since_previous = (trading_date - prev_date).days
             trading_days_count = (prev_record.trading_days_count or 1) + 1
 
             kpi_state = update_kpis_incremental(
-                prev_state={
-                    'returns_sum': float(prev_record.returns_sum or 0),
-                    'returns_sum_sq': float(prev_record.returns_sum_sq or 0),
-                    'downside_sum_sq': float(prev_record.downside_sum_sq or 0),
-                    'returns_count': prev_record.returns_count or 0,
-                    'high_water_mark': float(prev_record.high_water_mark or initial_capital),
-                    'initial_capital': float(initial_capital),
-                },
+                prev_returns_sum=float(prev_record.returns_sum or 0),
+                prev_returns_sum_sq=float(prev_record.returns_sum_sq or 0),
+                prev_downside_sum_sq=float(prev_record.downside_sum_sq or 0),
+                prev_returns_count=prev_record.returns_count or 0,
+                prev_high_water_mark=float(prev_record.high_water_mark or initial_capital),
+                prev_max_drawdown=float(prev_record.max_drawdown or 0),
                 today_return=float(daily_return),
                 today_equity=float(today_equity),
-                trading_days_count=trading_days_count,
+                initial_capital=float(initial_capital),
             )
 
         # Build record
