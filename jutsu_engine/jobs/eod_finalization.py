@@ -112,7 +112,7 @@ async def run_eod_finalization(target_date: Optional[date] = None) -> Dict[str, 
         for strategy in active_strategies:
             try:
                 # Determine mode from strategy config
-                mode = 'online_live' if strategy.is_paper else 'offline_mock'
+                mode = 'online_live' if strategy.paper_trading else 'offline_mock'
 
                 success = await process_strategy_eod(
                     db=db,
@@ -334,10 +334,10 @@ async def process_strategy_eod(
         ).filter(
             PerformanceSnapshot.strategy_id == strategy_id,
             PerformanceSnapshot.mode == mode,
-            PerformanceSnapshot.snapshot_time >= snapshot_date_start,
-            PerformanceSnapshot.snapshot_time <= snapshot_date_end,
+            PerformanceSnapshot.timestamp >= snapshot_date_start,
+            PerformanceSnapshot.timestamp <= snapshot_date_end,
         ).order_by(
-            desc(PerformanceSnapshot.snapshot_time)
+            desc(PerformanceSnapshot.timestamp)
         ).first()
 
         if not latest_snapshot:
