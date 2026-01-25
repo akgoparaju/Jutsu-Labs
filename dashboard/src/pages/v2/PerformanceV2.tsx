@@ -10,13 +10,14 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { useState, useEffect, useRef, useMemo } from 'react'
-import { performanceApi, PerformanceSnapshot } from '../../api/client'
+import { performanceApi, performanceApiV2, DailyPerformanceData } from '../../api/client'
+import { PerformanceDataV2 } from '../../hooks/useMultiStrategyData'
 import { createChart, IChartApi, ISeriesApi, LineData, TickMarkType } from 'lightweight-charts'
 import { ResponsiveCard, ResponsiveText, ResponsiveGrid, MetricCard } from '../../components/ui'
 import { useIsMobileOrSmaller, useIsTablet } from '../../hooks/useMediaQuery'
 import { useStrategy } from '../../contexts/StrategyContext'
 import { StrategyMultiSelector } from '../../components/StrategyMultiSelector'
-import { useMultiStrategyPerformanceData } from '../../hooks/useMultiStrategyData'
+import { useMultiStrategyPerformanceDataV2 } from '../../hooks/useMultiStrategyData'
 import {
   STRATEGY_COLORS,
   BASELINE_STYLE,
@@ -345,33 +346,43 @@ function PerformanceV2() {
   // Determine if we're in comparison mode
   const isComparisonMode = selectedStrategies.length > 1
 
-  // Single strategy data (for non-comparison mode)
+  // Single strategy data (for non-comparison mode) - v2 API
   const { data: singlePerformance, isLoading: isSingleLoading } = useQuery({
-    queryKey: ['performance', mode, timeRange, queryParams, selectedStrategies[0]],
-    queryFn: () => performanceApi.getPerformance({
-      mode: mode || undefined,
-      days: queryParams.days,
-      start_date: queryParams.start_date,
-      strategy_id: selectedStrategies[0],
-    }).then(res => res.data),
-    enabled: selectedStrategies.length === 1,
+    queryKey: ['performance-v2', mode, timeRange, queryParams, selectedStrategies[0]],
+    queryFn: async () => {
+      const [dailyRes, historyRes] = await Promise.all([
+        performanceApiV2.getDaily(selectedStrategies[0], { mode: mode || undefined }),
+        performanceApiV2.getHistory(selectedStrategies[0], { mode: mode || undefined, days: queryParams.days || 365 }),
+      ])
+      return {
+        data: dailyRes.data.data,
+        history: historyRes.data.history,
+        baseline: dailyRes.data.baseline,
+        strategy_id: dailyRes.data.strategy_id,
+        mode: dailyRes.data.mode,
+        is_finalized: dailyRes.data.is_finalized,
+        data_as_of: dailyRes.data.data_as_of,
+      } as PerformanceDataV2
+    },
+    enabled: selectedStrategies.length === 1 && !!selectedStrategies[0],
   })
 
-  const { data: singleEquityCurve } = useQuery({
-    queryKey: ['equityCurve', mode, timeRange, queryParams, selectedStrategies[0]],
-    queryFn: () => performanceApi.getEquityCurve({
-      mode: mode || undefined,
-      days: queryParams.days,
-      start_date: queryParams.start_date,
-      strategy_id: selectedStrategies[0],
-    }).then(res => res.data),
-    enabled: selectedStrategies.length === 1,
-  })
+  // Equity curve data derived from v2 history (for chart compatibility)
+  const singleEquityCurve = useMemo(() => {
+    if (!singlePerformance?.history) return null
+    return {
+      data: singlePerformance.history.map((snapshot) => ({
+        time: snapshot.trading_date || snapshot.timestamp?.slice(0, 10) || '',
+        value: snapshot.total_equity ?? 0,
+        baseline_value: snapshot.baseline_value,
+      })),
+    }
+  }, [singlePerformance?.history])
 
-  // Multi-strategy data
-  const { data: multiPerformanceData, isLoading: isMultiLoading } = useMultiStrategyPerformanceData(
+  // Multi-strategy data (v2 API)
+  const { data: multiPerformanceData, isLoading: isMultiLoading } = useMultiStrategyPerformanceDataV2(
     selectedStrategies,
-    { mode: mode || undefined, days: queryParams.days, start_date: queryParams.start_date },
+    { mode: mode || undefined, days: queryParams.days || 365 },
     selectedStrategies.length > 1
   )
 
@@ -673,14 +684,14 @@ function PerformanceV2() {
         const firstEquity = firstPoint?.total_equity ?? 1
 
         if (isAllTime) {
-          const chartData: LineData[] = perfData.history.map((point: PerformanceSnapshot) => ({
-            time: point.timestamp.slice(0, 10) as string,
+          const chartData: LineData[] = perfData.history.map((point: DailyPerformanceData) => ({
+            time: (point.trading_date || point.timestamp || '').slice(0, 10) as string,
             value: point.total_equity ?? 0,
           }))
           series.setData(deduplicateChartData(chartData))
         } else {
-          const chartData: LineData[] = perfData.history.map((point: PerformanceSnapshot) => ({
-            time: point.timestamp.slice(0, 10) as string,
+          const chartData: LineData[] = perfData.history.map((point: DailyPerformanceData) => ({
+            time: (point.trading_date || point.timestamp || '').slice(0, 10) as string,
             value: firstEquity > 0 ? ((point.total_equity ?? firstEquity) / firstEquity - 1) * 100 : 0,
           }))
           series.setData(deduplicateChartData(chartData))
@@ -689,22 +700,20 @@ function PerformanceV2() {
         strategySeriesRef.current.set(strategyId, series)
 
         // Extract baseline data from first strategy
-        if (idx === 0) {
-          const firstBaseline = firstPoint?.baseline_value ?? 1
-          if (isAllTime) {
-            baselineData = deduplicateChartData(perfData.history
-              .filter((p: PerformanceSnapshot) => p.baseline_value != null)
-              .map((point: PerformanceSnapshot) => ({
-                time: point.timestamp.slice(0, 10) as string,
-                value: point.baseline_value!,
-              })))
-          } else {
-            baselineData = deduplicateChartData(perfData.history
-              .filter((p: PerformanceSnapshot) => p.baseline_value != null)
-              .map((point: PerformanceSnapshot) => ({
-                time: point.timestamp.slice(0, 10) as string,
-                value: firstBaseline > 0 ? (point.baseline_value! / firstBaseline - 1) * 100 : 0,
-              })))
+        // Note: v2 API doesn't have per-day baseline in history, use baseline from daily endpoint
+        if (idx === 0 && perfData.baseline) {
+          const baselineEquity = perfData.baseline.total_equity ?? 1
+          // For comparison view, we don't have historical baseline, only current
+          // Show baseline as flat line at current value for reference
+          if (perfData.history.length > 0) {
+            const firstDate = (perfData.history[0]?.trading_date || '').slice(0, 10)
+            const lastDate = (perfData.history[perfData.history.length - 1]?.trading_date || '').slice(0, 10)
+            if (firstDate && lastDate) {
+              baselineData = [
+                { time: firstDate as string, value: isAllTime ? baselineEquity : 0 },
+                { time: lastDate as string, value: isAllTime ? baselineEquity : (perfData.baseline.cumulative_return ?? 0) * 100 },
+              ]
+            }
           }
         }
       })
@@ -758,17 +767,17 @@ function PerformanceV2() {
       if (isAllTime) {
         const baselineData: LineData[] = singleEquityCurve.data
           .filter((point: { time: string; baseline_value?: number }) => point.baseline_value != null)
-          .map((point: { time: string; baseline_value: number }) => ({
+          .map((point: { time: string; value: number; baseline_value?: number }) => ({
             time: point.time as string,
-            value: point.baseline_value,
+            value: point.baseline_value ?? 0,
           }))
         baselineSeriesRef.current.setData(deduplicateChartData(baselineData))
       } else {
         const baselineData: LineData[] = singleEquityCurve.data
           .filter((point: { time: string; baseline_value?: number }) => point.baseline_value != null)
-          .map((point: { time: string; baseline_value: number }) => ({
+          .map((point: { time: string; value: number; baseline_value?: number }) => ({
             time: point.time as string,
-            value: firstBaseline > 0 ? (point.baseline_value / firstBaseline - 1) * 100 : 0,
+            value: firstBaseline > 0 ? ((point.baseline_value ?? 0) / firstBaseline - 1) * 100 : 0,
           }))
         baselineSeriesRef.current.setData(deduplicateChartData(baselineData))
       }
@@ -854,12 +863,12 @@ function PerformanceV2() {
                   strategyName={getStrategyDisplayName(strategyId)}
                   style={strategyStyles[strategyId]}
                   metrics={{
-                    totalEquity: perfData?.current?.total_equity,
+                    totalEquity: perfData?.data?.total_equity,
                     periodReturn: periodData?.periodReturn,
                     annualized: periodData?.annualized,
-                    sharpe: perfData?.current?.sharpe_ratio,
-                    maxDrawdown: perfData?.current?.max_drawdown != null
-                      ? -Math.abs(perfData.current.max_drawdown)
+                    sharpe: perfData?.data?.sharpe_ratio,
+                    maxDrawdown: perfData?.data?.max_drawdown != null
+                      ? -Math.abs(perfData.data.max_drawdown)
                       : undefined,
                   }}
                   rank={idx === 0 ? 1 : undefined}
@@ -921,7 +930,7 @@ function PerformanceV2() {
                   <ComparisonRow
                     label="Total Equity"
                     values={Object.fromEntries(
-                      selectedStrategies.map((id) => [id, multiPerformanceData?.[id]?.current?.total_equity])
+                      selectedStrategies.map((id) => [id, multiPerformanceData?.[id]?.data?.total_equity])
                     )}
                     strategyStyles={strategyStyles}
                     format="currency"
@@ -957,7 +966,7 @@ function PerformanceV2() {
                   <ComparisonRow
                     label="Sharpe Ratio"
                     values={Object.fromEntries(
-                      selectedStrategies.map((id) => [id, multiPerformanceData?.[id]?.current?.sharpe_ratio])
+                      selectedStrategies.map((id) => [id, multiPerformanceData?.[id]?.data?.sharpe_ratio])
                     )}
                     strategyStyles={strategyStyles}
                     format="number"
@@ -969,7 +978,7 @@ function PerformanceV2() {
                     label="Max Drawdown"
                     values={Object.fromEntries(
                       selectedStrategies.map((id) => {
-                        const rawValue = multiPerformanceData?.[id]?.current?.max_drawdown
+                        const rawValue = multiPerformanceData?.[id]?.data?.max_drawdown
                         return [id, rawValue != null ? -Math.abs(rawValue) : null]
                       })
                     )}
@@ -997,11 +1006,11 @@ function PerformanceV2() {
         )
       ) : (
         // Single Strategy Metrics
-        performance?.current && (
+        performance?.data && (
           <ResponsiveGrid columns={{ default: 2, md: 3, lg: 5 }} gap="md">
             <MetricCard
               label="Total Equity"
-              value={performance.current.total_equity ?? 0}
+              value={performance.data.total_equity ?? 0}
               format="currency"
             />
             <MetricCard
@@ -1016,13 +1025,13 @@ function PerformanceV2() {
             />
             <MetricCard
               label="Sharpe Ratio"
-              value={performance.current.sharpe_ratio ?? 0}
+              value={performance.data.sharpe_ratio ?? 0}
               format="number"
             />
             <MetricCard
               label="Max Drawdown"
-              value={performance.current.max_drawdown != null
-                ? -Math.abs(performance.current.max_drawdown)
+              value={performance.data.max_drawdown != null
+                ? -Math.abs(performance.data.max_drawdown)
                 : 0}
               format="percent"
               className="col-span-2 md:col-span-1"
@@ -1032,7 +1041,7 @@ function PerformanceV2() {
       )}
 
       {/* Portfolio Holdings - Only show in single strategy mode */}
-      {!isComparisonMode && performance?.current && (
+      {!isComparisonMode && performance?.data && (
         <ResponsiveCard padding="md">
           <ResponsiveText variant="h2" as="h3" className="text-white mb-4">
             Portfolio Holdings
@@ -1042,15 +1051,15 @@ function PerformanceV2() {
             <div className="bg-slate-700/50 rounded-lg p-3 sm:p-4">
               <div className="text-xs sm:text-sm text-gray-400 mb-1">Cash</div>
               <div className="text-lg sm:text-xl font-bold text-blue-400">
-                ${(performance.current.cash ?? 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                ${(performance.data.cash ?? 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
               </div>
               <div className="text-xs text-gray-500 mt-1">
-                {(performance.current.cash_weight_pct ?? 0).toFixed(1)}%
+                {(performance.data.cash_weight_pct ?? 0).toFixed(1)}%
               </div>
             </div>
 
             {/* Holdings */}
-            {performance.current.holdings?.map((holding: {
+            {performance.data.holdings?.map((holding: {
               symbol: string
               quantity: number
               value: number
@@ -1067,7 +1076,7 @@ function PerformanceV2() {
               </div>
             ))}
 
-            {(!performance.current.holdings || performance.current.holdings.length === 0) && (
+            {(!performance.data.holdings || performance.data.holdings.length === 0) && (
               <div className="col-span-full text-center text-gray-500 py-4">
                 No positions currently held
               </div>
@@ -1077,26 +1086,26 @@ function PerformanceV2() {
       )}
 
       {/* Trade Statistics - Only show in single strategy mode */}
-      {!isComparisonMode && performance?.current && (
+      {!isComparisonMode && performance?.data && (
         <ResponsiveGrid columns={{ default: 2, md: 4 }} gap="md">
           <MetricCard
             label="Total Trades"
-            value={performance.current.total_trades ?? 0}
+            value={performance.data.total_trades ?? 0}
             format="number"
           />
           <MetricCard
             label="Win Rate"
-            value={(performance.current.win_rate ?? 0) * 100}
+            value={(performance.data.win_rate ?? 0) * 100}
             format="percent"
           />
           <MetricCard
             label="Winning Trades"
-            value={performance.current.winning_trades ?? 0}
+            value={performance.data.winning_trades ?? 0}
             format="number"
           />
           <MetricCard
             label="Losing Trades"
-            value={performance.current.losing_trades ?? 0}
+            value={performance.data.losing_trades ?? 0}
             format="number"
           />
         </ResponsiveGrid>
@@ -1319,11 +1328,12 @@ function PerformanceV2() {
           : performance
         
         if (!dailyPerfData?.history || dailyPerfData.history.length === 0) return null
-        // Deduplicate by date
+        // Deduplicate by date (use trading_date for v2, fallback to timestamp for v1)
         const historyByDate = new Map<string, typeof dailyPerfData.history[0]>()
         for (const snapshot of dailyPerfData.history) {
-          const dateKey = new Date(snapshot.timestamp).toLocaleDateString()
-          historyByDate.set(dateKey, snapshot)
+          const dateStr = snapshot.trading_date || snapshot.timestamp || ''
+          const dateKey = dateStr ? new Date(dateStr).toLocaleDateString() : ''
+          if (dateKey) historyByDate.set(dateKey, snapshot)
         }
         const deduplicatedHistory = Array.from(historyByDate.values())
 
@@ -1331,7 +1341,8 @@ function PerformanceV2() {
         const dailyReturnsMap = new Map<string, number>()
         for (let i = 0; i < deduplicatedHistory.length; i++) {
           const current = deduplicatedHistory[i]
-          const currentDateKey = new Date(current.timestamp).toLocaleDateString()
+          const currentDateStr = current.trading_date || current.timestamp || ''
+          const currentDateKey = currentDateStr ? new Date(currentDateStr).toLocaleDateString() : ''
           if (i === 0) {
             dailyReturnsMap.set(currentDateKey, current.daily_return ?? 0)
           } else {
@@ -1373,7 +1384,8 @@ function PerformanceV2() {
               // Mobile: Simplified card view with key metrics only
               <div className="space-y-2 max-h-96 overflow-y-auto">
                 {deduplicatedHistory.slice().reverse().slice(0, 30).map((snapshot, idx) => {
-                  const dateKey = new Date(snapshot.timestamp).toLocaleDateString()
+                  const dateStr = snapshot.trading_date || snapshot.timestamp || ''
+                  const dateKey = dateStr ? new Date(dateStr).toLocaleDateString() : ''
                   const trueDailyReturn = dailyReturnsMap.get(dateKey) ?? 0
                   const alpha = (snapshot.cumulative_return ?? 0) - (snapshot.baseline_return ?? 0)
 
@@ -1381,7 +1393,7 @@ function PerformanceV2() {
                     <div key={idx} className="bg-slate-700/50 rounded-lg p-3 flex items-center justify-between">
                       <div>
                         <div className="text-sm text-white">
-                          {new Date(snapshot.timestamp).toLocaleDateString()}
+                          {dateStr ? new Date(dateStr).toLocaleDateString() : '-'}
                         </div>
                         <div className="text-xs text-gray-400">
                           ${snapshot.total_equity?.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0})}
@@ -1422,14 +1434,15 @@ function PerformanceV2() {
                   </thead>
                   <tbody>
                     {deduplicatedHistory.slice().reverse().map((snapshot, idx) => {
-                      const dateKey = new Date(snapshot.timestamp).toLocaleDateString()
+                      const dateStr = snapshot.trading_date || snapshot.timestamp || ''
+                      const dateKey = dateStr ? new Date(dateStr).toLocaleDateString() : ''
                       const trueDailyReturn = dailyReturnsMap.get(dateKey) ?? 0
                       const alpha = (snapshot.cumulative_return ?? 0) - (snapshot.baseline_return ?? 0)
 
                       return (
                         <tr key={idx} className="border-b border-slate-700/50">
                           <td className="py-2 pr-4 whitespace-nowrap">
-                            {new Date(snapshot.timestamp).toLocaleDateString()}
+                            {dateStr ? new Date(dateStr).toLocaleDateString() : '-'}
                           </td>
                           <td className="py-2 pr-4">
                             <span className="px-2 py-1 bg-slate-700 rounded text-xs whitespace-nowrap">

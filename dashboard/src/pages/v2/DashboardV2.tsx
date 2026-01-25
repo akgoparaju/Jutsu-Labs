@@ -20,11 +20,11 @@ import { ExecuteTradeModal } from '../../components/ExecuteTradeModal'
 import { SchedulerControl } from '../../components/SchedulerControl'
 import { SchwabTokenBanner } from '../../components/SchwabTokenBanner'
 import { PositionsDisplay } from '../../components/PositionsDisplay'
-import { performanceApi } from '../../api/client'
+import { performanceApiV2 } from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
 import { useStrategy } from '../../contexts/StrategyContext'
 import { StrategyMultiSelector } from '../../components/StrategyMultiSelector'
-import { useMultiStrategyPerformanceData } from '../../hooks/useMultiStrategyData'
+import { useMultiStrategyPerformanceDataV2, PerformanceDataV2 } from '../../hooks/useMultiStrategyData'
 import {
   STRATEGY_COLORS,
   BASELINE_STYLE,
@@ -219,22 +219,29 @@ function DashboardV2() {
   // Calculate query params based on time range
   const queryParams = useMemo(() => getTimeRangeParams(timeRange), [timeRange])
 
-  // Fetch single strategy performance data
+  // Fetch single strategy performance data (v2 API)
   const { data: performanceData } = useQuery({
-    queryKey: ['performance', '', queryParams.days, queryParams.start_date, primaryStrategy],
-    queryFn: () => performanceApi.getPerformance({
-      days: queryParams.days,
-      start_date: queryParams.start_date,
-      strategy_id: primaryStrategy,
-    }).then(res => res.data),
+    queryKey: ['performance-v2', queryParams.days, primaryStrategy],
+    queryFn: async () => {
+      const [dailyRes, historyRes] = await Promise.all([
+        performanceApiV2.getDaily(primaryStrategy, { mode: undefined }),
+        performanceApiV2.getHistory(primaryStrategy, { mode: undefined, days: queryParams.days || 365 }),
+      ])
+      return {
+        data: dailyRes.data.data,
+        history: historyRes.data.history,
+        baseline: dailyRes.data.baseline,
+        is_finalized: dailyRes.data.is_finalized,
+      } as PerformanceDataV2
+    },
     refetchInterval: 30000,
-    enabled: selectedStrategies.length === 1,
+    enabled: selectedStrategies.length === 1 && !!primaryStrategy,
   })
 
-  // Multi-strategy performance data
-  const { data: multiPerformanceData, isLoading: isMultiLoading } = useMultiStrategyPerformanceData(
+  // Multi-strategy performance data (v2 API)
+  const { data: multiPerformanceData, isLoading: isMultiLoading } = useMultiStrategyPerformanceDataV2(
     selectedStrategies,
-    { mode: undefined, days: queryParams.days, start_date: queryParams.start_date },
+    { mode: undefined, days: queryParams.days || 365 },
     selectedStrategies.length > 1
   )
 
@@ -491,7 +498,7 @@ function DashboardV2() {
                       <div>
                         <span className="text-gray-400 block">Total Equity</span>
                         <span className="text-white font-medium">
-                          {formatMetricValue(perfData?.current?.total_equity, 'currency')}
+                          {formatMetricValue(perfData?.data?.total_equity, 'currency')}
                         </span>
                       </div>
                       <div>
@@ -509,15 +516,15 @@ function DashboardV2() {
                       <div>
                         <span className="text-gray-400 block">Sharpe</span>
                         <span className="text-white font-medium">
-                          {formatMetricValue(perfData?.current?.sharpe_ratio, 'number')}
+                          {formatMetricValue(perfData?.data?.sharpe_ratio, 'number')}
                         </span>
                       </div>
                       <div className="col-span-2">
                         <span className="text-gray-400 block">Max Drawdown</span>
                         <span className="text-red-400 font-medium">
                           {formatMetricValue(
-                            perfData?.current?.max_drawdown != null
-                              ? -Math.abs(perfData.current.max_drawdown)
+                            perfData?.data?.max_drawdown != null
+                              ? -Math.abs(perfData.data.max_drawdown)
                               : null,
                             'percent'
                           )}
@@ -608,7 +615,7 @@ function DashboardV2() {
                   {(() => {
                     const values: Record<string, number | null | undefined> = {}
                     selectedStrategies.forEach((id) => {
-                      values[id] = multiPerformanceData?.[id]?.current?.total_equity
+                      values[id] = multiPerformanceData?.[id]?.data?.total_equity
                     })
                     const bestId = findBestValue(values, true)
 
@@ -729,7 +736,7 @@ function DashboardV2() {
                   {(() => {
                     const values: Record<string, number | null | undefined> = {}
                     selectedStrategies.forEach((id) => {
-                      values[id] = multiPerformanceData?.[id]?.current?.sharpe_ratio
+                      values[id] = multiPerformanceData?.[id]?.data?.sharpe_ratio
                     })
                     const bestId = findBestValue(values, true)
 
@@ -757,7 +764,7 @@ function DashboardV2() {
                   {(() => {
                     const values: Record<string, number | null | undefined> = {}
                     selectedStrategies.forEach((id) => {
-                      const rawValue = multiPerformanceData?.[id]?.current?.max_drawdown
+                      const rawValue = multiPerformanceData?.[id]?.data?.max_drawdown
                       // Negate to show as negative percentage
                       values[id] = rawValue != null ? -Math.abs(rawValue) : null
                     })
@@ -992,7 +999,7 @@ function DashboardV2() {
                       return (
                         <td key={strategyId} className="py-3 px-4 text-center">
                           <div className="text-blue-400 font-medium">
-                            ${(perfData?.current?.cash ?? 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                            ${(perfData?.data?.cash ?? 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
                           </div>
                         </td>
                       )
@@ -1002,7 +1009,7 @@ function DashboardV2() {
                   {(() => {
                     const allSymbols = new Set<string>()
                     selectedStrategies.forEach((strategyId) => {
-                      const holdings = multiPerformanceData?.[strategyId]?.current?.holdings
+                      const holdings = multiPerformanceData?.[strategyId]?.data?.holdings
                       holdings?.forEach((h: { symbol: string }) => allSymbols.add(h.symbol))
                     })
                     
@@ -1020,7 +1027,7 @@ function DashboardV2() {
                       <tr key={symbol} className="border-b border-slate-700/50">
                         <td className="py-3 px-4 text-gray-200 font-medium">{symbol}</td>
                         {selectedStrategies.map((strategyId) => {
-                          const holdings = multiPerformanceData?.[strategyId]?.current?.holdings as Array<{
+                          const holdings = multiPerformanceData?.[strategyId]?.data?.holdings as Array<{
                             symbol: string
                             quantity: number
                             value: number

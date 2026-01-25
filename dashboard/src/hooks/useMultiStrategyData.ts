@@ -9,7 +9,36 @@
  */
 
 import { useQueries } from '@tanstack/react-query'
-import { backtestApi, performanceApi, BacktestDataResponse, PerformanceResponse } from '../api/client'
+import {
+  backtestApi,
+  performanceApi,
+  performanceApiV2,
+  BacktestDataResponse,
+  PerformanceResponse,
+  DailyPerformanceData,
+  BaselineData,
+} from '../api/client'
+
+/**
+ * Combined v2 performance data structure
+ * Combines daily metrics + history into a format similar to v1 for easier migration
+ */
+export interface PerformanceDataV2 {
+  /** Current day's metrics from v2 getDaily */
+  data: DailyPerformanceData
+  /** Historical data from v2 getHistory */
+  history: DailyPerformanceData[]
+  /** Baseline comparison data */
+  baseline?: BaselineData
+  /** Strategy ID */
+  strategy_id: string
+  /** Mode (online_live, offline_mock) */
+  mode: string
+  /** Whether EOD finalization is complete for today */
+  is_finalized: boolean
+  /** Data timestamp */
+  data_as_of: string
+}
 
 /**
  * Result structure for multi-strategy data
@@ -101,7 +130,8 @@ export function useMultiStrategyBacktestData(
 }
 
 /**
- * Hook for fetching performance data for multiple strategies
+ * Hook for fetching performance data for multiple strategies (v1 API - DEPRECATED)
+ * @deprecated Use useMultiStrategyPerformanceDataV2 instead
  */
 export function useMultiStrategyPerformanceData(
   strategyIds: string[],
@@ -120,6 +150,40 @@ export function useMultiStrategyPerformanceData(
 
   // Include params in query key for cache busting
   const queryKey = `performance-data-${params?.mode}-${params?.days}-${params?.start_date}`
+
+  return useMultiStrategyData(queryKey, fetchFn, strategyIds, enabled)
+}
+
+/**
+ * Hook for fetching performance data for multiple strategies (v2 API)
+ * Uses pre-computed daily_performance table for fast, consistent KPIs
+ */
+export function useMultiStrategyPerformanceDataV2(
+  strategyIds: string[],
+  params?: { mode?: string; days?: number },
+  enabled = true
+): MultiStrategyResult<PerformanceDataV2> {
+  const fetchFn = async (strategyId: string): Promise<PerformanceDataV2> => {
+    // Fetch both daily and history in parallel
+    const [dailyResponse, historyResponse] = await Promise.all([
+      performanceApiV2.getDaily(strategyId, { mode: params?.mode }),
+      performanceApiV2.getHistory(strategyId, { mode: params?.mode, days: params?.days || 365 }),
+    ])
+
+    // Combine into unified structure
+    return {
+      data: dailyResponse.data.data,
+      history: historyResponse.data.history,
+      baseline: dailyResponse.data.baseline,
+      strategy_id: dailyResponse.data.strategy_id,
+      mode: dailyResponse.data.mode,
+      is_finalized: dailyResponse.data.is_finalized,
+      data_as_of: dailyResponse.data.data_as_of,
+    }
+  }
+
+  // Include params in query key for cache busting
+  const queryKey = `performance-data-v2-${params?.mode}-${params?.days}`
 
   return useMultiStrategyData(queryKey, fetchFn, strategyIds, enabled)
 }

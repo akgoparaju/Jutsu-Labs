@@ -301,7 +301,7 @@ export interface DailyPerformanceData {
   positions_value?: number
   daily_return: number
   cumulative_return: number
-  
+
   // KPI metrics
   sharpe_ratio?: number
   sortino_ratio?: number
@@ -309,16 +309,30 @@ export interface DailyPerformanceData {
   max_drawdown?: number
   volatility?: number
   cagr?: number
-  
+
   // Strategy state
   strategy_cell?: string
   trend_state?: string
   vol_state?: string
-  
+
   // Metadata
   trading_days_count: number
   is_first_day?: boolean
   days_since_previous?: number
+
+  // Optional backward-compatibility fields (for migration from v1)
+  // These may not be present in v2 API responses but allow gradual migration
+  timestamp?: string  // Alias for trading_date (v1 used timestamp)
+  baseline_value?: number  // Current baseline total equity (from daily endpoint baseline)
+  baseline_return?: number  // Current baseline cumulative return %
+  holdings?: HoldingInfo[]  // Position breakdown (not in v2, kept for display compatibility)
+  cash_weight_pct?: number  // Cash as % of portfolio
+  drawdown?: number  // Per-day drawdown (v2 only has max_drawdown)
+  total_trades?: number  // Cumulative trade count
+  win_rate?: number  // Win rate %
+  winning_trades?: number  // Count of winning trades
+  losing_trades?: number  // Count of losing trades
+  mode?: string  // Trading mode (v1 included this per-snapshot)
 }
 
 export interface DailyPerformanceResponse {
@@ -386,7 +400,7 @@ export const performanceApiV2 = {
     strategyId: string,
     params?: { mode?: string; baseline_symbol?: string }
   ) =>
-    api.get<DailyPerformanceResponse>(`/api/v2/performance/${strategyId}/daily`, { params }),
+    api.get<DailyPerformanceResponse>(`/v2/performance/${strategyId}/daily`, { params }),
 
   /**
    * Get historical daily performance metrics
@@ -397,7 +411,7 @@ export const performanceApiV2 = {
     params?: { mode?: string; days?: number; baseline_symbol?: string }
   ) =>
     api.get<DailyPerformanceHistoryResponse>(
-      `/api/v2/performance/${strategyId}/daily/history`,
+      `/v2/performance/${strategyId}/daily/history`,
       { params }
     ),
 
@@ -409,19 +423,19 @@ export const performanceApiV2 = {
     mode?: string
     baseline_symbol?: string
   }) =>
-    api.get<PerformanceComparisonResponse>('/api/v2/performance/comparison', { params }),
+    api.get<PerformanceComparisonResponse>('/v2/performance/comparison', { params }),
 
   /**
    * Get EOD finalization status for a specific date
    */
   getEodStatus: (date: string) =>
-    api.get<EODStatusResponse>(`/api/v2/performance/eod-status/${date}`),
+    api.get<EODStatusResponse>(`/v2/performance/eod-status/${date}`),
 
   /**
    * Get EOD finalization status for today
    */
   getEodStatusToday: () =>
-    api.get<EODStatusResponse>('/api/v2/performance/eod-status/today'),
+    api.get<EODStatusResponse>('/v2/performance/eod-status/today'),
 }
 
 export const configApi = {

@@ -1,3 +1,29 @@
+#### **Feature: Dashboard Migration to Performance API v2** (2026-01-24)
+
+Migrated the dashboard frontend from v1 Performance API to v2 Performance API which uses pre-computed daily_performance table for fast, consistent KPI retrieval.
+
+**Key Changes**:
+- Updated `PerformanceV2.tsx` to use `performanceApiV2.getDaily()` and `performanceApiV2.getHistory()`
+- Updated `DashboardV2.tsx` to use v2 API endpoints
+- Updated `useMultiStrategyData.ts` with new `useMultiStrategyPerformanceDataV2` hook
+- Fixed API URL prefix bug (double `/api/api` → `/api/v2`)
+- Added backward-compatibility fields to `DailyPerformanceData` TypeScript type
+- Updated chart code to use `trading_date` (v2) instead of `timestamp` (v1)
+
+**Files Modified**:
+- `dashboard/src/api/client.ts` (v2 API types + URL fix)
+- `dashboard/src/hooks/useMultiStrategyData.ts` (new v2 hook)
+- `dashboard/src/pages/v2/PerformanceV2.tsx` (migrated to v2 API)
+- `dashboard/src/pages/v2/DashboardV2.tsx` (migrated to v2 API)
+
+**v2 API Benefits**:
+- Pre-computed KPIs (Sharpe, Sortino, Calmar, CAGR)
+- Consistent calculations across all displays
+- Automatic fallback to previous day if not finalized
+- Baseline (QQQ) comparison included
+
+---
+
 #### **Fix: EOD Finalization Attribute Errors + Documentation** (2026-01-24)
 
 Fixed two attribute errors in `run_eod_finalization` preventing the EOD job from running:
