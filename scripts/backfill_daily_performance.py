@@ -484,7 +484,7 @@ def backfill_baseline(
     
     prices = session.query(
         func.date(MarketData.timestamp).label('trading_date'),
-        MarketData.close
+        func.max(MarketData.close).label('close')
     ).filter(
         MarketData.symbol == symbol,
         MarketData.timestamp >= datetime.combine(start_date, datetime.min.time()),

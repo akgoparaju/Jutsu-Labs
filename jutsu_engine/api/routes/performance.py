@@ -1,7 +1,17 @@
 """
-Performance API Routes
+Performance API Routes (v1 - DEPRECATED)
 
 GET /api/performance - Get performance metrics and history
+
+DEPRECATED: This API is deprecated and will be removed in a future release.
+Please migrate to v2 API at /api/v2/performance which provides pre-computed
+KPIs from the daily_performance table for faster and more consistent results.
+
+Set USE_DAILY_PERFORMANCE=true to enable v2 API behavior.
+
+Migration Timeline:
+- 2026-02-24: Deprecation warning added
+- 2026-03-24: v1 API will be removed (30-day deprecation period)
 """
 
 import json
@@ -9,7 +19,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, and_, func
 
@@ -34,16 +44,32 @@ logger = logging.getLogger('API.PERFORMANCE')
 router = APIRouter(prefix="/api/performance", tags=["performance"])
 
 
+# Deprecation headers for v1 API (30-day sunset period)
+# Reference: RFC 8594 (The "Sunset" HTTP Response Header Field)
+DEPRECATION_DATE = "2026-02-24"
+SUNSET_DATE = "2026-03-24"
+V2_API_URL = "/api/v2/performance"
+
+
+def add_deprecation_headers(response: Response) -> None:
+    """Add deprecation and sunset headers to response (RFC 8594)."""
+    response.headers["Deprecation"] = f"date=\"{DEPRECATION_DATE}\""
+    response.headers["Sunset"] = SUNSET_DATE
+    response.headers["Link"] = f'<{V2_API_URL}>; rel="successor-version"'
+
+
 @router.get(
     "",
     response_model=PerformanceResponse,
     responses={
         500: {"model": ErrorResponse, "description": "Internal server error"}
     },
-    summary="Get performance metrics",
-    description="Returns current performance metrics and historical snapshots. Supports filtering by strategy_id for multi-strategy dashboards."
+    summary="Get performance metrics (DEPRECATED)",
+    description="DEPRECATED: Use GET /api/v2/performance/{strategy_id}/daily instead. Returns current performance metrics and historical snapshots. This endpoint will be removed after 2026-03-24.",
+    deprecated=True,
 )
 async def get_performance(
+    response: Response,
     db: Session = Depends(get_db),
     engine_state: EngineState = Depends(get_engine_state),
     mode: Optional[str] = Query(None, description="Filter by mode"),
@@ -55,11 +81,17 @@ async def get_performance(
     """
     Get performance metrics and history.
 
+    DEPRECATED: This endpoint is deprecated. Please migrate to:
+    - GET /api/v2/performance/{strategy_id}/daily - Pre-computed KPIs
+    - GET /api/v2/performance/{strategy_id}/daily/history - Historical data
+
     Returns:
     - Current performance metrics (equity, returns, drawdown)
     - Historical snapshots for charting
     - Trade statistics (win rate, total trades)
     """
+    # Add deprecation headers (RFC 8594)
+    add_deprecation_headers(response)
     try:
         effective_mode = mode or engine_state.mode
 
@@ -378,10 +410,12 @@ async def get_performance(
 
 @router.get(
     "/equity-curve",
-    summary="Get equity curve data",
-    description="Returns equity curve data for charting."
+    summary="Get equity curve data (DEPRECATED)",
+    description="DEPRECATED: Use GET /api/v2/performance/{strategy_id}/daily/history instead. Returns equity curve data for charting. This endpoint will be removed after 2026-03-24.",
+    deprecated=True,
 )
 async def get_equity_curve(
+    response: Response,
     db: Session = Depends(get_db),
     engine_state: EngineState = Depends(get_engine_state),
     mode: Optional[str] = Query(None, description="Filter by mode"),
@@ -393,8 +427,12 @@ async def get_equity_curve(
     """
     Get equity curve data optimized for charting.
 
+    DEPRECATED: Please migrate to GET /api/v2/performance/{strategy_id}/daily/history.
+
     Returns arrays of dates and values for lightweight-charts.
     """
+    # Add deprecation headers (RFC 8594)
+    add_deprecation_headers(response)
     try:
         effective_mode = mode or engine_state.mode
         effective_strategy_id = strategy_id or 'v3_5b'
@@ -484,10 +522,12 @@ async def get_equity_curve(
 
 @router.get(
     "/drawdown",
-    summary="Get drawdown analysis",
-    description="Returns drawdown periods and recovery information."
+    summary="Get drawdown analysis (DEPRECATED)",
+    description="DEPRECATED: Use GET /api/v2/performance/{strategy_id}/daily instead which includes max_drawdown. This endpoint will be removed after 2026-03-24.",
+    deprecated=True,
 )
 async def get_drawdown_analysis(
+    response: Response,
     db: Session = Depends(get_db),
     engine_state: EngineState = Depends(get_engine_state),
     mode: Optional[str] = Query(None, description="Filter by mode"),
@@ -497,11 +537,16 @@ async def get_drawdown_analysis(
     """
     Get detailed drawdown analysis.
 
+    DEPRECATED: Please migrate to GET /api/v2/performance/{strategy_id}/daily
+    which includes max_drawdown in the pre-computed KPIs.
+
     Returns:
     - Current drawdown
     - Max drawdown
     - Drawdown periods
     """
+    # Add deprecation headers (RFC 8594)
+    add_deprecation_headers(response)
     try:
         effective_mode = mode or engine_state.mode
         effective_strategy_id = strategy_id or 'v3_5b'
@@ -579,10 +624,12 @@ async def get_drawdown_analysis(
 
 @router.get(
     "/regime-breakdown",
-    summary="Get performance by regime",
-    description="Returns performance broken down by strategy regime."
+    summary="Get performance by regime (DEPRECATED)",
+    description="DEPRECATED: This endpoint will be removed after 2026-03-24. Regime data is included in daily_performance records.",
+    deprecated=True,
 )
 async def get_regime_breakdown(
+    response: Response,
     db: Session = Depends(get_db),
     engine_state: EngineState = Depends(get_engine_state),
     mode: Optional[str] = Query(None, description="Filter by mode"),
@@ -594,9 +641,15 @@ async def get_regime_breakdown(
     """
     Get performance broken down by strategy regime (cell).
 
+    DEPRECATED: Regime data is available in daily_performance records.
+    Use GET /api/v2/performance/{strategy_id}/daily/history to get historical
+    data with regime information included.
+
     Returns average return, total return, trade count, and win rate for each cell.
     Supports time range filtering via days or start_date parameters.
     """
+    # Add deprecation headers (RFC 8594)
+    add_deprecation_headers(response)
     try:
         logger.info(f"Regime breakdown request: mode={mode}, days={days}, start_date={start_date}, strategy_id={strategy_id}")
         effective_mode = mode or engine_state.mode

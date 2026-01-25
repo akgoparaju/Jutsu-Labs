@@ -279,6 +279,151 @@ export const performanceApi = {
     api.get('/performance/regime-breakdown', { params }),
 }
 
+// =============================================================================
+// Performance API v2 Types (Pre-computed Daily Performance)
+// Uses daily_performance table for fast, consistent KPI retrieval
+// Reference: claudedocs/eod_daily_performance_architecture.md
+// =============================================================================
+
+export interface BaselineData {
+  symbol: string
+  total_equity: number
+  daily_return?: number
+  cumulative_return?: number
+  sharpe_ratio?: number
+  max_drawdown?: number
+}
+
+export interface DailyPerformanceData {
+  trading_date: string
+  total_equity: number
+  cash?: number
+  positions_value?: number
+  daily_return: number
+  cumulative_return: number
+  
+  // KPI metrics
+  sharpe_ratio?: number
+  sortino_ratio?: number
+  calmar_ratio?: number
+  max_drawdown?: number
+  volatility?: number
+  cagr?: number
+  
+  // Strategy state
+  strategy_cell?: string
+  trend_state?: string
+  vol_state?: string
+  
+  // Metadata
+  trading_days_count: number
+  is_first_day?: boolean
+  days_since_previous?: number
+}
+
+export interface DailyPerformanceResponse {
+  strategy_id: string
+  mode: string
+  data: DailyPerformanceData
+  baseline?: BaselineData
+  
+  // Fallback indicators
+  is_finalized: boolean
+  data_as_of: string
+  finalized_at?: string
+}
+
+export interface DailyPerformanceHistoryResponse {
+  strategy_id: string
+  mode: string
+  count: number
+  history: DailyPerformanceData[]
+  baseline_symbol?: string
+}
+
+export interface PerformanceComparisonItem {
+  strategy_id: string
+  display_name: string
+  data: DailyPerformanceData
+  is_finalized: boolean
+  data_as_of: string
+}
+
+export interface PerformanceComparisonResponse {
+  strategies: PerformanceComparisonItem[]
+  baseline?: BaselineData
+  comparison_date: string
+}
+
+export interface EODStatusResponse {
+  date: string
+  finalized: boolean
+  status: string
+  started_at?: string
+  completed_at?: string
+  duration_seconds?: number
+  error?: string
+  progress_pct?: number
+}
+
+/**
+ * Performance API v2 - Uses pre-computed daily_performance table
+ * 
+ * Benefits over v1:
+ * - Pre-computed KPIs (Sharpe, Sortino, Calmar, CAGR)
+ * - Consistent calculations across all displays
+ * - Automatic fallback to previous day if today not finalized
+ * - Baseline (QQQ) comparison included
+ * 
+ * @deprecated v1 performanceApi will be sunset on 2026-03-24
+ */
+export const performanceApiV2 = {
+  /**
+   * Get daily performance metrics for a strategy
+   * Returns pre-computed KPIs with fallback to previous day if today not yet finalized
+   */
+  getDaily: (
+    strategyId: string,
+    params?: { mode?: string; baseline_symbol?: string }
+  ) =>
+    api.get<DailyPerformanceResponse>(`/api/v2/performance/${strategyId}/daily`, { params }),
+
+  /**
+   * Get historical daily performance metrics
+   * Returns up to `days` records in descending date order
+   */
+  getHistory: (
+    strategyId: string,
+    params?: { mode?: string; days?: number; baseline_symbol?: string }
+  ) =>
+    api.get<DailyPerformanceHistoryResponse>(
+      `/api/v2/performance/${strategyId}/daily/history`,
+      { params }
+    ),
+
+  /**
+   * Compare daily performance across multiple strategies
+   */
+  getComparison: (params?: {
+    strategy_ids?: string[]
+    mode?: string
+    baseline_symbol?: string
+  }) =>
+    api.get<PerformanceComparisonResponse>('/api/v2/performance/comparison', { params }),
+
+  /**
+   * Get EOD finalization status for a specific date
+   */
+  getEodStatus: (date: string) =>
+    api.get<EODStatusResponse>(`/api/v2/performance/eod-status/${date}`),
+
+  /**
+   * Get EOD finalization status for today
+   */
+  getEodStatusToday: () =>
+    api.get<EODStatusResponse>('/api/v2/performance/eod-status/today'),
+}
+
 export const configApi = {
   getConfig: () => api.get<ConfigResponse>('/config'),
   updateConfig: (data: { parameter_name: string; new_value: any; reason?: string; strategy_id?: string }) =>

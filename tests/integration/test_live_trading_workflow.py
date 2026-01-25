@@ -465,7 +465,7 @@ class TestPhase3ProductionHardening:
 
     def test_phase_3_health_monitoring(
         self,
-        mock_client_with_orders,
+        mock_schwab_client,
         mock_alert_manager,
         temp_dirs
     ):
@@ -498,10 +498,10 @@ class TestPhase3ProductionHardening:
         # Mock API success
         mock_response = Mock()
         mock_response.status_code = 200
-        mock_client_with_orders.get_account.return_value = mock_response
+        mock_schwab_client.get_account.return_value = mock_response
 
         health_monitor = HealthMonitor(
-            client=mock_client_with_orders,
+            client=mock_schwab_client,
             config=config,
             alert_manager=mock_alert_manager,
             state_file=state_file
@@ -526,7 +526,6 @@ class TestPhase3ProductionHardening:
                 # No alert should be sent
                 mock_alert_manager.send_critical_alert.assert_not_called()
 
-    @pytest.mark.parametrize('mock_client_with_orders', [Mock()], indirect=False)
     def test_phase_3_health_monitoring_failure_detection(
         self,
         mock_alert_manager,

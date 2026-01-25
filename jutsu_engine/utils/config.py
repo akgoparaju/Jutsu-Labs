@@ -213,6 +213,19 @@ class Config:
         """Check if running in production environment."""
         return self.environment == 'production'
 
+    @property
+    def use_daily_performance(self) -> bool:
+        """
+        Feature flag for EOD daily performance system.
+        
+        When enabled, uses pre-computed KPIs from daily_performance table
+        instead of on-the-fly calculations from performance_snapshots.
+        
+        Set USE_DAILY_PERFORMANCE=true in environment to enable.
+        Defaults to False for backward compatibility.
+        """
+        return self.get_bool('USE_DAILY_PERFORMANCE', default=False)
+
 
 # Global config instance
 _config: Optional[Config] = None
@@ -435,6 +448,29 @@ def is_sqlite() -> bool:
             pass
     """
     return get_database_type() == DATABASE_TYPE_SQLITE
+
+
+def use_daily_performance() -> bool:
+    """
+    Check if EOD daily performance system is enabled.
+    
+    Feature flag for v2 performance API that uses pre-computed KPIs
+    from daily_performance table instead of on-the-fly calculations.
+    
+    Returns:
+        True if USE_DAILY_PERFORMANCE env var is true, False otherwise
+    
+    Example:
+        from jutsu_engine.utils.config import use_daily_performance
+        
+        if use_daily_performance():
+            # Use v2 pre-computed KPIs
+            pass
+        else:
+            # Use legacy on-the-fly calculation
+            pass
+    """
+    return os.getenv('USE_DAILY_PERFORMANCE', 'false').lower() in ('true', '1', 'yes', 'on')
 
 
 def reload_config():

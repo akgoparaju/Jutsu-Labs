@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import csv
 
-from schwab import order_spec
+from schwab.orders import equities as schwab_equities
 
 from jutsu_engine.live.exceptions import CriticalFailure, SlippageExceeded
 from jutsu_engine.live.slippage_validator import SlippageValidator
@@ -213,12 +213,13 @@ class OrderExecutor:
         """
         logger.info(f"Submitting order: {action} {quantity} {symbol} @ ~${expected_price:.2f}")
 
-        # Build market order
-        order = order_spec.market_order(
-            symbol=symbol,
-            quantity=quantity,
-            instruction=action
-        )
+        # Build market order based on action
+        if action == 'BUY':
+            order = schwab_equities.equity_buy_market(symbol=symbol, quantity=quantity)
+        elif action == 'SELL':
+            order = schwab_equities.equity_sell_market(symbol=symbol, quantity=quantity)
+        else:
+            raise ValueError(f"Unknown action: {action}")
 
         # Submit order
         try:

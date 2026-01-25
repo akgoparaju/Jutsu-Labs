@@ -40,9 +40,15 @@ def mock_client():
 
 @pytest.fixture
 def trade_log_path():
-    """Create temporary trade log file."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
-        return Path(f.name)
+    """Create temporary path for trade log file (file doesn't exist yet)."""
+    # Create a path that doesn't exist so _initialize_csv() will be called
+    temp_dir = tempfile.mkdtemp()
+    path = Path(temp_dir) / 'live_trades.csv'
+    yield path
+    # Cleanup
+    if path.exists():
+        path.unlink()
+    Path(temp_dir).rmdir()
 
 
 @pytest.fixture
@@ -211,12 +217,12 @@ class TestRebalanceExecution:
         mock_response.headers = {'Location': '/accounts/123/orders/ORDER_ID'}
         mock_client.place_order.return_value = mock_response
 
-        mock_client.get_order.return_value = {
-            'status': 'FILLED',
-            'orderActivityCollection': [{
-                'executionLegs': [{'price': '50.00'}]
-            }]
-        }
+        # Mock different fill prices based on order sequence
+        # First order is TQQQ SELL ($50.00), second is TMF BUY ($20.00)
+        mock_client.get_order.side_effect = [
+            {'status': 'FILLED', 'orderActivityCollection': [{'executionLegs': [{'price': '50.05'}]}]},
+            {'status': 'FILLED', 'orderActivityCollection': [{'executionLegs': [{'price': '20.02'}]}]},
+        ]
 
         position_diffs = {
             'TQQQ': -50,  # SELL 50 (negative)
@@ -262,12 +268,11 @@ class TestRebalanceExecution:
         mock_response.headers = {'Location': '/accounts/123/orders/ORDER_ID'}
         mock_client.place_order.return_value = mock_response
 
-        mock_client.get_order.return_value = {
-            'status': 'FILLED',
-            'orderActivityCollection': [{
-                'executionLegs': [{'price': '50.00'}]
-            }]
-        }
+        # Mock different fill prices for each symbol
+        mock_client.get_order.side_effect = [
+            {'status': 'FILLED', 'orderActivityCollection': [{'executionLegs': [{'price': '50.05'}]}]},
+            {'status': 'FILLED', 'orderActivityCollection': [{'executionLegs': [{'price': '20.02'}]}]},
+        ]
 
         position_diffs = {
             'TQQQ': -100,
@@ -293,12 +298,11 @@ class TestRebalanceExecution:
         mock_response.headers = {'Location': '/accounts/123/orders/ORDER_ID'}
         mock_client.place_order.return_value = mock_response
 
-        mock_client.get_order.return_value = {
-            'status': 'FILLED',
-            'orderActivityCollection': [{
-                'executionLegs': [{'price': '50.00'}]
-            }]
-        }
+        # Mock different fill prices for each symbol
+        mock_client.get_order.side_effect = [
+            {'status': 'FILLED', 'orderActivityCollection': [{'executionLegs': [{'price': '50.05'}]}]},
+            {'status': 'FILLED', 'orderActivityCollection': [{'executionLegs': [{'price': '20.02'}]}]},
+        ]
 
         position_diffs = {
             'TQQQ': 100,
