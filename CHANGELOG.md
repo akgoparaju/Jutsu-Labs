@@ -1,3 +1,264 @@
+#### **Documentation: Architecture Documentation Phase 4 - Workers & Integration Patterns** (2026-01-25)
+
+Completed Phase 4 (final phase) of the 8-part architecture documentation series, covering background processing and cross-cutting patterns.
+
+**Documents Created**:
+- `docs/architecture/06_WORKERS.md` (~450 lines)
+- `docs/architecture/07_INTEGRATION_PATTERNS.md` (~500 lines)
+
+**06_WORKERS.md Key Sections**:
+1. APScheduler Architecture (AsyncIOScheduler, singleton pattern, timezone config)
+2. Scheduled Jobs Registry (6 jobs with complete timeline, trigger types, execution windows)
+3. Job Implementations (trading, market close refresh, hourly refresh, token monitor, EOD finalization)
+4. Self-Healing Architecture (3-layer defense: retry, recovery task, health monitoring)
+5. Job Persistence (SQLAlchemyJobStore, pickle compatibility, MemoryJobStore fallback)
+6. Error Handling & Recovery (per-job isolation, EOD recovery for missed/failed/stuck jobs)
+7. Configuration Priority (database overrides > YAML > state file defaults)
+8. 5 Architectural Decisions (ADR-W1 through ADR-W5)
+
+**07_INTEGRATION_PATTERNS.md Key Sections**:
+1. Dependency Injection & Factories (DatabaseFactory, session management, singleton services)
+2. Configuration Management (5-layer priority, Config singleton, secrets, feature flags, YAML structure)
+3. Logging & Observability (standard logging, 20+ security event types, WebSocket events)
+4. Error Handling Patterns (API conventions, rate limiting, job isolation, atomic file ops)
+5. Caching Strategies (3-level: in-memory, database, file system)
+6. Testing Architecture (unit/integration/e2e structure, ~1,472 tests)
+7. Known Technical Debt (5 items: sync script, circular imports, dual state, V1/V2, config overrides)
+8. Architecture Decision Records (9 ADRs covering database, multi-strategy, V2 API, regime authority, EOD, scheduler, passkeys, RBAC, config priority)
+
+**Architecture Documentation Project Complete**:
+All 8 documents created (~4,300 total lines), covering system overview, domain model, data layer, functional core, boundaries, lifecycle, workers, and integration patterns.
+
+**Modified Files**:
+- `docs/architecture/06_WORKERS.md` (created)
+- `docs/architecture/07_INTEGRATION_PATTERNS.md` (created)
+- `claudedocs/architecture_documentation_plan.md` (Phase 4 marked complete)
+
+---
+
+#### **Documentation: Architecture Documentation Phase 3 - Boundaries & Lifecycle** (2026-01-25)
+
+Completed Phase 3 of the 8-part architecture documentation series, covering system boundaries and operational lifecycle.
+
+**Documents Created**:
+- `docs/architecture/04_BOUNDARIES.md` (~550 lines)
+- `docs/architecture/05_LIFECYCLE.md` (~500 lines)
+
+**04_BOUNDARIES.md Key Sections**:
+1. REST API Architecture (16 routers, full endpoint catalog with auth/permission requirements)
+2. WebSocket Events (trade_executed, regime_change, data_refresh, error)
+3. Authentication & Authorization (JWT, TOTP 2FA, WebAuthn Passkeys, invitation system)
+4. Role-Based Access Control (admin/viewer roles, permission map)
+5. External Integrations (Schwab API OAuth, Yahoo Finance, Webhook notifications)
+6. CORS and Security Headers (rate limiting, request size limits, OpenAPI toggle)
+7. Error Handling Conventions (HTTP status codes, deprecation headers)
+
+**05_LIFECYCLE.md Key Sections**:
+1. Trading Day Lifecycle (market open → EOD finalization timeline)
+2. Live Trading Execution Flow (MultiStrategyRunner, safety chain, state management)
+3. Backtest Execution Flow (EventLoop bar-by-bar simulation)
+4. User Authentication Flow (4 auth sequences: password, 2FA, passkey, invitation)
+5. Data Refresh Workflow (full refresh cycle, staleness detection)
+6. Regime State Transitions (6-cell matrix, Kalman + volatility Z-score)
+7. Engine State Machine (states, trading mode transitions)
+
+**Sources Used**:
+- `jutsu_engine/api/main.py` - App creation, router registration
+- `jutsu_engine/api/routes/*.py` - All 16 route modules
+- `jutsu_engine/api/dependencies.py` - Auth, RBAC, JWT configuration
+- `jutsu_engine/api/websocket.py` - WebSocket connection manager
+- `jutsu_engine/api/scheduler.py` - SchedulerService
+- `jutsu_engine/live/*.py` - Strategy runner, executor, state manager
+- Serena memories: security_hardening, passkey_webauthn, multi_user_access, eod_daily_performance, live_trading
+
+**Modified Files**:
+- `docs/architecture/04_BOUNDARIES.md` (created)
+- `docs/architecture/05_LIFECYCLE.md` (created)
+- `claudedocs/architecture_documentation_plan.md` (Phase 3 marked complete)
+
+---
+
+#### **Documentation: Architecture Documentation Phase 2 - Data Layer & Functional Core** (2026-01-25)
+
+Completed Phase 2 of the 8-part architecture documentation series, covering the persistence and computational layers.
+
+**Documents Created**:
+- `docs/architecture/02_DATA_LAYER.md` (~450 lines)
+- `docs/architecture/03_FUNCTIONAL_CORE.md` (~750 lines)
+
+**02_DATA_LAYER.md Key Sections**:
+1. Database Architecture (SQLite/PostgreSQL dual-backend)
+2. Entity Relationship Diagram
+3. Core Tables Schema (market_data, daily_performance, positions, live_trades, users)
+4. SQLAlchemy Model Patterns (financial precision, server defaults, multi-strategy)
+5. Data Migration Strategy (Alembic)
+6. Data Integrity Constraints
+7. Data Flow Patterns
+8. Backup and Recovery
+
+**03_FUNCTIONAL_CORE.md Key Sections**:
+1. EventLoop Architecture (bar-by-bar simulation with lookahead bias prevention)
+2. Strategy Execution Pipeline (base class, signal events, percentage-based sizing)
+3. Indicator Calculation Framework (10 technical indicators + Kalman filter)
+4. Portfolio Simulator (position management, slippage, commission modeling)
+5. Performance Analyzer (25+ metrics: Sharpe, Sortino, Calmar, VaR, CVaR)
+6. Optimization Framework (Grid Search, Walk-Forward Analysis, Monte Carlo Simulation)
+
+**Sources Used**:
+- `jutsu_engine/data/models.py` - SQLAlchemy model definitions
+- `jutsu_engine/core/event_loop.py` - EventLoop implementation
+- `jutsu_engine/core/strategy_base.py` - Strategy base class
+- `jutsu_engine/indicators/technical.py`, `kalman.py` - Indicator implementations
+- `jutsu_engine/portfolio/simulator.py` - Portfolio simulation
+- `jutsu_engine/performance/analyzer.py` - Metrics calculation
+- `jutsu_engine/optimization/` - Grid search, walk-forward, Monte Carlo
+- Serena memories: eod_daily_performance, postgres_schema_fixes, database_migration
+- `docs/Archive/DATABASE_OPERATIONS.md` - PostgreSQL operations
+
+---
+
+#### **Documentation: Architecture Documentation Phase 1 - Domain Model** (2026-01-25)
+
+Created second document in the 8-part architecture documentation series, completing Phase 1.
+
+**Document Created**:
+- `docs/architecture/01_DOMAIN_MODEL.md` (~600 lines)
+
+**Key Sections**:
+1. **Trading Domain Concepts** - Core entities (Strategy, Regime, Position, Signal, Bar)
+2. **Strategy Architecture** - Base class, type hierarchy, strategy families, registry pattern
+3. **Market Regime System** - 6-cell matrix, state machine, trend/volatility detection
+4. **Indicator Taxonomy** - Kalman, Z-Score, MACD, Treasury Overlay, Vol-Crush
+5. **Symbol Sets and Asset Classes** - Primary trading universe, treasury instruments
+6. **Position and Allocation Model** - Lifecycle, portfolio percentage API
+7. **Performance Metrics** - Core metrics with targets and calculation hierarchy
+8. **Glossary** - 14 key terms defined
+
+**Diagrams Included**:
+- Entity relationship diagram (Mermaid)
+- Strategy class hierarchy (Mermaid classDiagram)
+- Regime state machine (Mermaid stateDiagram)
+- Indicator taxonomy (Mermaid graph)
+- Position lifecycle sequence diagram
+
+**Sources Used**:
+- `jutsu_engine/core/strategy_base.py` - Strategy base class
+- `jutsu_engine/strategies/Hierarchical_Adaptive_v3_5b.py` - Main strategy
+- `jutsu_engine/strategies/MACD_Trend_v4.py` - Alternative family
+- `docs/Archive/indicators/*.md` - Indicator documentation
+- Serena memories: multi_strategy_engine, regime_architecture_decision
+
+---
+
+#### **Documentation: Architecture Documentation Phase 1 - System Overview** (2026-01-25)
+
+Created first document in the 8-part architecture documentation series following Arc42 and C4 Model conventions.
+
+**Context**:
+- Plan defined in `claudedocs/architecture_documentation_plan.md`
+- Total of 8 documents planned across 4 phases
+- Phase 1 focuses on foundation (System Overview, Domain Model)
+
+**Document Created**:
+- `docs/architecture/00_SYSTEM_OVERVIEW.md` (~500 lines)
+
+**Key Sections**:
+1. **System Goals and Non-Goals** - What Jutsu Labs is and isn't
+2. **Target Users and Use Cases** - 3 personas, 5 use cases with acceptance criteria
+3. **High-Level Architecture** - C4 Context and Container diagrams
+4. **Technology Stack** - Layer-by-layer stack with versions and rationale
+5. **Key Quality Attributes** - Performance, reliability, security, scalability targets
+6. **Deployment Overview** - Production architecture and environment variables
+7. **Related Documents** - Cross-references to other architecture docs
+
+**Architectural Decisions Documented**:
+- Monolithic deployment over microservices (simplicity)
+- In-process APScheduler over distributed queue
+- PostgreSQL over time-series DB
+- Daily execution over intraday (reliability)
+
+**Quality Attributes Covered**:
+- Performance: Dashboard <500ms, API <100ms, backtest <15s
+- Reliability: 99.9% uptime, 100% trade execution success
+- Security: 4-layer model (network, auth, authorization, data)
+
+---
+
+#### **Documentation: PRD v4.0 Industry Standard Rewrite** (2026-01-25)
+
+Rewrote the Product Requirements Document following industry-standard PRD format.
+
+**Context**:
+- Previous PRD (v3.0) archived to `docs/Archive/PRD-Auto-Trader-Live-v3.md`
+- Needed comprehensive documentation of all features added since v3.0
+
+**New PRD Structure (v4.0)**:
+1. **Executive Summary** - Vision, problem statement, solution, capabilities
+2. **Product Overview** - Architecture diagram, tech stack, strategies
+3. **User Personas & Use Cases** - 3 personas, 5 detailed use cases
+4. **Functional Requirements** - 35+ requirements across 6 categories
+5. **System Architecture** - High-level, module structure, strategy architecture
+6. **Data Architecture** - Schema definitions, data flow diagram
+7. **API Specification** - 40+ endpoints documented
+8. **Security & Authentication** - Auth flow, RBAC, security controls
+9. **Performance Requirements** - Response times, scalability, availability
+10. **Deployment & Infrastructure** - Docker, env vars, production architecture
+11. **Monitoring & Observability** - Jobs, webhooks, token banner
+12. **Success Metrics** - Reliability, data integrity, security metrics
+13. **Roadmap** - v4.0 completed, v4.1 planned, future considerations
+14. **Appendices** - CLI reference, strategy parameters, glossary
+
+**Key Updates from v3.0**:
+- Multi-strategy engine and comparison UI
+- EOD daily performance (V2 API) architecture
+- Role-based access control (Admin, Viewer)
+- Invitation-based user onboarding
+- V2 API with baseline JOIN
+- Responsive mobile dashboard
+
+**Files Created**:
+- `docs/PRD.md` (~850 lines)
+
+---
+
+#### **Documentation: README Restructured for User Perspective** (2026-01-25)
+
+Rewrote README.md from scratch following industry best practices for user-focused documentation.
+
+**Problem**:
+- Previous README was 1,640 lines with heavy developer focus
+- Mixed user and developer concerns (architecture diagrams, code examples, project structure)
+- Overwhelming for new users trying to understand what the product does
+
+**Solution**:
+- Created new user-focused README (~180 lines) with clear value proposition
+- Moved original content to `README.developer.md` as Developer Guide
+- Extracted Live Trading documentation to `docs/LIVE_TRADING.md`
+
+**New README Structure**:
+1. **What is Jutsu Labs?** - Clear value proposition in 4 bullets
+2. **Key Features** - 6 main features in a table
+3. **Quick Start** - Docker and local options in <5 minutes
+4. **Dashboard Preview** - UI pages overview
+5. **Included Strategies** - 4 production-tested strategies
+6. **Live Trading** - Overview with link to detailed guide
+7. **Documentation** - Links to detailed docs
+8. **Requirements/Security/License** - Quick reference
+
+**Industry Standards Applied**:
+- Target length 200-500 lines (reduced from 1,640)
+- User-first language ("helps you build, test, and run")
+- Features as benefits, not implementation details
+- Quick start in <5 steps
+- Links to detailed documentation for depth
+
+**Files Created/Modified**:
+- `README.md` (completely rewritten - 180 lines)
+- `README.developer.md` (backup of original - 1,640 lines)
+- `docs/LIVE_TRADING.md` (extracted - 650 lines)
+
+---
+
 #### **Bug Fix: Multi-Strategy URL Separator and Unselect Race Condition** (2026-01-25)
 
 Fixed two issues with multi-strategy selection UI:
