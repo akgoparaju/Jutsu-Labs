@@ -1,0 +1,11 @@
+# Gitleaks configuration
+# https://github.com/gitleaks/gitleaks
+
+title = "Jutsu Labs Gitleaks Config"
+
+# Allowlist rules for false positives
+[allowlist]
+  description = "Global allowlist"
+  paths = [
+    '''CHANGELOG\.md''',
+  ]

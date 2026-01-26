@@ -717,7 +717,6 @@ function PerformanceV2() {
         // Extract baseline data from first strategy's history
         // V2 API includes baseline_return (cumulative) and baseline_value per row
         if (idx === 0 && historyAsc.length > 0) {
-          const firstBaseline = historyAsc[0]?.baseline_value ?? 1
           if (isAllTime) {
             // All-time view: show baseline equity values
             baselineData = historyAsc
@@ -752,7 +751,6 @@ function PerformanceV2() {
       // Single strategy chart
       const firstPoint = singleEquityCurve.data[0]
       const firstValue = firstPoint?.value ?? 1
-      const firstBaseline = firstPoint?.baseline_value ?? 1
 
       const series = chartRef.current.addLineSeries({
         color: '#3b82f6',
