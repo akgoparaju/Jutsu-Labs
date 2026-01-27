@@ -219,6 +219,10 @@ class LiveTrade(Base):
     # Identifies which strategy generated this trade
     strategy_id = Column(String(50), default='v3_5b')  # e.g., 'v3_5b', 'v3_5d'
 
+    # Execution tracing (added 2026-01-27)
+    # Unique ID per execution run to correlate trades and detect duplicate executions
+    execution_id = Column(String(8), nullable=True)  # uuid4[:8] per strategy run
+
     # Metadata
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 

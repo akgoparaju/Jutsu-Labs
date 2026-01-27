@@ -108,7 +108,8 @@ class ExecutorRouter:
         client: Any = None,
         account_hash: str = None,
         trade_log_path: Optional[Path] = None,
-        strategy_id: str = 'v3_5b'
+        strategy_id: str = 'v3_5b',
+        execution_id: Optional[str] = None
     ) -> ExecutorInterface:
         """
         Create an executor instance based on trading mode.
@@ -120,6 +121,7 @@ class ExecutorRouter:
             account_hash: Schwab account hash (required for ONLINE_LIVE mode)
             trade_log_path: Optional path for trade log CSV
             strategy_id: Strategy identifier for multi-strategy support
+            execution_id: Unique execution run ID for tracing (uuid4[:8])
 
         Returns:
             ExecutorInterface implementation
@@ -128,10 +130,10 @@ class ExecutorRouter:
             ValueError: If required parameters missing for selected mode
             ImportError: If executor module not available
         """
-        logger.info(f"Creating executor for mode: {mode}, strategy_id: {strategy_id}")
+        logger.info(f"Creating executor for mode: {mode}, strategy_id: {strategy_id}, execution_id: {execution_id}")
 
         if mode == TradingMode.OFFLINE_MOCK:
-            return ExecutorRouter._create_mock_executor(config, trade_log_path, strategy_id)
+            return ExecutorRouter._create_mock_executor(config, trade_log_path, strategy_id, execution_id)
         elif mode == TradingMode.ONLINE_LIVE:
             return ExecutorRouter._create_live_executor(
                 config, client, account_hash, trade_log_path, strategy_id
@@ -143,7 +145,8 @@ class ExecutorRouter:
     def _create_mock_executor(
         config: Dict[str, Any],
         trade_log_path: Optional[Path] = None,
-        strategy_id: str = 'v3_5b'
+        strategy_id: str = 'v3_5b',
+        execution_id: Optional[str] = None
     ) -> ExecutorInterface:
         """
         Create MockOrderExecutor for offline/dry-run mode.
@@ -152,6 +155,7 @@ class ExecutorRouter:
             config: Configuration dictionary
             trade_log_path: Optional path for trade log CSV
             strategy_id: Strategy identifier for multi-strategy support
+            execution_id: Unique execution run ID for tracing (uuid4[:8])
 
         Returns:
             MockOrderExecutor instance
@@ -166,14 +170,15 @@ class ExecutorRouter:
 
         logger.info(
             f"Creating MockOrderExecutor: strategy_id={strategy_id}, log_path={log_path}, "
-            f"threshold={rebalance_threshold}%"
+            f"threshold={rebalance_threshold}%, execution_id={execution_id}"
         )
 
         return MockOrderExecutor(
             config=config,
             trade_log_path=log_path,
             rebalance_threshold_pct=rebalance_threshold,
-            strategy_id=strategy_id
+            strategy_id=strategy_id,
+            execution_id=execution_id
         )
 
     @staticmethod

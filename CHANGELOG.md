@@ -1,3 +1,160 @@
+#### **Deployment: v3_5d Phase 5 — Pre-Deploy Verification Complete** (2026-01-27)
+
+Completed Phase 5 pre-deployment verification for v3_5d bug fixes. All checklist items pass. Ready for Docker rebuild and deploy.
+
+**Pre-Deploy Checklist (7/7 PASS)**:
+- Unit tests: 17/17 pass (equity calculation, re-entry guard, execution tracing, regression checks)
+- DB corrections: QQQ=12, TQQQ=37, phantom trades #28/#29 absent, 0 negative cash snapshots
+- state.json: Consistent with DB ($10,124.15 equity, correct positions)
+- Execution tracing: `execution_id` column present in `live_trades` (VARCHAR(8))
+- Re-entry guard: Active in `run_single_strategy()` — queries same-day trades before execution
+- asyncio.Lock: Active in scheduler `_execute_trading_job()` with pickle safety
+- Equity invariant: 0 violations across all snapshots
+
+**Code Fixes Verified (5 files)**:
+- `scripts/daily_multi_strategy_run.py` — live equity calc, execution_id, re-entry guard, equity source logging
+- `jutsu_engine/api/scheduler.py` — asyncio.Lock, trigger_now guard, pickle safety
+- `jutsu_engine/live/mock_order_executor.py` — execution_id parameter and DB storage
+- `jutsu_engine/live/executor_router.py` — execution_id passthrough
+- `jutsu_engine/data/models.py` — execution_id column on LiveTrade
+
+**Deployment Instructions**:
+1. Docker build: `docker build -t jutsu-engine:v3.5d-fix-jan27 .`
+2. Tag: `docker tag jutsu-engine:v3.5d-fix-jan27 jutsu-engine:latest`
+3. Stop current container, deploy new image
+4. Monitor first scheduled run for equity source logging and no duplicate execution
+5. EOD recovery mechanism will backfill any missed `daily_performance` rows from downtime
+
+**Post-Deploy Monitoring**:
+- Verify equity source log shows "live_positions+snapshot" (not state.json)
+- Confirm no phantom trades appear in next 3 trading days
+- Check EOD finalization recovers stuck jobs from engine downtime
+
+---
+
+#### **Testing: v3_5d Phase 4 — All Bug Fix Tests Passing** (2026-01-27)
+
+Completed Phase 4 testing and validation for all three v3_5d bugs identified on Jan 27, 2026. All 17 unit tests pass, database regression checks pass (8/8), and dashboard UI validation confirmed.
+
+**Tests Written** (`tests/unit/live/test_v3_5d_bug_fixes_jan27.py`):
+- **TestEquityCalculation** (4 tests): Live equity vs stale state.json, first-run fallback, logging format, no circular reference
+- **TestReentryGuard** (4 tests): Detects existing trade, allows first execution, ignores other strategy, ignores yesterday's trade
+- **TestExecutionIdTracing** (3 tests): Stored on trade, nullable for old trades, correlates same-run trades
+- **TestStrategyEquityFlow** (2 tests): Full v3_5d scenario with known values, no negative cash
+- **TestRegressionChecks** (4 tests): Position isolation by strategy_id, non-circular equity, snapshot cash field, execution_id column
+
+**Database Regression Checks (8/8 PASS)**:
+- Positions: QQQ=12, TQQQ=37 (correct)
+- Phantom trades #28, #29 deleted (confirmed absent)
+- 0 negative cash snapshots
+- execution_id column exists (varchar)
+- 12 total v3_5d trades
+- Latest snapshot equity positive ($10,001.21)
+- Equity invariant holds (total = cash + positions, 0 violations)
+- Strategy ID filtering works correctly
+
+**Dashboard UI Validation**: Equity ~$10,001, cash $458.84, positions QQQ=12/TQQQ=37, no negative values.
+
+**Staging DB Migration**: Applied `ALTER TABLE live_trades ADD COLUMN execution_id VARCHAR(8)` to staging database to match production schema.
+
+**Files Created**: `tests/unit/live/test_v3_5d_bug_fixes_jan27.py`
+
+---
+
+#### **Investigation: v3_5d Bug 3 — Data Staleness Root Cause Analysis** (2026-01-27)
+
+Completed Phase 3 investigation into why all 6 v3_5d symbols were reported as STALE at 13:01 UTC (8:01 AM ET) on Jan 27, 2026, despite auto-sync running successfully.
+
+**Root Cause**: Schwab API daily bar availability timing. Monday Jan 26's daily bar was not available from Schwab at 8:01 AM ET or 9:45 AM ET on Tuesday Jan 27. The bar became available by 4:00 PM ET (market close), when the scheduled refresh successfully synced "1 new bar, updated 19" for all 6 symbols.
+
+**Key Findings**:
+- `DataSync.sync_symbol()` correctly fetches bars from Schwab and deduplicates via trading date — no code defect
+- Schwab API simply omits bars not yet available (no error returned)
+- The "0 stored, 18 updated" result at morning sync means existing bars were refreshed but no new Monday bar was returned
+- The staleness was transient — resolved automatically by the 4:00 PM ET market close refresh job
+- v3_5d daily strategy does not require intraday bar freshness; it trades on prior-day close data
+
+**Verdict**: No code fix needed. Schwab API timing is the sole cause. The freshness checker correctly flagged the staleness and logged appropriate warnings.
+
+**Files Examined**: `jutsu_engine/application/data_sync.py`, `jutsu_engine/live/data_refresh.py`, `jutsu_engine/live/data_freshness.py`, `jutsu_engine/live/market_calendar.py`, `jutsu_engine/api/scheduler.py`
+**Database**: Verified via `data_audit_log` — morning syncs (0 new), afternoon sync (1 new per symbol)
+
+---
+
+#### **Fix: v3_5d Bug 2 — Phantom Trade Duplicate Execution Prevention** (2026-01-27)
+
+Fixed the TOCTOU race condition in the scheduler that allowed phantom duplicate trade execution, and added three layers of defense to prevent recurrence.
+
+**Root Cause**: `_is_running_job` was a plain boolean flag with no synchronization. When `run_in_executor()` dispatched trading to a thread pool, a ~9-second window existed where a second trigger could pass the boolean check before the first execution set it to `True`. APScheduler's `max_instances=1` and `coalesce=True` were insufficient because the race existed inside the async execution path, not at the APScheduler job level.
+
+**Three-Layer Defense**:
+1. **asyncio.Lock on scheduler** (`scheduler.py`): Atomic check-and-set replaces the unsynchronized boolean. Fast-path rejection when lock is already held. Pickle-safe via `__getstate__`/`__setstate__` for APScheduler serialization.
+2. **Execution ID tracing** (`daily_multi_strategy_run.py`, `mock_order_executor.py`, `executor_router.py`, `models.py`): UUID[:8] generated per run, stored in `live_trades.execution_id` column, logged throughout execution for post-mortem correlation.
+3. **Re-entry guard** (`daily_multi_strategy_run.py`): Database-level check at start of `run_single_strategy()` queries for existing trades today per strategy. If found, logs warning and skips (returns success to avoid aborting other strategies).
+
+**Investigation Findings**:
+- No external API triggers (health check is read-only, no webhooks)
+- No background tasks execute trades (startup refresh and recovery check are read-only)
+- Race condition is the sole root cause
+
+**Verification**:
+- All 5 modified Python files pass `py_compile` syntax check
+- DB migration applied: `ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS execution_id VARCHAR(8)`
+- DB integrity confirmed: QQQ=12, TQQQ=37, 0 negative cash, trades #28/#29 absent
+- Dashboard UI verified via ui-agent (engine stopped, DB data intact)
+
+**Files Modified**: `jutsu_engine/api/scheduler.py`, `scripts/daily_multi_strategy_run.py`, `jutsu_engine/live/mock_order_executor.py`, `jutsu_engine/live/executor_router.py`, `jutsu_engine/data/models.py`
+**Database**: Added `execution_id` column to `live_trades` table
+
+---
+
+#### **Fix: v3_5d Bug 1 — Replace Stale state.json Equity with Live Calculation** (2026-01-27)
+
+Replaced the stale `state.json` equity loading in `daily_multi_strategy_run.py` with a live computation from current DB positions + cash from the latest performance snapshot.
+
+**Root Cause**: Line 362 used `state.get('account_equity')` from `state.json`, which could be stale or carry forward incorrect values from previous runs. This caused wrong position sizing — on Jan 27, stale equity ($9,376 vs correct $10,001) triggered an incorrect SELL 1 QQQ trade.
+
+**Fix**:
+- Added snapshot cash query inside the existing DB session (after positions query)
+- Replaced `account_equity = state_equity` with `account_equity = position_value + snapshot_cash`
+- Added fallback to `state.json` if no snapshots exist (first-run edge case)
+- Added detailed equity source logging: `position_value=$X, cash=$Y, total=$Z (source: live_positions+snapshot)`
+
+**Verification**:
+- DB state confirmed: QQQ=12, TQQQ=37, 0 negative cash snapshots
+- Equity invariant holds (0.000000 diff across all snapshots)
+- Dashboard UI shows correct values ($10,001 equity, $458.84 cash)
+- Python syntax check passes
+
+**Files Modified**: `scripts/daily_multi_strategy_run.py`
+
+---
+
+#### **Fix: v3_5d Phase 0 Database Corrections — Remove Phantom/Stale Trades & Restore Integrity** (2026-01-27)
+
+Executed urgent database corrections for v3_5d strategy after two bugs produced invalid trades and corrupted portfolio state on Jan 27.
+
+**Root Cause**: Bug 1 (stale equity from state.json) caused an incorrect SELL 1 QQQ trade (#28). Bug 2 (phantom duplicate execution ~9s later) caused a BUY 3 QQQ trade (#29) with no execution log. Combined effect: QQQ went from 12→11→14, cash went negative (-$798.32).
+
+**Database Corrections**:
+- Deleted trade #28 (SELL 1 QQQ @ $628.49 — stale equity bug)
+- Deleted trade #29 (BUY 3 QQQ @ $628.55 — phantom execution)
+- Fixed positions: QQQ 14→12 (restored pre-bug state)
+- Deleted snapshot #298 (post-SELL invalid state)
+- Deleted snapshot #300 (phantom execution state)
+- Deleted 10 refresh snapshots carrying negative cash (-$798.32)
+- Updated state.json: QQQ 11→12, equity $10,067.73→$10,124.15
+
+**Verification (all pass)**:
+- 0 negative cash snapshots remaining
+- Positions: QQQ=12, TQQQ=37 (correct)
+- Equity invariant: total_equity = cash + positions (0.00 diff across all snapshots)
+- Trades #28, #29 confirmed deleted
+
+**Files Modified**: `state.json` (v3_5d), database tables: `live_trades`, `positions`, `performance_snapshots`
+
+---
+
 #### **Security: Upgrade python-multipart to fix CVE-2026-24486** (2026-01-26)
 
 Fixed CI security scan failure caused by CVE-2026-24486 in `python-multipart 0.0.20` (path traversal vulnerability when using `UPLOAD_DIR` + `UPLOAD_KEEP_FILENAME=True`).

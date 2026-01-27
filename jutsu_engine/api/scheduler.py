@@ -222,6 +222,10 @@ class SchedulerService:
         self._is_running_refresh = False  # Track refresh job state
         self._is_running_hourly_refresh = False  # Track hourly refresh state
         self._is_running_eod_finalization = False  # Track EOD finalization state
+        # Async lock to prevent TOCTOU race condition on _is_running_job flag
+        # BUG FIX (2026-01-27): Previously used a plain boolean with no synchronization,
+        # allowing concurrent execution when run_in_executor() dispatched to thread pool
+        self._job_lock = asyncio.Lock()
         self._initialized = True
 
         logger.info("SchedulerService initialized")
@@ -247,6 +251,8 @@ class SchedulerService:
             del state['_scheduler']
         if '_config_loader' in state:
             del state['_config_loader']
+        if '_job_lock' in state:
+            del state['_job_lock']
         return state
 
     def __setstate__(self, state):
@@ -262,6 +268,8 @@ class SchedulerService:
             self._scheduler = None
         if '_config_loader' not in self.__dict__:
             self._config_loader = None
+        if '_job_lock' not in self.__dict__:
+            self._job_lock = asyncio.Lock()
 
     def _get_execution_time(self) -> str:
         """
@@ -327,12 +335,21 @@ class SchedulerService:
 
         Checks market hours and calls the daily_multi_strategy_run main function
         to execute all active strategies in parallel.
+        
+        Uses asyncio.Lock to prevent TOCTOU race conditions on the running flag.
+        BUG FIX (2026-01-27): Phantom trade caused by non-atomic flag check.
         """
-        if self._is_running_job:
-            logger.warning("Job already running, skipping")
+        # Use async lock to atomically check-and-set the running flag
+        if self._job_lock.locked():
+            logger.warning("Job lock already held, skipping (fast path)")
             return
 
-        self._is_running_job = True
+        async with self._job_lock:
+            if self._is_running_job:
+                logger.warning("Job already running, skipping")
+                return
+
+            self._is_running_job = True
 
         try:
             logger.info("=" * 60)
@@ -1171,14 +1188,15 @@ class SchedulerService:
         """
         logger.info("Manual trigger requested")
 
-        if self._is_running_job:
+        # Use lock-aware check (2026-01-27: matches _execute_trading_job lock pattern)
+        if self._is_running_job or self._job_lock.locked():
             return {
                 'success': False,
                 'message': 'A job is already running',
                 'timestamp': datetime.now(timezone.utc).isoformat(),
             }
 
-        # Execute the job
+        # Execute the job (internally acquires _job_lock)
         await self._execute_trading_job()
 
         return {

@@ -36,9 +36,10 @@ import sys
 import logging
 import json
 import time
+import uuid
 from pathlib import Path
 from decimal import Decimal
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from typing import Dict, List, Optional, Tuple, Any
 import pandas as pd
 import os
@@ -50,7 +51,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 from schwab import auth
 import yaml
-from sqlalchemy import create_engine, desc
+from sqlalchemy import create_engine, desc, func
 from sqlalchemy.orm import sessionmaker
 
 from jutsu_engine.live.market_calendar import is_trading_day
@@ -62,7 +63,7 @@ from jutsu_engine.live.mode import TradingMode
 from jutsu_engine.live.executor_router import ExecutorRouter
 from jutsu_engine.live.data_freshness import DataFreshnessChecker, DataFreshnessError
 from jutsu_engine.live.strategy_registry import StrategyRegistry, StrategyConfig
-from jutsu_engine.data.models import Position, SystemState, PerformanceSnapshot
+from jutsu_engine.data.models import Position, SystemState, PerformanceSnapshot, LiveTrade
 from jutsu_engine.utils.config import get_database_url, get_database_type, DATABASE_TYPE_SQLITE
 
 # Setup logging
@@ -253,7 +254,8 @@ def run_single_strategy(
     strategy_config: StrategyConfig,
     market_data: Dict[str, pd.DataFrame],
     current_prices: Dict[str, Decimal],
-    schwab_client
+    schwab_client,
+    execution_id: Optional[str] = None
 ) -> Tuple[bool, Optional[str]]:
     """
     Execute a single strategy with isolated state and executor.
@@ -263,16 +265,46 @@ def run_single_strategy(
         market_data: Pre-fetched market data
         current_prices: Current market prices
         schwab_client: Authenticated Schwab client
+        execution_id: Unique execution run ID for tracing (uuid4[:8])
     
     Returns:
         Tuple of (success: bool, error_message: Optional[str])
     """
     strategy_id = strategy_config.id
     logger.info(f"\n{'='*60}")
-    logger.info(f"Running Strategy: {strategy_config.display_name} ({strategy_id})")
+    logger.info(f"[{execution_id}] Running Strategy: {strategy_config.display_name} ({strategy_id})")
     logger.info(f"{'='*60}")
     
     try:
+        # RE-ENTRY GUARD (2026-01-27): Prevent duplicate execution within same day
+        # Safety net against phantom trades from scheduler race conditions (Bug 2)
+        db_url = get_database_url()
+        db_type = get_database_type()
+        if db_type == DATABASE_TYPE_SQLITE:
+            guard_engine = create_engine(db_url, connect_args={'check_same_thread': False})
+        else:
+            guard_engine = create_engine(db_url)
+        GuardSession = sessionmaker(bind=guard_engine)
+        guard_session = GuardSession()
+        
+        try:
+            today_utc = datetime.now(timezone.utc).date()
+            existing_trade_today = guard_session.query(LiveTrade).filter(
+                LiveTrade.strategy_id == strategy_id,
+                func.date(LiveTrade.timestamp) == today_utc
+            ).first()
+            
+            if existing_trade_today:
+                logger.warning(
+                    f"[{execution_id}] RE-ENTRY GUARD: Strategy {strategy_id} already traded today "
+                    f"(trade #{existing_trade_today.id}: {existing_trade_today.action} "
+                    f"{existing_trade_today.quantity} {existing_trade_today.symbol}). Skipping."
+                )
+                return True, None  # Return success to avoid aborting other strategies
+        finally:
+            guard_session.close()
+            guard_engine.dispose()
+        
         # Load strategy-specific config
         config_path = Path(strategy_config.config_file)
         if not config_path.exists():
@@ -289,12 +321,13 @@ def run_single_strategy(
         # Initialize position rounder
         position_rounder = PositionRounder()
         
-        # Create executor with strategy_id
+        # Create executor with strategy_id and execution_id for tracing
         executor = ExecutorRouter.create(
             mode=TradingMode.OFFLINE_MOCK,
             config=config,
             trade_log_path=Path(f'logs/live_trades_{strategy_id}.csv'),
-            strategy_id=strategy_id
+            strategy_id=strategy_id,
+            execution_id=execution_id
         )
         logger.info(f"  Executor created: mode={executor.get_mode().value}")
         
@@ -345,6 +378,17 @@ def run_single_strategy(
                 else:
                     current_positions = {}
                     logger.info("  No positions found (first run)")
+            
+            # Query latest snapshot cash for live equity calculation
+            latest_snapshot_for_equity = db_session.query(PerformanceSnapshot).filter(
+                PerformanceSnapshot.mode == 'offline_mock',
+                PerformanceSnapshot.strategy_id == strategy_id
+            ).order_by(desc(PerformanceSnapshot.timestamp)).first()
+            
+            if latest_snapshot_for_equity and latest_snapshot_for_equity.cash is not None:
+                snapshot_cash = Decimal(str(latest_snapshot_for_equity.cash))
+            else:
+                snapshot_cash = None  # will use initial_capital fallback for first run
         finally:
             db_session.close()
             engine.dispose()
@@ -352,15 +396,27 @@ def run_single_strategy(
         if is_first_run:
             logger.info(f"  First run - Initial Capital: ${initial_capital:,.2f}")
             account_equity = initial_capital
+            logger.info(f"  Equity calculation: source=initial_capital, equity=${account_equity:,.2f}")
         else:
-            # Calculate current equity
+            # Calculate equity from live positions + cash, not stale state.json
+            # BUG FIX (2026-01-27): Previously used state.json account_equity which could be
+            # stale, causing incorrect position sizing (see debug_v3_5d_jan27_2026.md Bug 1)
             position_value = Decimal('0')
             for symbol, qty in current_positions.items():
                 if symbol in current_prices:
                     position_value += current_prices[symbol] * qty
             
-            account_equity = Decimal(str(state_equity)) if state_equity else initial_capital
-            logger.info(f"  Portfolio Equity: ${account_equity:,.2f}")
+            if snapshot_cash is not None:
+                account_equity = position_value + snapshot_cash
+                equity_source = "live_positions+snapshot"
+            else:
+                # Fallback: no snapshots exist yet (shouldn't happen after first run)
+                account_equity = Decimal(str(state_equity)) if state_equity else initial_capital
+                equity_source = "state.json_fallback"
+            
+            logger.info(f"  Equity calculation: position_value=${position_value:,.2f}, "
+                        f"cash=${snapshot_cash if snapshot_cash is not None else 'N/A'}, "
+                        f"total=${account_equity:,.2f} (source: {equity_source})")
         
         # Initialize strategy runner with proper class
         # Import the strategy class dynamically (must import class FROM module, not module itself)
@@ -574,11 +630,11 @@ def run_single_strategy(
         # Cleanup
         executor.close()
         
-        logger.info(f"Strategy {strategy_id} completed successfully ✅")
+        logger.info(f"[{execution_id}] Strategy {strategy_id} completed successfully ✅")
         return True, None
         
     except Exception as e:
-        error_msg = f"Strategy {strategy_id} failed: {str(e)}"
+        error_msg = f"[{execution_id}] Strategy {strategy_id} failed: {str(e)}"
         logger.error(error_msg)
         logger.error(traceback.format_exc())
         return False, error_msg
@@ -671,12 +727,17 @@ def main(check_freshness: bool = False, single_strategy: str = None):
         
         # Step 5: Execute each strategy
         logger.info("Step 5: Executing strategies")
+        # Generate unique execution ID for this run (shared across all strategies in this invocation)
+        execution_id = str(uuid.uuid4())[:8]
+        logger.info(f"  Execution ID: {execution_id}")
+        
         for strategy_config in active_strategies:
             success, error = run_single_strategy(
                 strategy_config=strategy_config,
                 market_data=market_data,
                 current_prices=current_prices,
-                schwab_client=schwab_client
+                schwab_client=schwab_client,
+                execution_id=execution_id
             )
             
             execution_results.append({

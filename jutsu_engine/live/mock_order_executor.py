@@ -59,7 +59,8 @@ class MockOrderExecutor(ExecutorInterface):
         trade_log_path: Path = Path('logs/live_trades.csv'),
         rebalance_threshold_pct: float = 5.0,
         db_session: Optional[Session] = None,
-        strategy_id: str = 'v3_5b'
+        strategy_id: str = 'v3_5b',
+        execution_id: Optional[str] = None
     ):
         """
         Initialize mock order executor.
@@ -70,12 +71,14 @@ class MockOrderExecutor(ExecutorInterface):
             rebalance_threshold_pct: Only trade if position diff >X% of account
             db_session: Optional database session (creates own if not provided)
             strategy_id: Strategy identifier for multi-strategy support (default: v3_5b)
+            execution_id: Unique execution run ID for tracing (uuid4[:8])
         """
         self.config = config
         self.trade_log_path = trade_log_path
         self.rebalance_threshold_pct = rebalance_threshold_pct
         self._mode = TradingMode.OFFLINE_MOCK
         self.strategy_id = strategy_id
+        self.execution_id = execution_id
 
         # Database connection setup
         if db_session:
@@ -364,7 +367,8 @@ class MockOrderExecutor(ExecutorInterface):
                     z_score=float(fill['z_score']) if fill.get('z_score') is not None else None,
                     reason=fill['reason'],
                     mode=self._mode.db_value,
-                    strategy_id=self.strategy_id  # Multi-strategy support
+                    strategy_id=self.strategy_id,  # Multi-strategy support
+                    execution_id=self.execution_id  # Execution tracing (2026-01-27)
                 )
                 self._session.add(trade)
 
