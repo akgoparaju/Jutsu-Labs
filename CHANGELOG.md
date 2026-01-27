@@ -1,3 +1,81 @@
+#### **Fix: v3_5d Portfolio Trade Correction - Remove Invalid Trades & Fix Quantities** (2026-01-26)
+
+Corrected v3_5d portfolio data for 1/23-1/26 where retroactively added trades had wrong quantities, causing negative cash (which should never occur in a trading portfolio).
+
+**Problem**:
+- Trade 25 (1/23 SELL 1 QQQ @ $622.65) was invalid and should not have occurred
+- Trade 26 (1/26 BUY 3 QQQ @ $624.99) bought too many shares, causing cash to go to -$791.14
+- Trade 27 (1/26 SELL 2 QQQ @ $625.42) was a corrective trade that shouldn't have been needed
+
+**Correct Portfolio Reconstruction**:
+- After trade 24 (1/23 SELL 1 QQQ): QQQ=11, TQQQ=37, cash=$1,083.83
+- Trade 26 corrected to BUY 1 QQQ @ $624.99: QQQ=12, TQQQ=37, cash=$458.84
+- No further trades needed
+
+**Database Changes**:
+- Deleted trade 25 (invalid SELL 1 QQQ on 1/23)
+- Updated trade 26: quantity 3→1, value $1,874.97→$624.99
+- Deleted trade 27 (unnecessary SELL 2 QQQ on 1/26)
+- Deleted snapshots 274 (negative cash) and 276 (intermediate correction)
+- Updated snapshot 290 (EOD 1/26): equity=$10,003.78, cash=$458.84, QQQ=12 shares
+- Updated daily_performance 1/26: daily_return=+0.25%, cumulative_return=+0.04%
+- Updated positions table: QQQ quantity 11→12
+
+**Verification**:
+- 0 snapshots with negative cash remaining
+- All 41 snapshots pass equity = cash + positions invariant
+- Trade reconstruction matches snapshot cash ($458.84)
+
+---
+
+#### **Fix: Daily Performance Data Integrity - EOD Snapshot Consistency** (2026-01-26)
+
+Fixed 27 daily_performance strategy records that had incorrect equity, cash, and positions_value due to the backfill script using independent `MAX()` aggregation across columns. This caused values from different snapshots to be mixed when multiple snapshots existed on the same trading day.
+
+**Root Cause**:
+- `get_daily_equities()` in `scripts/backfill_daily_performance.py` uses `func.max()` independently for each column
+- On days with multiple snapshots (scheduler, refresh, trades), each column picked the highest value from potentially different snapshots
+- Result: equity from one snapshot, cash from another, positions_value from a third — breaking `equity = cash + positions` invariant
+
+**Data Fix Applied (no code changes)**:
+- Updated all 27 affected records (26 v3_5b + 1 v3_5d) using correct values from the EOD (latest) snapshot per day
+- Recalculated daily_return and cumulative_return sequentially from corrected equity values
+- v3_5b: equity was inflated by $2-$398 on affected dates; cumulative return corrected
+- v3_5d 1/26: equity $9,413.50 → $9,379.12; daily return -5.67% → -6.01% (reflects $624 cash loss from failed round-trip QQQ trade)
+- Baseline records verified unchanged: shares=16.0529 × QQQ price
+
+**Verification**:
+- All 70 strategy records now pass `equity = cash + positions` integrity check (0 mismatches)
+- Baseline QQQ records correct: 1/23=$10,040.77 (+0.41%), 1/26=$10,061.96 (+0.62%)
+
+---
+
+#### **Fix: Frontend Date Timezone Bug & Data Cleanup** (2026-01-26)
+
+Fixed frontend timezone bug causing all dates in Daily Performance table to display one day earlier than correct (e.g., Jan 23 showing as Jan 22). Also cleaned up spurious database records from container restart.
+
+**Root Cause**:
+- `new Date("2026-01-23")` in JavaScript creates midnight UTC, which shifts to previous day (Jan 22) in PST timezone
+- All 6 occurrences of `new Date(dateStr).toLocaleDateString()` in `PerformanceV2.tsx` were affected
+- Additionally, a spurious Saturday 1/25 record existed in `daily_performance` from the container restart
+
+**Frontend Fix**:
+- Added `parseLocalDate()` helper that parses YYYY-MM-DD strings as local dates (not UTC) by splitting components
+- Added `formatTradingDate()` wrapper for consistent date formatting
+- Replaced all 6 `new Date(dateStr).toLocaleDateString()` calls with `formatTradingDate(dateStr)`
+- Updated sort comparisons to use `parseLocalDate()` for consistent date ordering
+- Updated `calculateCalendarDays()` to use `parseLocalDate()` for correct day calculations
+
+**Database Cleanup**:
+- Deleted spurious Saturday 2026-01-25 record (id=140) for v3_5b - created when container restarted on Sunday
+- Deleted duplicate baseline record (id=103) for 2026-01-21 with stale equity=$10,000 and cum_ret=0
+- Backfilled daily_performance records for 2026-01-26 (Monday): v3_5b and v3_5d (values later corrected in EOD Snapshot Consistency fix above)
+
+**Modified Files**:
+- `dashboard/src/pages/v2/PerformanceV2.tsx` (timezone-safe date parsing)
+
+---
+
 #### **Fix: Scheduler Data Recovery & Daily Performance Display** (2026-01-26)
 
 Fixed missing Jan 23 daily performance data and scheduler data corruption caused by container downtime over the weekend. Also fixed daily performance table ordering regression.

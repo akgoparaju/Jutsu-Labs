@@ -88,6 +88,22 @@ function calculateAnnualizedReturn(periodReturnPct: number, calendarDays: number
   return annualized * 100
 }
 
+/**
+ * Parse a YYYY-MM-DD date string as a local date (not UTC).
+ * new Date("2026-01-23") creates midnight UTC which shifts to previous day in PST.
+ * This function avoids that by parsing components directly.
+ */
+function parseLocalDate(dateStr: string): Date {
+  const s = dateStr.slice(0, 10)
+  const [y, m, d] = s.split('-').map(Number)
+  return new Date(y, m - 1, d)
+}
+
+function formatTradingDate(dateStr: string): string {
+  if (!dateStr) return '-'
+  return parseLocalDate(dateStr).toLocaleDateString()
+}
+
 function calculateCalendarDays(history: Array<{ timestamp?: string; trading_date?: string }>): number {
   if (!history || history.length < 2) return history?.length || 0
   // v2 API returns history in DESC order (newest first), so:
@@ -95,8 +111,8 @@ function calculateCalendarDays(history: Array<{ timestamp?: string; trading_date
   const newestDate = (history[0].trading_date || history[0].timestamp)?.slice(0, 10)
   const oldestDate = (history[history.length - 1].trading_date || history[history.length - 1].timestamp)?.slice(0, 10)
   if (!newestDate || !oldestDate) return 0
-  const start = new Date(oldestDate)
-  const end = new Date(newestDate)
+  const start = parseLocalDate(oldestDate)
+  const end = parseLocalDate(newestDate)
   const diffMs = end.getTime() - start.getTime()
   return Math.floor(diffMs / (1000 * 60 * 60 * 24)) + 1
 }
@@ -1354,13 +1370,13 @@ function PerformanceV2() {
         const historyByDate = new Map<string, typeof dailyPerfData.history[0]>()
         for (const snapshot of dailyPerfData.history) {
           const dateStr = snapshot.trading_date || snapshot.timestamp || ''
-          const dateKey = dateStr ? new Date(dateStr).toLocaleDateString() : ''
+          const dateKey = dateStr ? formatTradingDate(dateStr) : ''
           if (dateKey) historyByDate.set(dateKey, snapshot)
         }
         const deduplicatedHistory = Array.from(historyByDate.values())
           .sort((a, b) => {
-            const dateA = new Date(a.trading_date || a.timestamp || '').getTime()
-            const dateB = new Date(b.trading_date || b.timestamp || '').getTime()
+            const dateA = parseLocalDate(a.trading_date || a.timestamp || '').getTime()
+            const dateB = parseLocalDate(b.trading_date || b.timestamp || '').getTime()
             return dateA - dateB // ASC order for correct daily return calculation
           })
 
@@ -1369,7 +1385,7 @@ function PerformanceV2() {
         for (let i = 0; i < deduplicatedHistory.length; i++) {
           const current = deduplicatedHistory[i]
           const currentDateStr = current.trading_date || current.timestamp || ''
-          const currentDateKey = currentDateStr ? new Date(currentDateStr).toLocaleDateString() : ''
+          const currentDateKey = currentDateStr ? formatTradingDate(currentDateStr) : ''
           if (i === 0) {
             dailyReturnsMap.set(currentDateKey, current.daily_return ?? 0)
           } else {
@@ -1412,7 +1428,7 @@ function PerformanceV2() {
               <div className="space-y-2 max-h-96 overflow-y-auto">
                 {deduplicatedHistory.slice().reverse().slice(0, 30).map((snapshot, idx) => {
                   const dateStr = snapshot.trading_date || snapshot.timestamp || ''
-                  const dateKey = dateStr ? new Date(dateStr).toLocaleDateString() : ''
+                  const dateKey = dateStr ? formatTradingDate(dateStr) : ''
                   const trueDailyReturn = dailyReturnsMap.get(dateKey) ?? 0
                   const alpha = (snapshot.cumulative_return ?? 0) - (snapshot.baseline_return ?? 0)
 
@@ -1420,7 +1436,7 @@ function PerformanceV2() {
                     <div key={idx} className="bg-slate-700/50 rounded-lg p-3 flex items-center justify-between">
                       <div>
                         <div className="text-sm text-white">
-                          {dateStr ? new Date(dateStr).toLocaleDateString() : '-'}
+                          {dateStr ? formatTradingDate(dateStr) : '-'}
                         </div>
                         <div className="text-xs text-gray-400">
                           ${snapshot.total_equity?.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0})}
@@ -1462,14 +1478,14 @@ function PerformanceV2() {
                   <tbody>
                     {deduplicatedHistory.slice().reverse().map((snapshot, idx) => {
                       const dateStr = snapshot.trading_date || snapshot.timestamp || ''
-                      const dateKey = dateStr ? new Date(dateStr).toLocaleDateString() : ''
+                      const dateKey = dateStr ? formatTradingDate(dateStr) : ''
                       const trueDailyReturn = dailyReturnsMap.get(dateKey) ?? 0
                       const alpha = (snapshot.cumulative_return ?? 0) - (snapshot.baseline_return ?? 0)
 
                       return (
                         <tr key={idx} className="border-b border-slate-700/50">
                           <td className="py-2 pr-4 whitespace-nowrap">
-                            {dateStr ? new Date(dateStr).toLocaleDateString() : '-'}
+                            {dateStr ? formatTradingDate(dateStr) : '-'}
                           </td>
                           <td className="py-2 pr-4">
                             <span className="px-2 py-1 bg-slate-700 rounded text-xs whitespace-nowrap">
