@@ -53,7 +53,8 @@ qrcode[pil]==7.4.2
 webauthn==2.2.0  # FIDO2/WebAuthn for passkey support
 
 # Form data
-python-multipart==0.0.20
+# python-multipart: CVE-2026-24486 fix - path traversal in file uploads
+python-multipart>=0.0.22
 
 # Scheduling
 apscheduler==3.11.1

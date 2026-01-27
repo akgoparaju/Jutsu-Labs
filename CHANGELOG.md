@@ -1,3 +1,16 @@
+#### **Security: Upgrade python-multipart to fix CVE-2026-24486** (2026-01-26)
+
+Fixed CI security scan failure caused by CVE-2026-24486 in `python-multipart 0.0.20` (path traversal vulnerability when using `UPLOAD_DIR` + `UPLOAD_KEEP_FILENAME=True`).
+
+**Assessment**: Jutsu Labs does NOT use `UPLOAD_DIR` or `UPLOAD_KEEP_FILENAME` — the vulnerable code path was never exercised. However, upgrading to the patched version is the correct fix.
+
+**Changes**:
+- `requirements.txt`: Upgraded `python-multipart==0.0.20` → `python-multipart>=0.0.22`
+
+**Verification**: `pip-audit --strict` passes with 0 vulnerabilities found (1 ignored: ecdsa CVE-2024-23342).
+
+---
+
 #### **Fix: v3_5d Portfolio Trade Correction - Remove Invalid Trades & Fix Quantities** (2026-01-26)
 
 Corrected v3_5d portfolio data for 1/23-1/26 where retroactively added trades had wrong quantities, causing negative cash (which should never occur in a trading portfolio).
