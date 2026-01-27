@@ -1,3 +1,28 @@
+#### **Fix: Scheduler Data Recovery & Daily Performance Display** (2026-01-26)
+
+Fixed missing Jan 23 daily performance data and scheduler data corruption caused by container downtime over the weekend. Also fixed daily performance table ordering regression.
+
+**Root Cause Analysis**:
+- Container stopped between Friday evening and Sunday 10:18 PM ET, missing scheduled data refreshes
+- On restart, Schwab API returned Friday's 1D bar with weekend-shifted timestamp (Jan 25 21:00 PST instead of Jan 23 22:00 PST)
+- The bar was stored as Monday's data instead of Friday's, causing data_freshness to report stale data
+- Daily performance table ordering regressed to oldest-first due to Map deduplication losing API sort order
+
+**Database Fixes**:
+- Corrected QQQ 1D bar (id=584907) timestamp from `2026-01-26 05:00 UTC` to `2026-01-24 06:00 UTC` (Friday Jan 23 canonical form)
+- Updated `data_metadata` for QQQ 1D to reflect corrected last_bar_timestamp
+- Removed duplicate baseline record (id=104) for Jan 22 with incorrect equity value
+
+**Code Fixes**:
+- `jutsu_engine/application/data_sync.py`: Added non-trading-day timestamp normalization in `_store_bar()` for 1D bars. When Schwab returns a bar with a timestamp that maps to a non-trading day (weekend or market holiday like MLK Day, Presidents Day, etc.), the code detects this via `is_trading_day()` and normalizes to the correct previous trading day's canonical timestamp. Only triggers for non-trading-day edge cases; normal weekday bars are unaffected.
+- `dashboard/src/pages/v2/PerformanceV2.tsx`: Added explicit date sort (ASC) after Map deduplication to ensure consistent ordering regardless of API response order. The `.reverse()` call now correctly produces DESC (newest-first) display. Also fixes a latent bug where the daily return recalculation assumed ASC order but received DESC from the v2 API.
+
+**Modified Files**:
+- `jutsu_engine/application/data_sync.py` (weekend 1D bar normalization)
+- `dashboard/src/pages/v2/PerformanceV2.tsx` (date sort after dedup)
+
+---
+
 #### **Documentation: Architecture Documentation Phase 4 - Workers & Integration Patterns** (2026-01-25)
 
 Completed Phase 4 (final phase) of the 8-part architecture documentation series, covering background processing and cross-cutting patterns.

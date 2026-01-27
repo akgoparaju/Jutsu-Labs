@@ -551,6 +551,30 @@ class DataSync:
             bar_et = bar_timestamp.astimezone(et)
             trading_date = bar_et.date()
 
+            # Schwab 1D bars have timestamps after market close, typically around
+            # midnight-1AM ET the next calendar day. When fetched on weekends or
+            # after holidays, the timestamp can shift forward, misidentifying the
+            # trading day. Detect and normalize: if the inferred actual trading day
+            # (ET date - 1) is not a valid trading day (weekend or holiday),
+            # adjust to the previous valid trading day.
+            from jutsu_engine.live.market_calendar import get_previous_trading_day, is_trading_day
+            inferred_actual_day = trading_date - timedelta(days=1)
+            if not is_trading_day(inferred_actual_day):
+                correct_trading_day = get_previous_trading_day(trading_date)
+                # Normalize timestamp to canonical form: 01:00 ET on (trading_day + 1)
+                next_day = correct_trading_day + timedelta(days=1)
+                canonical_et = et.localize(
+                    datetime(next_day.year, next_day.month, next_day.day, 1, 0, 0)
+                )
+                logger.info(
+                    f"Normalized weekend-shifted 1D bar: "
+                    f"ET date {trading_date} -> trading day {correct_trading_day} "
+                    f"(original: {bar_timestamp}, canonical: {canonical_et})"
+                )
+                bar_timestamp = canonical_et.astimezone(timezone.utc)
+                bar_et = bar_timestamp.astimezone(et)
+                trading_date = bar_et.date()
+
             # Find any existing bar for this trading date
             existing_bar = (
                 self.session.query(MarketData)

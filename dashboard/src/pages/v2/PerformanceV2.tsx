@@ -1358,6 +1358,11 @@ function PerformanceV2() {
           if (dateKey) historyByDate.set(dateKey, snapshot)
         }
         const deduplicatedHistory = Array.from(historyByDate.values())
+          .sort((a, b) => {
+            const dateA = new Date(a.trading_date || a.timestamp || '').getTime()
+            const dateB = new Date(b.trading_date || b.timestamp || '').getTime()
+            return dateA - dateB // ASC order for correct daily return calculation
+          })
 
         // Recalculate daily returns
         const dailyReturnsMap = new Map<string, number>()
