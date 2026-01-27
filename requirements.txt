@@ -47,7 +47,7 @@ bcrypt==4.3.0  # Direct bcrypt for passlib compatibility
 
 # Two-Factor Authentication (2FA/TOTP)
 pyotp==2.9.0
-qrcode[pil]==7.4.2
+qrcode[pil]==8.2
 
 # Passkey/WebAuthn Authentication
 webauthn==2.2.0  # FIDO2/WebAuthn for passkey support
