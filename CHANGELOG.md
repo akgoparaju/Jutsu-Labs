@@ -1,3 +1,29 @@
+#### **Fix: Per-Strategy Error Isolation in full_refresh() + EOD Recovery Re-run** (2026-01-28)
+
+Fixed per-strategy error handling and re-ran EOD finalization to populate regime and baseline data.
+
+**Issue 1 — Per-strategy error isolation in `full_refresh()`**:
+- **Root cause**: Inner loop in `full_refresh()` had `try/finally` but NO `except` — any exception from one strategy killed the entire multi-strategy refresh loop.
+- **Fix**: Added `except Exception as strategy_err` block that logs the error, appends it to results, and continues to the next strategy.
+- **Impact**: Prevents future scenarios where one failing strategy (e.g., v3_5d) silently blocks refresh of others.
+
+**Issue 2 — EOD finalization re-run**:
+- Reset 9 stuck EOD jobs (Jan 15-28) and triggered recovery endpoint.
+- All 7 dates within recovery window processed successfully (2/2 strategies each).
+- Jan 15 triggered individually (outside 7-day window) — also successful.
+- Deleted stalled Jan 28 job (market not yet closed).
+
+**Issue 3 — Dashboard stale cache**:
+- Baseline and regime data confirmed correct via API curl for both v3_5b and v3_5d.
+- Dashboard was showing stale cached data (5-minute React Query staleTime + disconnected WebSocket).
+- After fresh page load: regime (Cell 3, Sideways, Low) and baseline (0.62%) show correctly for both strategies.
+
+**Files Modified**:
+- `jutsu_engine/live/data_refresh.py` — Added per-strategy `except` block in `full_refresh()` inner loop
+- Database: EOD job recovery re-run populated regime data for all dates
+
+---
+
 #### **Fix: Database Data Integrity - EOD Job Recovery & Regime Data Backfill** (2026-01-28)
 
 Fixed data integrity issues discovered during database verification:

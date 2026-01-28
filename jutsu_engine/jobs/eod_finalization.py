@@ -19,6 +19,7 @@ Workflow: claudedocs/eod_daily_performance_workflow.md Phase 5
 import logging
 from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 from typing import Optional, List, Dict, Any
 
 from sqlalchemy import desc
@@ -112,7 +113,10 @@ async def run_eod_finalization(target_date: Optional[date] = None) -> Dict[str, 
         for strategy in active_strategies:
             try:
                 # Determine mode from strategy config
-                mode = 'online_live' if strategy.paper_trading else 'offline_mock'
+                # paper_trading=True means simulated execution (no real orders) → offline_mock
+                # paper_trading=False means real live trading → online_live
+                mode = 'offline_mock' if strategy.paper_trading else 'online_live'
+                logger.info(f"Processing strategy {strategy.id} (mode={mode}) for {target_date}")
 
                 success = await process_strategy_eod(
                     db=db,
@@ -122,6 +126,7 @@ async def run_eod_finalization(target_date: Optional[date] = None) -> Dict[str, 
                 )
 
                 if success:
+                    logger.info(f"Strategy {strategy.id}: SUCCESS")
                     strategies_processed += 1
 
                     # Track unique baselines for deduplication
@@ -132,11 +137,12 @@ async def run_eod_finalization(target_date: Optional[date] = None) -> Dict[str, 
                     job_status.strategies_processed = strategies_processed
                     db.commit()
                 else:
+                    logger.warning(f"Strategy {strategy.id}: returned False (no snapshot or processing failed)")
                     errors.append(f"Strategy {strategy.id}: Processing returned False")
 
             except Exception as e:
                 error_msg = f"Strategy {strategy.id}: {str(e)}"
-                logger.error(error_msg, exc_info=True)
+                logger.error(f"Strategy {strategy.id}: EXCEPTION - {e}", exc_info=True)
                 errors.append(error_msg)
 
         # Process unique baselines (deduplicated)
@@ -257,25 +263,34 @@ async def run_eod_finalization_with_recovery() -> Dict[str, Any]:
                 logger.warning(f"Missing EOD job for {check_date} - will backfill")
                 needs_recovery = True
             elif job.status in ('failed', 'partial'):
-                logger.warning(f"Failed/partial EOD job for {check_date} - will retry")
+                logger.warning(f"Failed/partial EOD job for {check_date} (status={job.status}) - will retry")
                 needs_recovery = True
             elif job.status == 'running':
                 # Check if stuck (running for >1 hour)
                 if job.started_at:
                     elapsed = datetime.now(timezone.utc) - job.started_at
                     if elapsed > timedelta(hours=1):
-                        logger.warning(f"Stuck EOD job for {check_date} - will retry")
+                        logger.warning(f"Stuck EOD job for {check_date} (running for {elapsed}) - will retry")
                         needs_recovery = True
+
+            logger.info(
+                f"Recovery check: {check_date} - "
+                f"job={'exists' if job else 'missing'}, "
+                f"status={job.status if job else 'N/A'}, "
+                f"needs_recovery={needs_recovery}"
+            )
 
             if needs_recovery:
                 try:
+                    logger.info(f"Recovery: starting EOD finalization for {check_date}")
                     result = await run_eod_finalization(check_date)
                     recovery_results.append({
                         'date': check_date.isoformat(),
                         'result': result,
                     })
+                    logger.info(f"Recovery: {check_date} completed - success={result.get('success')}")
                 except Exception as e:
-                    logger.error(f"Recovery failed for {check_date}: {e}")
+                    logger.error(f"Recovery failed for {check_date}: {e}", exc_info=True)
                     recovery_results.append({
                         'date': check_date.isoformat(),
                         'error': str(e),
@@ -285,7 +300,14 @@ async def run_eod_finalization_with_recovery() -> Dict[str, Any]:
         db.close()
 
     # Now process today
+    logger.info(f"Recovery complete ({len(recovery_results)} dates recovered). Processing today ({today})...")
     today_result = await run_eod_finalization(today)
+
+    logger.info(
+        f"EOD with recovery finished: "
+        f"recovered={len(recovery_results)} dates, "
+        f"today_success={today_result.get('success')}"
+    )
 
     return {
         'recovery_results': recovery_results,
@@ -326,8 +348,11 @@ async def process_strategy_eod(
         # Use MAX aggregation to handle multiple snapshots per day
         from sqlalchemy import func
 
-        snapshot_date_start = datetime.combine(trading_date, datetime.min.time())
-        snapshot_date_end = datetime.combine(trading_date, datetime.max.time())
+        # Use Eastern timezone boundaries since trading dates are in ET
+        # PerformanceSnapshot.timestamp is timezone-aware (UTC) in PostgreSQL
+        eastern = ZoneInfo('America/New_York')
+        snapshot_date_start = datetime.combine(trading_date, datetime.min.time(), tzinfo=eastern)
+        snapshot_date_end = datetime.combine(trading_date, datetime.max.time(), tzinfo=eastern)
 
         latest_snapshot = db.query(
             PerformanceSnapshot
@@ -340,12 +365,18 @@ async def process_strategy_eod(
             desc(PerformanceSnapshot.timestamp)
         ).first()
 
+        logger.info(
+            f"Snapshot query for {strategy_id} on {trading_date}: "
+            f"range=[{snapshot_date_start}, {snapshot_date_end}], mode={mode}, "
+            f"found={'yes' if latest_snapshot else 'NO'}"
+        )
+
         if not latest_snapshot:
             logger.warning(f"No snapshot found for {strategy_id} on {trading_date}")
             return False
 
         today_equity = Decimal(str(latest_snapshot.total_equity))
-        today_cash = Decimal(str(latest_snapshot.cash_balance)) if latest_snapshot.cash_balance else None
+        today_cash = Decimal(str(latest_snapshot.cash)) if latest_snapshot.cash else None
         today_positions_value = today_equity - (today_cash or Decimal('0'))
 
         # Get previous day's record
@@ -353,7 +384,7 @@ async def process_strategy_eod(
             DailyPerformance.entity_type == 'strategy',
             DailyPerformance.entity_id == strategy_id,
             DailyPerformance.mode == mode,
-            DailyPerformance.trading_date < datetime.combine(trading_date, datetime.min.time()),
+            DailyPerformance.trading_date < datetime.combine(trading_date, datetime.min.time(), tzinfo=eastern),
         ).order_by(
             desc(DailyPerformance.trading_date)
         ).first()
@@ -407,10 +438,31 @@ async def process_strategy_eod(
                 initial_capital=float(initial_capital),
             )
 
-        # Get strategy metadata from snapshot
-        strategy_cell = latest_snapshot.regime_cell
-        trend_state = latest_snapshot.trend_state
-        vol_state = latest_snapshot.vol_state
+        # Get regime metadata from scheduler snapshot (authoritative source)
+        # Architecture decision 2026-01-14: only scheduler snapshots carry regime data;
+        # refresh snapshots intentionally omit it.  Fall back to latest_snapshot if no
+        # scheduler snapshot exists for this day.
+        regime_snapshot = db.query(
+            PerformanceSnapshot
+        ).filter(
+            PerformanceSnapshot.strategy_id == strategy_id,
+            PerformanceSnapshot.mode == mode,
+            PerformanceSnapshot.timestamp >= snapshot_date_start,
+            PerformanceSnapshot.timestamp <= snapshot_date_end,
+            PerformanceSnapshot.snapshot_source == 'scheduler',
+        ).order_by(
+            desc(PerformanceSnapshot.timestamp)
+        ).first()
+
+        if regime_snapshot and regime_snapshot.strategy_cell is not None:
+            strategy_cell = regime_snapshot.strategy_cell
+            trend_state = regime_snapshot.trend_state
+            vol_state = regime_snapshot.vol_state
+        else:
+            # Fallback: use latest snapshot (may be None for refresh-only days)
+            strategy_cell = latest_snapshot.strategy_cell
+            trend_state = latest_snapshot.trend_state
+            vol_state = latest_snapshot.vol_state
 
         # Build record
         record = DailyPerformance(
@@ -551,11 +603,12 @@ async def process_baseline_eod(
 
     try:
         # Check if baseline already exists for this date (deduplication)
+        eastern = ZoneInfo('America/New_York')
         existing = db.query(DailyPerformance).filter(
             DailyPerformance.entity_type == 'baseline',
             DailyPerformance.entity_id == symbol,
             DailyPerformance.mode == mode,
-            DailyPerformance.trading_date == datetime.combine(trading_date, datetime.min.time()),
+            DailyPerformance.trading_date == datetime.combine(trading_date, datetime.min.time(), tzinfo=eastern),
         ).first()
 
         if existing:
@@ -592,7 +645,7 @@ async def process_baseline_eod(
             DailyPerformance.entity_type == 'baseline',
             DailyPerformance.entity_id == symbol,
             DailyPerformance.mode == mode,
-            DailyPerformance.trading_date < datetime.combine(trading_date, datetime.min.time()),
+            DailyPerformance.trading_date < datetime.combine(trading_date, datetime.min.time(), tzinfo=eastern),
         ).order_by(
             desc(DailyPerformance.trading_date)
         ).first()

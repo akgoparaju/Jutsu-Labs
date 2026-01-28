@@ -9,6 +9,9 @@ POST /api/control/scheduler/enable - Enable scheduled execution
 POST /api/control/scheduler/disable - Disable scheduled execution
 POST /api/control/scheduler/trigger - Manually trigger execution
 PUT /api/control/scheduler - Update scheduler settings
+POST /api/control/eod/trigger - Manually trigger EOD finalization
+POST /api/control/eod/trigger-recovery - Trigger EOD recovery (backfill 7 days)
+GET /api/control/eod/status - Get EOD finalization status
 """
 
 import logging
@@ -522,6 +525,136 @@ async def update_scheduler(
         raise
     except Exception as e:
         logger.error(f"Update scheduler error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# ==============================================================================
+# EOD FINALIZATION ENDPOINTS
+# ==============================================================================
+
+
+@router.post(
+    "/eod/trigger",
+    summary="Manually trigger EOD finalization",
+    description="Manually trigger EOD daily performance finalization for a specific date or today.",
+)
+async def trigger_eod_finalization(
+    target_date: Optional[str] = None,
+    _auth=Depends(require_permission("scheduler:control")),
+) -> dict:
+    """
+    Manually trigger EOD finalization for a specific date.
+
+    Args:
+        target_date: ISO date string (e.g., '2026-01-27'). Defaults to today's trading date.
+
+    Returns:
+        EOD finalization result with strategy/baseline processing counts.
+    """
+    try:
+        from datetime import date as date_type
+
+        scheduler = get_scheduler_service()
+
+        parsed_date = date_type.fromisoformat(target_date) if target_date else None
+        result = await scheduler.trigger_eod_finalization(parsed_date)
+
+        if not result.get('success') and 'already running' in result.get('message', ''):
+            raise HTTPException(status_code=409, detail=result['message'])
+
+        return result
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {e}")
+    except Exception as e:
+        logger.error(f"EOD trigger error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post(
+    "/eod/trigger-recovery",
+    summary="Trigger EOD recovery (backfill last 7 trading days)",
+    description="Manually trigger EOD finalization with full recovery mode. "
+                "Checks and backfills any missed, failed, or stuck EOD jobs from the last 7 trading days, "
+                "then processes today.",
+)
+async def trigger_eod_recovery(
+    _auth=Depends(require_permission("scheduler:control")),
+) -> dict:
+    """
+    Manually trigger EOD finalization with full recovery.
+
+    Scans the last 7 trading days for missing, failed, partial, or stuck EOD jobs
+    and re-processes them before processing today.
+
+    Returns:
+        Recovery result with per-date results and today's processing result.
+    """
+    try:
+        scheduler = get_scheduler_service()
+        result = await scheduler.trigger_eod_recovery()
+
+        if not result.get('success') and 'already running' in result.get('message', ''):
+            raise HTTPException(status_code=409, detail=result['message'])
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"EOD recovery trigger error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get(
+    "/eod/status",
+    summary="Get EOD finalization status",
+    description="Get the current EOD finalization status from the scheduler.",
+)
+async def get_eod_status(
+    _auth: bool = Depends(verify_credentials),
+) -> dict:
+    """
+    Get EOD finalization status.
+
+    Returns:
+        Dict with is_running, next_eod_finalization time, and recent job history.
+    """
+    try:
+        from datetime import date as date_type
+        from jutsu_engine.jobs.eod_finalization import get_eod_finalization_status
+        from jutsu_engine.api.dependencies import SessionLocal
+        from jutsu_engine.utils.trading_calendar import (
+            get_trading_date,
+            get_previous_trading_day,
+        )
+
+        scheduler = get_scheduler_service()
+        status = scheduler.get_status()
+
+        # Get recent job history from DB (last 5 trading days)
+        db = SessionLocal()
+        try:
+            today = get_trading_date()
+            recent_jobs = []
+            check_date = today
+            for _ in range(5):
+                job_status = get_eod_finalization_status(db, check_date)
+                recent_jobs.append(job_status)
+                check_date = get_previous_trading_day(check_date)
+        finally:
+            db.close()
+
+        return {
+            'is_running': status.get('is_running_eod_finalization', False),
+            'next_eod_finalization': status.get('next_eod_finalization'),
+            'recent_jobs': recent_jobs,
+        }
+
+    except Exception as e:
+        logger.error(f"EOD status error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

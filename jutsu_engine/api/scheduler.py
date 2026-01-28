@@ -831,6 +831,48 @@ class SchedulerService:
         finally:
             self._is_running_eod_finalization = False
 
+    async def trigger_eod_recovery(self) -> Dict[str, Any]:
+        """
+        Manually trigger EOD finalization with full recovery (backfills last 7 trading days).
+
+        Returns:
+            Result dict with recovery status and per-date results
+        """
+        logger.info("Manual EOD recovery triggered")
+
+        if self._is_running_eod_finalization:
+            return {
+                'success': False,
+                'message': 'EOD finalization is already running',
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+            }
+
+        self._is_running_eod_finalization = True
+
+        try:
+            from jutsu_engine.jobs.eod_finalization import run_eod_finalization_with_recovery
+
+            result = await run_eod_finalization_with_recovery()
+
+            return {
+                'success': result.get('today_result', {}).get('success', False),
+                'message': 'EOD recovery triggered manually',
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'recovery_count': result.get('recovery_count', 0),
+                'result': result,
+            }
+
+        except Exception as e:
+            logger.error(f"Manual EOD recovery failed: {e}", exc_info=True)
+            return {
+                'success': False,
+                'message': f'EOD recovery failed: {str(e)}',
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+            }
+
+        finally:
+            self._is_running_eod_finalization = False
+
     def start(self, max_retries: int = 5, initial_delay: float = 2.0):
         """
         Start the scheduler with retry logic for database connection.
@@ -890,6 +932,24 @@ class SchedulerService:
 
                 self._scheduler.start()
                 logger.info("Scheduler started")
+
+                # Schedule one-time startup EOD recovery (runs 90s after startup)
+                # This catches any missed EOD jobs from previous container sessions
+                try:
+                    from datetime import timedelta
+                    self._scheduler.add_job(
+                        self._execute_eod_finalization_job,
+                        trigger='date',
+                        run_date=datetime.now(EASTERN) + timedelta(seconds=90),
+                        id='eod_startup_recovery',
+                        replace_existing=True,
+                        name='EOD Startup Recovery',
+                        misfire_grace_time=300,
+                    )
+                    logger.info("EOD startup recovery scheduled (90s delay)")
+                except Exception as e:
+                    logger.warning(f"Failed to schedule EOD startup recovery: {e}")
+
                 return True
                 
             except Exception as e:
@@ -933,6 +993,23 @@ class SchedulerService:
             
             self._scheduler.start()
             logger.warning("Scheduler started with MemoryJobStore (degraded mode)")
+
+            # Schedule one-time startup EOD recovery (runs 90s after startup)
+            try:
+                from datetime import timedelta
+                self._scheduler.add_job(
+                    self._execute_eod_finalization_job,
+                    trigger='date',
+                    run_date=datetime.now(EASTERN) + timedelta(seconds=90),
+                    id='eod_startup_recovery',
+                    replace_existing=True,
+                    name='EOD Startup Recovery',
+                    misfire_grace_time=300,
+                )
+                logger.info("EOD startup recovery scheduled (90s delay, degraded mode)")
+            except Exception as e:
+                logger.warning(f"Failed to schedule EOD startup recovery: {e}")
+
             return True
             
         except Exception as e:
@@ -1086,6 +1163,7 @@ class SchedulerService:
             replace_existing=True,
             coalesce=True,
             max_instances=1,
+            misfire_grace_time=14400,  # 4 hours - ensures late restarts still trigger
         )
 
         logger.info("EOD finalization job scheduled: 4:15 PM EST (Mon-Fri)")
@@ -1106,6 +1184,7 @@ class SchedulerService:
             replace_existing=True,
             coalesce=True,
             max_instances=1,
+            misfire_grace_time=14400,  # 4 hours - ensures late restarts still trigger
         )
 
         logger.info("EOD finalization half-day job scheduled: 1:15 PM EST (Mon-Fri)")

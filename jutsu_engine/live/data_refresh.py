@@ -1020,6 +1020,22 @@ class DashboardDataRefresher:
                             'positions_updated': len(updated_positions),
                         })
                         
+                    except Exception as strategy_err:
+                        # Per-strategy error isolation: log and continue to next strategy
+                        # so one failing strategy doesn't block refresh of others
+                        logger.error(
+                            f"Refresh failed for strategy={strategy_id}, mode={mode.value}: "
+                            f"{strategy_err}",
+                            exc_info=True,
+                        )
+                        results['steps'].append({
+                            'step': f'refresh_{mode.value}_{strategy_id}',
+                            'success': False,
+                            'error': str(strategy_err),
+                        })
+                        results['errors'].append(
+                            f"Strategy {strategy_id} refresh failed: {strategy_err}"
+                        )
                     finally:
                         self._mode = original_mode
                         self._strategy_id = original_strategy
