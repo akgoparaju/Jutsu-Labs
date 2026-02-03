@@ -185,6 +185,38 @@ def initialize_schwab_client():
         raise
 
 
+def fetch_current_prices(schwab_client, symbols: Dict[str, str]) -> Dict[str, Decimal]:
+    """
+    Fetch fresh current prices for all symbols.
+
+    This function is called per-strategy to ensure each strategy uses
+    prices from its actual execution time, preventing stale price issues
+    when strategies run sequentially.
+
+    Args:
+        schwab_client: Authenticated Schwab API client
+        symbols: Dict mapping symbol keys to ticker symbols
+
+    Returns:
+        Dict mapping symbol tickers to current Decimal prices
+    """
+    current_prices = {}
+    all_symbols = set(symbols.values())
+    for symbol in all_symbols:
+        response = schwab_client.get_quote(symbol)
+        if response.status_code != 200:
+            logger.error(f"Quote API error for {symbol}: status {response.status_code}")
+            raise ValueError(f"Failed to get quote for {symbol}")
+        data = response.json()
+        if symbol not in data:
+            logger.error(f"Symbol {symbol} not in quote response")
+            raise ValueError(f"Symbol {symbol} not in response")
+        quote_info = data[symbol].get('quote', {})
+        last_price = Decimal(str(quote_info.get('lastPrice', 0)))
+        current_prices[symbol] = last_price
+    return current_prices
+
+
 def fetch_shared_market_data(
     schwab_client,
     data_fetcher: LiveDataFetcher,
@@ -192,12 +224,12 @@ def fetch_shared_market_data(
 ) -> Tuple[Dict[str, pd.DataFrame], Dict[str, Decimal]]:
     """
     Fetch market data shared across all strategies.
-    
+
     Returns:
         Tuple of (market_data, current_prices)
     """
     logger.info("Fetching shared market data...")
-    
+
     # Fetch historical bars
     historical_data = {}
     for key in ['signal_symbol', 'bond_signal']:
@@ -208,7 +240,7 @@ def fetch_shared_market_data(
         df = data_fetcher.fetch_historical_bars(symbol, lookback=250)
         historical_data[symbol] = df
         logger.info(f"  {symbol}: {len(df)} bars retrieved")
-    
+
     # Fetch current quotes
     current_prices = {}
     all_symbols = set(symbols.values())
@@ -226,7 +258,7 @@ def fetch_shared_market_data(
         last_price = Decimal(str(quote_info.get('lastPrice', 0)))
         current_prices[symbol] = last_price
         logger.info(f"  {symbol}: ${last_price:.2f}")
-    
+
     # Validate corporate actions
     for symbol, df in historical_data.items():
         is_valid = data_fetcher.validate_corporate_actions(df)
@@ -234,7 +266,7 @@ def fetch_shared_market_data(
             logger.error(f"Corporate action detected in {symbol} - ABORTING")
             raise ValueError(f"Corporate action detected in {symbol}")
     logger.info("  No corporate actions detected ✅")
-    
+
     # Create synthetic daily bars
     market_data = {}
     for key in ['signal_symbol', 'bond_signal']:
@@ -246,7 +278,7 @@ def fetch_shared_market_data(
         synthetic_df = data_fetcher.create_synthetic_daily_bar(hist_df, current_quote)
         market_data[symbol] = synthetic_df
         logger.info(f"  {symbol}: {len(synthetic_df)} bars (historical + synthetic)")
-    
+
     return market_data, current_prices
 
 
@@ -721,17 +753,28 @@ def main(check_freshness: bool = False, single_strategy: str = None):
             'bear_bond': params['bear_bond_symbol']
         }
         
-        market_data, current_prices = fetch_shared_market_data(
+        # Fetch historical market data once (shared across all strategies)
+        # Current prices will be refreshed per-strategy to prevent stale price issues
+        market_data, _ = fetch_shared_market_data(
             schwab_client, data_fetcher, symbols
         )
-        
+
         # Step 5: Execute each strategy
         logger.info("Step 5: Executing strategies")
         # Generate unique execution ID for this run (shared across all strategies in this invocation)
         execution_id = str(uuid.uuid4())[:8]
         logger.info(f"  Execution ID: {execution_id}")
-        
+
         for strategy_config in active_strategies:
+            # FIX (2026-02-03): Refresh prices for each strategy to prevent stale price data
+            # Previously, prices were fetched once and shared, causing later strategies to use
+            # stale prices from t₀ even when market moved between executions.
+            # See: v3_5d performance divergence analysis (Feb 2-3, 2026)
+            logger.info(f"  Refreshing prices for {strategy_config.id}...")
+            current_prices = fetch_current_prices(schwab_client, symbols)
+            price_summary = ", ".join(f"{sym}=${price:.2f}" for sym, price in sorted(current_prices.items()))
+            logger.info(f"    Prices: {price_summary}")
+
             success, error = run_single_strategy(
                 strategy_config=strategy_config,
                 market_data=market_data,

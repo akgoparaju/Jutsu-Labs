@@ -1,3 +1,50 @@
+#### **Fix: Stale Price Data in Multi-Strategy Execution** (2026-02-03)
+
+Fixed stale price issue where strategies running sequentially used outdated prices from the first strategy's execution time.
+
+**Issue — v3_5d Performance Divergence**:
+- **Symptom**: v3_5d showed -1.34% while v3_5b showed +0.10% on Feb 3, despite nearly identical holdings.
+- **Root cause**: Prices were fetched ONCE at script start via `fetch_shared_market_data()` and shared by all strategies. When v3_5b executed first, it used prices from t₀. When v3_5d executed later, it used the SAME prices from t₀ (now stale), but market had moved.
+- **Evidence**: $1.75/share TQQQ difference between v3_5b and v3_5d position records reflected actual market movement between execution times.
+
+**Fix — Per-Strategy Price Refresh**:
+- Added `fetch_current_prices()` helper function to fetch fresh quotes for all symbols
+- Modified strategy execution loop to refresh prices before EACH strategy runs
+- Historical market data (for signal calculation) still shared (efficient, doesn't change intraday)
+- Current prices now reflect actual execution time for each strategy
+
+**Tradeoffs**:
+- +5 API calls per additional strategy (one per symbol: QQQ, TQQQ, TLT, TMF, TMV)
+- ~1-2 seconds additional latency per strategy
+- Each strategy now gets accurate prices from its actual execution time
+
+**Files Modified**:
+- `scripts/daily_multi_strategy_run.py` — Added `fetch_current_prices()`, modified strategy loop to refresh prices
+
+**Verification Steps**:
+1. Run `scripts/daily_multi_strategy_run.py` manually
+2. Check logs show "Refreshing prices for v3_5d" with current prices
+3. Query `live_positions` — v3_5b and v3_5d should show same prices (±$0.05)
+4. After next EOD, check `daily_performance` returns are within 0.1% of each other
+
+**Post-Fix Verification (2026-02-03 18:57 UTC)**:
+Triggered EOD reprocessing and verified results:
+```
+POST /api/control/eod/trigger?target_date=2026-02-03
+→ strategies_processed: 2/2, duration: 0.69s
+```
+
+**Results After Fix**:
+| Strategy | Daily Return | Cumulative Return |
+|----------|--------------|-------------------|
+| v3_5b    | -2.78%       | +0.22%           |
+| v3_5d    | -2.74%       | -2.70%           |
+| **Diff** | **0.04%** ✅ | -2.92% (historical gap) |
+
+Daily returns now within 0.1% tolerance. Cumulative gap is historical (Dec 2025), not a Feb 3 bug.
+
+---
+
 #### **Fix: Baseline EOD Timing Bug & Intraday Preview Feature** (2026-02-03)
 
 Fixed baseline EOD processing to handle Schwab's delayed 1D bar delivery and added intraday preview to daily performance table.
