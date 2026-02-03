@@ -20,7 +20,8 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, aliased
-from sqlalchemy import desc, and_
+from sqlalchemy import desc, and_, func
+from zoneinfo import ZoneInfo
 
 from jutsu_engine.api.dependencies import (
     get_db,
@@ -28,7 +29,7 @@ from jutsu_engine.api.dependencies import (
     verify_credentials,
     EngineState,
 )
-from jutsu_engine.data.models import DailyPerformance
+from jutsu_engine.data.models import DailyPerformance, PerformanceSnapshot
 from jutsu_engine.jobs.eod_finalization import (
     get_latest_daily_performance,
     get_eod_finalization_status,
@@ -124,6 +125,9 @@ class DailyPerformanceData(BaseModel):
     baseline_value: Optional[float] = None        # Baseline total_equity for same date
     baseline_return: Optional[float] = None       # Baseline cumulative_return (as %)
     baseline_daily_return: Optional[float] = None # Baseline daily_return (as %)
+
+    # === FINALIZATION STATUS ===
+    is_finalized: Optional[bool] = None           # True if EOD finalized, False for intraday preview
 
 
 class DailyPerformanceResponse(BaseModel):
@@ -276,6 +280,9 @@ def _record_to_data(record: DailyPerformance) -> DailyPerformanceData:
         baseline_value=None,
         baseline_return=None,
         baseline_daily_return=None,
+
+        # Finalization status - records from daily_performance table are finalized
+        is_finalized=True,
     )
 
 
@@ -471,19 +478,116 @@ async def get_daily_history(
             baseline_value = row[1]
             baseline_cumulative_return = row[2]
             baseline_daily_return = row[3]
-            
+
             # Convert strategy record to response data
             data = _record_to_data(strategy_record)
-            
+
             # Populate baseline fields from JOIN results (Phase 2)
             # Return as decimal (e.g., 0.0125 for 1.25%) for consistency with cumulative_return/daily_return
             # Frontend will multiply by 100 for display
             data.baseline_value = float(baseline_value) if baseline_value is not None else None
             data.baseline_return = float(baseline_cumulative_return) if baseline_cumulative_return is not None else None
             data.baseline_daily_return = float(baseline_daily_return) if baseline_daily_return is not None else None
-            
+
+            # BACKFILL: If baseline data is missing from JOIN, try to get from performance_snapshots
+            # This handles the case where the strategy row exists but the baseline EOD row hasn't been created yet
+            if data.baseline_value is None:
+                trading_date_obj = (
+                    strategy_record.trading_date.date()
+                    if hasattr(strategy_record.trading_date, 'date')
+                    else strategy_record.trading_date
+                )
+                eastern = ZoneInfo('America/New_York')
+                snapshot_start = datetime.combine(trading_date_obj, datetime.min.time(), tzinfo=eastern)
+                snapshot_end = datetime.combine(trading_date_obj, datetime.max.time(), tzinfo=eastern)
+
+                snapshot_with_baseline = db.query(PerformanceSnapshot).filter(
+                    PerformanceSnapshot.strategy_id == strategy_id,
+                    PerformanceSnapshot.mode == effective_mode,
+                    PerformanceSnapshot.timestamp >= snapshot_start,
+                    PerformanceSnapshot.timestamp <= snapshot_end,
+                    PerformanceSnapshot.baseline_value.isnot(None),
+                ).order_by(desc(PerformanceSnapshot.timestamp)).first()
+
+                if snapshot_with_baseline:
+                    data.baseline_value = float(snapshot_with_baseline.baseline_value)
+                    # Snapshots store baseline_return as percentage (e.g., -0.52 = -0.52%)
+                    # But API expects decimals (e.g., 0.004628 = 0.46%), so divide by 100
+                    data.baseline_return = float(snapshot_with_baseline.baseline_return) / 100 if snapshot_with_baseline.baseline_return else None
+                    logger.debug(f"Backfilled baseline data for {strategy_id} on {trading_date_obj} from snapshot")
+
             history.append(data)
-        
+
+        # Check if today is in the results (intraday preview logic)
+        has_today = any(
+            (r[0].trading_date.date() if hasattr(r[0].trading_date, 'date') else r[0].trading_date) == today
+            for r in query_results
+        ) if query_results else False
+
+        # If today is missing and we have snapshot data, add intraday preview row
+        if not has_today and is_trading_day(today):
+            eastern = ZoneInfo('America/New_York')
+            snapshot_date_start = datetime.combine(today, datetime.min.time(), tzinfo=eastern)
+            snapshot_date_end = datetime.combine(today, datetime.max.time(), tzinfo=eastern)
+
+            latest_snapshot = db.query(PerformanceSnapshot).filter(
+                PerformanceSnapshot.strategy_id == strategy_id,
+                PerformanceSnapshot.mode == effective_mode,
+                PerformanceSnapshot.timestamp >= snapshot_date_start,
+                PerformanceSnapshot.timestamp <= snapshot_date_end,
+            ).order_by(desc(PerformanceSnapshot.timestamp)).first()
+
+            if latest_snapshot:
+                # Get previous day's record for calculating daily return
+                prev_record = None
+                if history:
+                    # History is already sorted DESC, so first item is most recent finalized
+                    prev_record = history[0]
+
+                # Create intraday preview data
+                prev_equity = float(prev_record.total_equity) if prev_record else float(latest_snapshot.total_equity)
+                current_equity = float(latest_snapshot.total_equity) if latest_snapshot.total_equity else 0
+                daily_return = ((current_equity - prev_equity) / prev_equity) if prev_equity > 0 else 0
+
+                # Calculate cumulative return from initial capital
+                prev_initial = float(prev_record.initial_capital) if prev_record and prev_record.initial_capital else current_equity
+                cumulative_return = ((current_equity - prev_initial) / prev_initial) if prev_initial > 0 else 0
+
+                preview_data = DailyPerformanceData(
+                    trading_date=today.isoformat(),
+                    total_equity=current_equity,
+                    cash=float(latest_snapshot.cash) if latest_snapshot.cash else None,
+                    positions_value=current_equity - (float(latest_snapshot.cash) if latest_snapshot.cash else 0),
+                    daily_return=daily_return,
+                    cumulative_return=cumulative_return,
+                    sharpe_ratio=float(prev_record.sharpe_ratio) if prev_record and prev_record.sharpe_ratio else None,
+                    sortino_ratio=float(prev_record.sortino_ratio) if prev_record and prev_record.sortino_ratio else None,
+                    calmar_ratio=float(prev_record.calmar_ratio) if prev_record and prev_record.calmar_ratio else None,
+                    max_drawdown=float(prev_record.max_drawdown) if prev_record and prev_record.max_drawdown else None,
+                    volatility=float(prev_record.volatility) if prev_record and prev_record.volatility else None,
+                    cagr=float(prev_record.cagr) if prev_record and prev_record.cagr else None,
+                    strategy_cell=str(latest_snapshot.strategy_cell) if latest_snapshot.strategy_cell else None,
+                    trend_state=str(latest_snapshot.trend_state) if latest_snapshot.trend_state else None,
+                    vol_state=str(latest_snapshot.vol_state) if latest_snapshot.vol_state else None,
+                    trading_days_count=(prev_record.trading_days_count + 1) if prev_record and prev_record.trading_days_count else 1,
+                    is_first_day=False,
+                    days_since_previous=1,
+                    high_water_mark=max(current_equity, float(prev_record.high_water_mark)) if prev_record and prev_record.high_water_mark else current_equity,
+                    initial_capital=float(prev_record.initial_capital) if prev_record and prev_record.initial_capital else current_equity,
+                    # Baseline fields from snapshot
+                    # Snapshots store baseline_return as percentage (e.g., -0.52 = -0.52%)
+                    # But API expects decimals (e.g., 0.004628 = 0.46%), so divide by 100
+                    baseline_value=float(latest_snapshot.baseline_value) if latest_snapshot.baseline_value else None,
+                    baseline_return=float(latest_snapshot.baseline_return) / 100 if latest_snapshot.baseline_return else None,
+                    baseline_daily_return=None,  # Not available in snapshot
+                    # Mark as NOT finalized (intraday preview)
+                    is_finalized=False,
+                )
+
+                # Insert at beginning (most recent first)
+                history.insert(0, preview_data)
+                logger.info(f"Added intraday preview row for {strategy_id} on {today}")
+
         return DailyPerformanceHistoryResponse(
             strategy_id=strategy_id,
             mode=effective_mode,

@@ -333,6 +333,9 @@ export interface DailyPerformanceData {
   winning_trades?: number  // Count of winning trades
   losing_trades?: number  // Count of losing trades
   mode?: string  // Trading mode (v1 included this per-snapshot)
+  is_finalized?: boolean  // True if EOD finalized, false for intraday preview
+  initial_capital?: number  // Starting capital for return calculations
+  high_water_mark?: number  // Peak equity for drawdown calculation
 }
 
 export interface DailyPerformanceResponse {

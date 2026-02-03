@@ -1,3 +1,91 @@
+#### **Fix: Baseline EOD Timing Bug & Intraday Preview Feature** (2026-02-03)
+
+Fixed baseline EOD processing to handle Schwab's delayed 1D bar delivery and added intraday preview to daily performance table.
+
+**Issue 1 — Baseline EOD Timing Mismatch**:
+- **Root cause**: EOD finalization runs at 4:15 PM EST, but Schwab timestamps daily (1D) bars at 06:00 UTC next day (01:00 ET). This means the Feb 2 bar isn't available until Feb 3 01:00 ET — hours after EOD finalization runs.
+- **Impact**: Baseline row missing for trading days when EOD runs before Schwab data arrives.
+- **Fix**: Added multi-level fallback logic in `process_baseline_eod()`:
+  1. **Primary**: Use 1D bar from MarketData (existing behavior)
+  2. **Fallback 1**: Derive price from `performance_snapshots.baseline_value` changes
+  3. **Fallback 2**: Use latest intraday bar (1m/5m) near market close
+
+**Issue 2 — Performance Table Shows Data Only at End of Day**:
+- **Root cause**: By design, `daily_performance` table is populated by EOD finalization at 4:15 PM EST.
+- **User expectation**: See today's performance during trading hours.
+- **Fix**: Added intraday preview row feature:
+  - Backend: `get_daily_history()` now checks if today is missing from finalized data
+  - If missing and we have `performance_snapshots` data for today, inserts a preview row with `is_finalized=False`
+  - Frontend: Shows amber "Intraday" badge next to date for unfinalized rows
+
+**Issue 3 — Missing Baseline Data in History Rows**:
+- **Root cause**: When strategy row exists but baseline EOD row hasn't been created yet, LEFT JOIN returns null baseline data.
+- **Symptom**: Feb 3 strategy data shows in UI but baseline_value/baseline_return are null.
+- **Fix**: Added baseline backfill logic in `get_daily_history()`:
+  - For any row with missing baseline data (baseline_value is None)
+  - Query `performance_snapshots` table for that date to get baseline_value/baseline_return
+  - Backfill the data into the response if snapshot has baseline data
+
+**Issue 4 — Format Mismatch for Baseline Return from Snapshots**:
+- **Root cause**: `performance_snapshots` stores `baseline_return` as percentage (×100), but `daily_performance` and API expect decimal format.
+- **Symptom**: Feb 3 showed baseline_return=-52.65% instead of -0.53%.
+- **Evidence**: `data_refresh.py` calculates: `baseline_return = ((current - initial) / initial) * 100`
+- **Fix**: Added `/100` conversion when backfilling baseline_return from snapshots in both:
+  - Baseline backfill code (line ~513)
+  - Intraday preview code (line ~577)
+
+**Schema Changes**:
+- Added `is_finalized: Optional[bool]` field to `DailyPerformanceData` response schema
+- Finalized rows from database have `is_finalized=True`
+- Intraday preview rows have `is_finalized=False`
+
+**Files Modified**:
+- `jutsu_engine/jobs/eod_finalization.py` — Added fallback logic in `process_baseline_eod()`
+- `jutsu_engine/api/routes/daily_performance_v2.py` — Added intraday preview row logic, `is_finalized` field
+- `dashboard/src/api/client.ts` — Added `is_finalized` to TypeScript interface
+- `dashboard/src/pages/v2/PerformanceV2.tsx` — Added "Intraday" badge to daily performance table
+
+**Testing Notes**:
+- To verify baseline fix: Check logs for "Using intraday fallback for baseline" or "Derived baseline price from snapshot"
+- To verify intraday preview: Load Performance page during market hours, today's row should show "Intraday" badge
+
+---
+
+#### **Docs: Comprehensive Data Flow & Scheduler Documentation** (2026-01-28)
+
+Created comprehensive documentation covering the complete data flow, scheduler architecture, and known issues.
+
+**Documentation Created** (`claudedocs/DATA_FLOW_SCHEDULER_COMPREHENSIVE.md`):
+- 9-section comprehensive reference document
+- Complete scheduler job reference (7 jobs with triggers, files, data created)
+- Database schema documentation (daily_performance, performance_snapshots)
+- Daily update timeline with timestamps
+- UI field mapping to API endpoints and database sources
+- Data flow diagrams (ASCII art)
+- Known issues and root causes (5 documented)
+- Troubleshooting guide with diagnostic commands
+
+**Key Architecture Documented**:
+- `snapshot_source='scheduler'` = authoritative for regime data
+- `snapshot_source='refresh'` = P&L only, no regime (by design)
+- EOD finalization at 4:15 PM ET creates single-source-of-truth daily_performance
+- Startup recovery (90s delay) catches missed EOD jobs
+
+**Current State Assessment**:
+- UI showing "No strategies available" → blocking returns display
+- WebSocket Mixed Content error → wss:// needed in production
+- Regime data working correctly (Cell 3, Sideways, Low)
+- Position/equity data working correctly
+
+**Screenshots Captured**:
+- `claudedocs/dashboard_current_state.png` - Production dashboard state
+- `claudedocs/performance_page_state.png` - Performance page (empty)
+
+**Files Created**:
+- `claudedocs/DATA_FLOW_SCHEDULER_COMPREHENSIVE.md` (~35KB comprehensive doc)
+
+---
+
 #### **Fix: Per-Strategy Error Isolation in full_refresh() + EOD Recovery Re-run** (2026-01-28)
 
 Fixed per-strategy error handling and re-ran EOD finalization to populate regime and baseline data.

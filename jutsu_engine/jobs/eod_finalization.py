@@ -634,11 +634,92 @@ async def process_baseline_eod(
             MarketData.timestamp < end_of_day,
         ).first()
 
-        if not today_bar:
-            logger.warning(f"No market data for baseline {symbol} on {trading_date}")
+        today_price = None
+        price_source = '1D_bar'
+
+        if today_bar:
+            today_price = Decimal(str(today_bar.close))
+        else:
+            # FALLBACK 1: Try to get price from performance_snapshots baseline_value
+            # The 4 PM data refresh saves current baseline price to baseline_value
+            logger.info(f"No 1D bar for baseline {symbol} on {trading_date}, trying fallback sources...")
+
+            from jutsu_engine.data.models import PerformanceSnapshot as PerfSnapshot
+            from jutsu_engine.live.strategy_registry import StrategyRegistry as SR
+
+            # Get any strategy that uses this baseline to find its snapshot
+            registry = SR()
+            strategies = registry.get_active_strategies()
+            primary_strategy = strategies[0] if strategies else None
+
+            if primary_strategy:
+                snapshot_start = datetime.combine(trading_date, datetime.min.time(), tzinfo=eastern)
+                snapshot_end = datetime.combine(trading_date, datetime.max.time(), tzinfo=eastern)
+
+                latest_snapshot = db.query(PerfSnapshot).filter(
+                    PerfSnapshot.strategy_id == primary_strategy.id,
+                    PerfSnapshot.mode == mode,
+                    PerfSnapshot.timestamp >= snapshot_start,
+                    PerfSnapshot.timestamp <= snapshot_end,
+                ).order_by(desc(PerfSnapshot.timestamp)).first()
+
+                if latest_snapshot and latest_snapshot.baseline_value:
+                    # baseline_value is the total value of a hypothetical buy-and-hold portfolio
+                    # We need to derive the price. Use previous day's price and calculate back.
+                    prev_record = db.query(DailyPerformance).filter(
+                        DailyPerformance.entity_type == 'baseline',
+                        DailyPerformance.entity_id == symbol,
+                        DailyPerformance.mode == mode,
+                        DailyPerformance.trading_date < datetime.combine(trading_date, datetime.min.time(), tzinfo=eastern),
+                    ).order_by(desc(DailyPerformance.trading_date)).first()
+
+                    if prev_record and prev_record.total_equity:
+                        # Calculate the implied price from baseline_value change
+                        prev_equity = Decimal(str(prev_record.total_equity))
+                        new_baseline_value = Decimal(str(latest_snapshot.baseline_value))
+                        # The daily return of baseline = (new_value / old_value) - 1
+                        if prev_equity > 0:
+                            baseline_daily_return = (new_baseline_value / prev_equity) - 1
+                            # We can derive today's price from yesterday's price
+                            prev_date = prev_record.trading_date.date() if hasattr(prev_record.trading_date, 'date') else prev_record.trading_date
+                            prev_bar_start = datetime.combine(prev_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+                            prev_bar_end = datetime.combine(prev_date + timedelta(days=1), datetime.min.time()).replace(tzinfo=timezone.utc)
+                            prev_bar = db.query(MarketData).filter(
+                                MarketData.symbol == symbol,
+                                MarketData.timeframe == '1D',
+                                MarketData.timestamp >= prev_bar_start,
+                                MarketData.timestamp < prev_bar_end,
+                            ).first()
+                            if prev_bar:
+                                prev_price = Decimal(str(prev_bar.close))
+                                today_price = prev_price * (1 + baseline_daily_return)
+                                price_source = 'snapshot_derived'
+                                logger.info(f"Derived baseline {symbol} price from snapshot: ${today_price:.2f} (source: {price_source})")
+
+            # FALLBACK 2: Use latest intraday bar as EOD price
+            if today_price is None:
+                # Query for 1m or 5m bars around market close (4 PM ET)
+                market_close_et = datetime.combine(trading_date, datetime.min.time(), tzinfo=eastern).replace(hour=16, minute=0)
+                market_close_utc = market_close_et.astimezone(timezone.utc)
+
+                intraday_bar = db.query(MarketData).filter(
+                    MarketData.symbol == symbol,
+                    MarketData.timeframe.in_(['1m', '5m']),
+                    MarketData.timestamp <= market_close_utc,
+                    MarketData.timestamp >= market_close_utc - timedelta(hours=1),  # Look back 1 hour
+                ).order_by(desc(MarketData.timestamp)).first()
+
+                if intraday_bar:
+                    today_price = Decimal(str(intraday_bar.close))
+                    price_source = f'intraday_{intraday_bar.timeframe}'
+                    logger.info(f"Using intraday fallback for baseline {symbol}: ${today_price:.2f} (source: {price_source})")
+
+        if today_price is None:
+            logger.warning(f"No market data for baseline {symbol} on {trading_date} - all fallbacks exhausted")
             return False
 
-        today_price = Decimal(str(today_bar.close))
+        if price_source != '1D_bar':
+            logger.info(f"Baseline {symbol} price for {trading_date}: ${today_price:.2f} (source: {price_source})")
 
         # Get previous baseline record
         prev_record = db.query(DailyPerformance).filter(

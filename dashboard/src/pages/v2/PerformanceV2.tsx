@@ -1435,8 +1435,13 @@ function PerformanceV2() {
                   return (
                     <div key={idx} className="bg-slate-700/50 rounded-lg p-3 flex items-center justify-between">
                       <div>
-                        <div className="text-sm text-white">
+                        <div className="text-sm text-white flex items-center gap-2">
                           {dateStr ? formatTradingDate(dateStr) : '-'}
+                          {snapshot.is_finalized === false && (
+                            <span className="px-1.5 py-0.5 text-xs bg-amber-500/20 text-amber-400 rounded font-medium">
+                              Intraday
+                            </span>
+                          )}
                         </div>
                         <div className="text-xs text-gray-400">
                           ${snapshot.total_equity?.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0})}
@@ -1485,7 +1490,14 @@ function PerformanceV2() {
                       return (
                         <tr key={idx} className="border-b border-slate-700/50">
                           <td className="py-2 pr-4 whitespace-nowrap">
-                            {dateStr ? formatTradingDate(dateStr) : '-'}
+                            <span className="flex items-center gap-2">
+                              {dateStr ? formatTradingDate(dateStr) : '-'}
+                              {snapshot.is_finalized === false && (
+                                <span className="px-1.5 py-0.5 text-xs bg-amber-500/20 text-amber-400 rounded font-medium">
+                                  Intraday
+                                </span>
+                              )}
+                            </span>
                           </td>
                           <td className="py-2 pr-4">
                             <span className="px-2 py-1 bg-slate-700 rounded text-xs whitespace-nowrap">
