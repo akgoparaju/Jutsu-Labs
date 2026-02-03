@@ -40,8 +40,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install pip-audit
-        run: pip install pip-audit
+      - name: Upgrade pip and install pip-audit
+        run: |
+          pip install --upgrade pip
+          pip install pip-audit
 
       - name: Install project dependencies
         run: pip install -r requirements.txt
