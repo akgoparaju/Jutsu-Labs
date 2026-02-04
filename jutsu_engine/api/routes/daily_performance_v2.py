@@ -530,6 +530,7 @@ async def get_daily_history(
             snapshot_date_start = datetime.combine(today, datetime.min.time(), tzinfo=eastern)
             snapshot_date_end = datetime.combine(today, datetime.max.time(), tzinfo=eastern)
 
+            # Get latest snapshot for P/L data (any source - includes refresh snapshots)
             latest_snapshot = db.query(PerformanceSnapshot).filter(
                 PerformanceSnapshot.strategy_id == strategy_id,
                 PerformanceSnapshot.mode == effective_mode,
@@ -538,6 +539,28 @@ async def get_daily_history(
             ).order_by(desc(PerformanceSnapshot.timestamp)).first()
 
             if latest_snapshot:
+                # Get scheduler snapshot for regime data (AUTHORITATIVE)
+                # Refresh snapshots have NULL regime fields by design (2026-01-14 architecture decision)
+                scheduler_snapshot = db.query(PerformanceSnapshot).filter(
+                    PerformanceSnapshot.strategy_id == strategy_id,
+                    PerformanceSnapshot.mode == effective_mode,
+                    PerformanceSnapshot.snapshot_source == "scheduler",
+                ).order_by(desc(PerformanceSnapshot.timestamp)).first()
+
+                # Determine regime source: scheduler preferred, fallback to any snapshot with regime data
+                regime_snapshot = None
+                if scheduler_snapshot and scheduler_snapshot.strategy_cell is not None:
+                    regime_snapshot = scheduler_snapshot
+                    logger.debug(f"Intraday preview for {strategy_id}: regime from scheduler snapshot")
+                else:
+                    # Fallback: Any snapshot with regime data (backward compatibility)
+                    regime_snapshot = db.query(PerformanceSnapshot).filter(
+                        PerformanceSnapshot.strategy_id == strategy_id,
+                        PerformanceSnapshot.mode == effective_mode,
+                        PerformanceSnapshot.strategy_cell.isnot(None),
+                    ).order_by(desc(PerformanceSnapshot.timestamp)).first()
+                    if regime_snapshot:
+                        logger.debug(f"Intraday preview for {strategy_id}: regime from fallback snapshot (source: {regime_snapshot.snapshot_source})")
                 # Get previous day's record for calculating daily return
                 prev_record = None
                 if history:
@@ -566,9 +589,9 @@ async def get_daily_history(
                     max_drawdown=float(prev_record.max_drawdown) if prev_record and prev_record.max_drawdown else None,
                     volatility=float(prev_record.volatility) if prev_record and prev_record.volatility else None,
                     cagr=float(prev_record.cagr) if prev_record and prev_record.cagr else None,
-                    strategy_cell=str(latest_snapshot.strategy_cell) if latest_snapshot.strategy_cell else None,
-                    trend_state=str(latest_snapshot.trend_state) if latest_snapshot.trend_state else None,
-                    vol_state=str(latest_snapshot.vol_state) if latest_snapshot.vol_state else None,
+                    strategy_cell=str(regime_snapshot.strategy_cell) if regime_snapshot and regime_snapshot.strategy_cell else None,
+                    trend_state=str(regime_snapshot.trend_state) if regime_snapshot and regime_snapshot.trend_state else None,
+                    vol_state=str(regime_snapshot.vol_state) if regime_snapshot and regime_snapshot.vol_state else None,
                     trading_days_count=(prev_record.trading_days_count + 1) if prev_record and prev_record.trading_days_count else 1,
                     is_first_day=False,
                     days_since_previous=1,

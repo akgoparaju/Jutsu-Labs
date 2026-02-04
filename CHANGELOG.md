@@ -1,3 +1,28 @@
+#### **Fix: Regime "null" in Intraday Preview Rows** (2026-02-04)
+
+Fixed regime data (strategy_cell, trend_state, vol_state) showing as "null" or "-" in the Daily Performance table for intraday preview rows.
+
+**Issue**:
+- **Symptom**: Intraday preview rows (amber "Intraday" badge) showed "-" for regime while finalized rows correctly showed "Side + Low"
+- **Root cause**: Query fetched ANY latest snapshot (typically a "refresh" snapshot during market hours), which has NULL regime fields by design (2026-01-14 architecture decision)
+- **Expected**: Query should prioritize `snapshot_source='scheduler'` snapshots for regime data
+
+**Fix**:
+Applied two-tier query pattern (same as `indicators.py` lines 176-211):
+1. **Primary**: Query for scheduler snapshot with non-null `strategy_cell`
+2. **Fallback**: Query any snapshot with non-null `strategy_cell`
+3. P/L values still come from latest snapshot (any source)
+
+**Files Modified**:
+- `jutsu_engine/api/routes/daily_performance_v2.py` — Added scheduler snapshot query for regime in intraday preview (lines 540-565)
+
+**Verification**:
+1. Load Performance page during market hours
+2. Verify intraday row shows regime data (e.g., "Side + Low" instead of "-")
+3. Regime should match scheduler-determined values
+
+---
+
 #### **Fix: Stale Price Data in Multi-Strategy Execution** (2026-02-03)
 
 Fixed stale price issue where strategies running sequentially used outdated prices from the first strategy's execution time.
