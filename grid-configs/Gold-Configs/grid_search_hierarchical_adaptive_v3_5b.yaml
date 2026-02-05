@@ -108,8 +108,8 @@ symbol_sets:
 base_config:
   # Date range - Full history (2010-2024)
   # Includes: Financial crisis recovery, bull market, COVID crash, 2022 bear, recovery
-  start_date: "2010-01-01"
-  end_date: "2026-01-20"
+  start_date: "2020-12-04"
+  end_date: "2026-02-04"
 
   # Market data
   timeframe: "1D"

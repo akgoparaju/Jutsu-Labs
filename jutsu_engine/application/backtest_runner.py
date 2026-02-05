@@ -359,6 +359,14 @@ class BacktestRunner:
             logger.info(
                 f"Warmup period enabled (warmup ends at: {warmup_end_date.date()})"
             )
+
+            # Inject warmup_end_date into strategy for weight state management
+            # This allows the strategy to reset internal weight state after warmup,
+            # preventing the "0 fills" bug where weights updated during warmup
+            # cause threshold checks to fail (current == target) in trading period
+            if hasattr(strategy, 'set_warmup_end_date'):
+                strategy.set_warmup_end_date(warmup_end_date)
+                logger.info(f"Injected warmup_end_date into strategy: {warmup_end_date.date()}")
         else:
             logger.info("No warmup period required")
             warmup_end_date = None

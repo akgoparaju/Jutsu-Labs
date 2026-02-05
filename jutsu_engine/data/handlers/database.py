@@ -212,30 +212,87 @@ class DatabaseDataHandler(DataHandler):
 
     def _calculate_warmup_start_date(self, start_date: datetime, warmup_bars: int) -> datetime:
         """
-        Calculate approximate start date to fetch warmup bars.
+        Calculate start date to fetch warmup bars using NYSE market calendar.
+
+        Uses pandas_market_calendars for exact trading day calculation
+        with a 10% buffer to account for data gaps.
 
         Args:
             start_date: Requested trading start date
             warmup_bars: Number of warmup bars needed
 
         Returns:
-            datetime: Approximate start date to begin fetching
+            datetime: Start date to begin fetching (with buffer)
 
         Notes:
-            - Assumes ~252 trading days per year for daily data
-            - Adds 40% buffer to account for weekends/holidays
-            - Example: 147 bars ≈ 147 * 1.4 = 206 calendar days
+            - Uses NYSE calendar for accurate US market trading days
+            - Accounts for weekends, holidays, and market closures
+            - Adds 10% buffer to handle data gaps in database
+            - Falls back to 2× buffer if calendar lookup fails
 
         Example:
-            # For 147-bar RSI warmup on 2024-01-01 start
+            # For 221-bar warmup on 2025-12-04 start
             warmup_start = _calculate_warmup_start_date(
-                datetime(2024, 1, 1), 147
+                datetime(2025, 12, 4), 221
             )
-            # Returns approximately 2023-06-09
+            # Returns date ~243 trading days before (221 * 1.1)
         """
-        calendar_days = int(warmup_bars * 1.4)  # Account for weekends/holidays
-        warmup_start = start_date - timedelta(days=calendar_days)
-        return warmup_start
+        import pandas_market_calendars as mcal
+
+        # Get NYSE calendar
+        nyse = mcal.get_calendar('NYSE')
+
+        # Convert start_date to date for calendar operations
+        if isinstance(start_date, datetime):
+            start_dt = start_date.date()
+        else:
+            start_dt = start_date
+
+        # Single-symbol handler: 10% buffer for data gaps
+        warmup_with_buffer = int(warmup_bars * 1.1)
+
+        try:
+            # Get trading schedule going back far enough
+            # Use 2× warmup_with_buffer as calendar days to ensure we have enough history
+            search_start = start_dt - timedelta(days=warmup_with_buffer * 2)
+            schedule = nyse.schedule(start_date=search_start, end_date=start_dt - timedelta(days=1))
+
+            # Get trading days STRICTLY BEFORE start_date
+            trading_days = schedule.index.date.tolist()
+
+            if len(trading_days) < warmup_with_buffer:
+                # Need to look back further - extend search
+                search_start = start_dt - timedelta(days=warmup_with_buffer * 3)
+                schedule = nyse.schedule(start_date=search_start, end_date=start_dt - timedelta(days=1))
+                trading_days = schedule.index.date.tolist()
+
+            if len(trading_days) < warmup_with_buffer:
+                logger.warning(
+                    f"Only found {len(trading_days)} trading days, need {warmup_with_buffer}. "
+                    f"Using earliest available date."
+                )
+                warmup_start = trading_days[0] if trading_days else search_start
+            else:
+                # Use buffered warmup to get extra safety margin
+                warmup_start = trading_days[-warmup_with_buffer]
+
+            logger.debug(
+                f"Calculated warmup start: {warmup_start} "
+                f"({warmup_with_buffer} trading days before {start_dt}, "
+                f"includes {int((warmup_with_buffer/warmup_bars - 1) * 100)}% buffer over {warmup_bars} required)"
+            )
+
+            return datetime.combine(warmup_start, datetime.min.time())
+
+        except Exception as e:
+            # Fallback to 2× buffer if calendar lookup fails
+            logger.warning(
+                f"NYSE calendar lookup failed: {e}. "
+                f"Falling back to 2× buffer estimation."
+            )
+            calendar_days = int(warmup_with_buffer * 2.0)
+            warmup_start = start_date - timedelta(days=calendar_days)
+            return warmup_start
 
     def _convert_to_event(self, db_bar: MarketData) -> MarketDataEvent:
         """
@@ -610,23 +667,104 @@ class MultiSymbolDataHandler(DataHandler):
 
     def _calculate_warmup_start_date(self, start_date: datetime, warmup_bars: int) -> datetime:
         """
-        Calculate approximate start date to fetch warmup bars.
+        Calculate start date to fetch warmup bars using NYSE market calendar.
+
+        Uses pandas_market_calendars for exact trading day calculation
+        with buffer to account for multi-symbol bar distribution.
 
         Args:
             start_date: Requested trading start date
             warmup_bars: Number of warmup bars needed
 
         Returns:
-            datetime: Approximate start date to begin fetching
+            datetime: Start date to begin fetching (with buffer)
 
         Notes:
-            - Assumes ~252 trading days per year for daily data
-            - Adds 40% buffer to account for weekends/holidays
-            - Example: 147 bars ≈ 147 * 1.4 = 206 calendar days
+            - Uses NYSE calendar for accurate US market trading days
+            - Accounts for weekends, holidays, and market closures
+            - Multi-symbol: 50% buffer for interleaved bar distribution
+            - Falls back to 2× buffer if calendar lookup fails
+
+        Multi-Symbol Warmup Math:
+            With N symbols (e.g., 6: QQQ, TQQQ, PSQ, TLT, TMF, TMV), bars are
+            sorted chronologically across ALL symbols. When warmup ends by DATE,
+            each symbol only has ~1/N of total bars in strategy._bars.
+
+            Example: 221 QQQ bars needed, 6 symbols
+            - 10% buffer: ~197 QQQ bars (deficit → 30 trading days late)
+            - 50% buffer: ~296 QQQ bars (surplus → starts on time)
         """
-        calendar_days = int(warmup_bars * 1.4)  # Account for weekends/holidays
-        warmup_start = start_date - timedelta(days=calendar_days)
-        return warmup_start
+        import pandas_market_calendars as mcal
+
+        # Get NYSE calendar
+        nyse = mcal.get_calendar('NYSE')
+
+        # Convert start_date to date for calendar operations
+        if isinstance(start_date, datetime):
+            start_dt = start_date.date()
+        else:
+            start_dt = start_date
+
+        # For multi-symbol handlers, bars are sorted chronologically across ALL symbols.
+        # When warmup ends by DATE, each symbol only has ~1/N of total bars.
+        # Need 50% buffer (not 10%) to ensure each symbol has enough warmup bars.
+        #
+        # Math: With 6 symbols and 221 required QQQ bars:
+        # - 10% buffer gave ~197 QQQ bars (deficit of 24 → 30 trading days late)
+        # - 50% buffer gives ~296 QQQ bars (surplus of 75 → starts on time)
+        num_symbols = len(self.symbols) if hasattr(self, 'symbols') else 1
+        if num_symbols > 1:
+            # Multi-symbol: 50% buffer to account for interleaved bar distribution
+            warmup_with_buffer = int(warmup_bars * 1.5)
+            buffer_pct = 50
+        else:
+            # Single-symbol: 10% buffer for data gaps
+            warmup_with_buffer = int(warmup_bars * 1.1)
+            buffer_pct = 10
+
+        try:
+            # Get trading schedule going back far enough
+            # Use 2× warmup_with_buffer as calendar days to ensure we have enough history
+            search_start = start_dt - timedelta(days=warmup_with_buffer * 2)
+            schedule = nyse.schedule(start_date=search_start, end_date=start_dt - timedelta(days=1))
+
+            # Get trading days STRICTLY BEFORE start_date
+            trading_days = schedule.index.date.tolist()
+
+            if len(trading_days) < warmup_with_buffer:
+                # Need to look back further - extend search
+                search_start = start_dt - timedelta(days=warmup_with_buffer * 3)
+                schedule = nyse.schedule(start_date=search_start, end_date=start_dt - timedelta(days=1))
+                trading_days = schedule.index.date.tolist()
+
+            if len(trading_days) < warmup_with_buffer:
+                logger.warning(
+                    f"Only found {len(trading_days)} trading days, need {warmup_with_buffer}. "
+                    f"Using earliest available date."
+                )
+                warmup_start = trading_days[0] if trading_days else search_start
+            else:
+                # Use buffered warmup to get extra safety margin
+                warmup_start = trading_days[-warmup_with_buffer]
+
+            logger.debug(
+                f"Calculated warmup start: {warmup_start} "
+                f"({warmup_with_buffer} trading days before {start_dt}, "
+                f"includes {buffer_pct}% buffer over {warmup_bars} required, "
+                f"{num_symbols} symbols)"
+            )
+
+            return datetime.combine(warmup_start, datetime.min.time())
+
+        except Exception as e:
+            # Fallback to 2× buffer if calendar lookup fails
+            logger.warning(
+                f"NYSE calendar lookup failed: {e}. "
+                f"Falling back to 2× buffer estimation."
+            )
+            calendar_days = int(warmup_with_buffer * 2.0)
+            warmup_start = start_date - timedelta(days=calendar_days)
+            return warmup_start
 
     def _convert_to_event(self, db_bar: MarketData) -> MarketDataEvent:
         """

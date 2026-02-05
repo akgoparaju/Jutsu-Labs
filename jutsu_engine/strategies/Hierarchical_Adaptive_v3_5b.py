@@ -38,6 +38,7 @@ from decimal import Decimal
 from typing import Optional, Dict, Tuple
 from datetime import time
 import logging
+import os
 import pandas as pd
 import numpy as np
 
@@ -49,6 +50,10 @@ from jutsu_engine.performance.trade_logger import TradeLogger
 from jutsu_engine.utils.logging_config import setup_logger
 
 logger = setup_logger('STRATEGY.HIERARCHICAL_ADAPTIVE_V3_5B')
+
+# Enable verbose z-score logging via environment variable
+# Set JUTSU_ZSCORE_DEBUG=1 to enable INFO-level z-score calculation details
+VERBOSE_ZSCORE_LOGGING = os.environ.get('JUTSU_ZSCORE_DEBUG', '0') == '1'
 
 # Execution time mapping (ET market times)
 EXECUTION_TIMES = {
@@ -359,6 +364,10 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         self._data_handler: Optional = None  # Set via set_data_handler() for intraday fetching
         self._intraday_price_cache: Dict[Tuple[str, datetime], Decimal] = {}  # Cache intraday prices
 
+        # Warmup state tracking (for weight state reset after warmup)
+        self._warmup_end_date: Optional = None  # Set by BacktestRunner for warmup detection
+        self._warmup_complete: bool = False  # Flag to track if warmup reset has occurred
+
         logger.info(
             f"Initialized {name} (v3.5b - BINARIZED REGIME): "
             f"SMA_fast={sma_fast}, SMA_slow={sma_slow}, "
@@ -468,6 +477,34 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
             self._end_date = end_date
 
         logger.info(f"Strategy end_date set to {self._end_date} for execution timing")
+
+    def set_warmup_end_date(self, warmup_end_date) -> None:
+        """
+        Set the warmup end date (start of trading period).
+
+        This method is called by BacktestRunner to inform the strategy when warmup
+        ends. The strategy uses this to reset internal weight state after warmup,
+        ensuring the first rebalance in the trading period executes correctly.
+
+        Without this reset, weight state updated during warmup (when trades are blocked)
+        causes the threshold check to fail (current == target) and no rebalancing occurs.
+
+        Args:
+            warmup_end_date: Start of trading period (datetime.date or datetime.datetime)
+
+        Notes:
+            - Called by BacktestRunner after strategy initialization
+            - Used to detect transition from warmup to trading period
+            - Triggers weight state reset on first bar after warmup
+        """
+        from datetime import datetime
+        # Convert to date if datetime was passed
+        if isinstance(warmup_end_date, datetime):
+            self._warmup_end_date = warmup_end_date.date()
+        else:
+            self._warmup_end_date = warmup_end_date
+
+        logger.info(f"Strategy warmup_end_date set to {self._warmup_end_date} for weight state reset")
 
     def set_data_handler(self, data_handler) -> None:
         """
@@ -713,11 +750,28 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         if bar.symbol != self.signal_symbol:
             return
 
-        # Warmup period check
-        min_warmup = self.sma_slow + 20
-        if len(self._bars) < min_warmup:
-            logger.debug(f"Warmup: {len(self._bars)}/{min_warmup} bars")
-            return
+        # NOTE: Warmup is handled by EventLoop via warmup_end_date.
+        # The EventLoop skips on_bar() calls until warmup_end_date is reached.
+        # No additional warmup check needed here - it caused 30-day trading delays
+        # because self._bars contains all symbols, not just signal_symbol bars.
+
+        # Detect warmup completion and reset weight state for initial allocation.
+        # During warmup, _execute_rebalance() updates internal weight state even though
+        # trades are blocked by EventLoop. This causes the threshold check to fail
+        # (current == target) when trading begins. Reset to zero forces initial rebalance.
+        if not self._warmup_complete and self._warmup_end_date:
+            bar_date = bar.timestamp.date() if hasattr(bar.timestamp, 'date') else bar.timestamp
+            if bar_date >= self._warmup_end_date:
+                self._warmup_complete = True
+                # Reset weight state to force initial allocation
+                self.current_tqqq_weight = Decimal("0")
+                self.current_qqq_weight = Decimal("0")
+                self.current_psq_weight = Decimal("0")
+                self.current_tmf_weight = Decimal("0")
+                self.current_tmv_weight = Decimal("0")
+                logger.info(
+                    f"Warmup complete ({bar_date}) - reset weight state for initial allocation"
+                )
 
         # 1. Calculate Kalman trend
         # For intraday execution, use current intraday price for Kalman filter
@@ -753,7 +807,7 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         sma_slow_series = sma(closes, self.sma_slow)
 
         if pd.isna(sma_fast_series.iloc[-1]) or pd.isna(sma_slow_series.iloc[-1]):
-            logger.warning("SMA calculation returned NaN")
+            logger.debug("SMA calculation incomplete - accumulating data")
             return
 
         sma_fast_val = Decimal(str(sma_fast_series.iloc[-1]))
@@ -763,7 +817,7 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         z_score = self._calculate_volatility_zscore(closes)
 
         if z_score is None:
-            logger.error("Volatility z-score calculation failed - insufficient warmup data")
+            logger.debug("Volatility z-score pending - accumulating data")
             return
 
         # 4. Apply hysteresis to determine VolState
@@ -975,30 +1029,46 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
         Calculate rolling z-score of realized volatility.
 
         Formula:
-            σ_t = Realized Volatility (21-day annualized)
-            μ_vol = Mean(σ, 126-day rolling window)
-            σ_vol = Std(σ, 126-day rolling window)
+            σ_t = Realized Volatility (realized_vol_window-day annualized)
+            μ_vol = Mean(σ, vol_baseline_window rolling window)
+            σ_vol = Std(σ, vol_baseline_window rolling window)
             z_score = (σ_t - μ_vol) / σ_vol
 
+        The baseline (μ_vol, σ_vol) is computed from the last vol_baseline_window
+        volatility values ending at the current bar. This is a TRUE rolling window
+        that moves forward with each bar processed.
+
         Args:
-            closes: Price series for volatility calculation
+            closes: Price series for volatility calculation (last N closes up to current bar)
 
         Returns:
             z_score or None if insufficient data
         """
         if len(closes) < self.vol_baseline_window + self.realized_vol_window:
+            logger.debug(
+                f"Z-score: insufficient data - closes={len(closes)}, "
+                f"need={self.vol_baseline_window + self.realized_vol_window}"
+            )
             return None
 
         # Calculate realized volatility (annualized)
         vol_series = annualized_volatility(closes, lookback=self.realized_vol_window)
 
         if len(vol_series) < self.vol_baseline_window:
+            logger.debug(
+                f"Z-score: insufficient vol data - vol_series={len(vol_series)}, "
+                f"vol_baseline_window={self.vol_baseline_window}"
+            )
             return None
 
-        # Calculate rolling baseline statistics
+        # Calculate rolling baseline statistics from last vol_baseline_window values
         vol_values = vol_series.tail(self.vol_baseline_window)
 
         if len(vol_values) < self.vol_baseline_window:
+            logger.debug(
+                f"Z-score: vol_values too short - got={len(vol_values)}, "
+                f"need={self.vol_baseline_window}"
+            )
             return None
 
         # Convert to Decimal for precision
@@ -1013,6 +1083,35 @@ class Hierarchical_Adaptive_v3_5b(Strategy):
 
         # Z-score
         z_score = (sigma_t - vol_mean) / vol_std
+
+        # Debug logging for z-score calculation verification
+        # Get baseline period date range from vol_values index
+        baseline_start = "N/A"
+        baseline_end = "N/A"
+        try:
+            if hasattr(vol_values, 'index') and len(vol_values) > 0:
+                # Handle both datetime index and integer index
+                first_idx = vol_values.index[0]
+                last_idx = vol_values.index[-1]
+                if hasattr(first_idx, 'date'):
+                    baseline_start = str(first_idx.date())
+                    baseline_end = str(last_idx.date())
+                else:
+                    baseline_start = str(first_idx)
+                    baseline_end = str(last_idx)
+        except Exception:
+            pass
+
+        # Log at appropriate level based on JUTSU_ZSCORE_DEBUG env var
+        log_msg = (
+            f"Z-score calc: closes={len(closes)}, vol_series={len(vol_series)}, "
+            f"vol_values={len(vol_values)}, baseline_period=[{baseline_start} → {baseline_end}], "
+            f"σ_t={sigma_t:.6f}, μ_vol={vol_mean:.6f}, σ_vol={vol_std:.6f}, z_score={z_score:.6f}"
+        )
+        if VERBOSE_ZSCORE_LOGGING:
+            logger.info(log_msg)
+        else:
+            logger.debug(log_msg)
 
         return z_score
 
