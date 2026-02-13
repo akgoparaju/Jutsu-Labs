@@ -132,7 +132,7 @@ def get_token_status() -> dict:
             result['token_age_days'] = age_seconds / (24 * 60 * 60)
 
             # Schwab tokens expire after 7 days
-            max_age_seconds = 7 * 24 * 60 * 60
+            max_age_seconds = 561600  # 6.5 days (matches schwab-py's max_token_age)
             remaining_seconds = max_age_seconds - age_seconds
             result['expires_in_days'] = remaining_seconds / (24 * 60 * 60)
 

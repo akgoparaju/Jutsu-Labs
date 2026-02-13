@@ -370,7 +370,7 @@ class DashboardDataRefresher:
                     if 'creation_timestamp' in token_data:
                         creation_ts = token_data['creation_timestamp']
                         age_seconds = time.time() - creation_ts
-                        max_age_seconds = 7 * 24 * 60 * 60  # 7 days
+                        max_age_seconds = 561600  # 6.5 days (matches schwab-py's max_token_age)
 
                         if age_seconds > max_age_seconds:
                             age_days = age_seconds / (24 * 60 * 60)
@@ -395,7 +395,8 @@ class DashboardDataRefresher:
                     api_key=os.getenv('SCHWAB_API_KEY'),
                     app_secret=os.getenv('SCHWAB_API_SECRET'),
                     callback_url=os.getenv('SCHWAB_CALLBACK_URL', 'https://127.0.0.1:8182'),
-                    token_path=str(token_path)
+                    token_path=str(token_path),
+                    interactive=not is_docker,  # Never open browser in Docker
                 )
                 
                 for symbol in all_symbols:

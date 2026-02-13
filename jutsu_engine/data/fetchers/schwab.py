@@ -218,7 +218,7 @@ class SchwabDataFetcher(DataFetcher):
             age_seconds = time.time() - creation_ts
 
             # Schwab tokens expire after 7 days
-            max_age_seconds = 7 * 24 * 60 * 60
+            max_age_seconds = 561600  # 6.5 days (matches schwab-py's max_token_age)
             remaining_seconds = max_age_seconds - age_seconds
             expires_in_days = remaining_seconds / (24 * 60 * 60)
 
@@ -304,6 +304,7 @@ class SchwabDataFetcher(DataFetcher):
                 callback_url=self.callback_url,
                 token_path=self.token_path,
                 asyncio=False,  # Use synchronous client
+                interactive=not is_docker,  # Never open browser in Docker
             )
 
             logger.info("Successfully authenticated with Schwab API")
