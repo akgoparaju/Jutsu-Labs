@@ -1,3 +1,41 @@
+#### **Feature: EOD Portfolio Snapshot Export (kurama contract)** (2026-06-04)
+
+Added a read-only end-of-day portfolio snapshot exporter so the `kurama` project can
+read the Schwab portfolio each morning without holding Schwab credentials or any
+trade-capable client.
+
+**What was added**:
+- `scripts/eod_portfolio_snapshot.py` — CLI that fetches Schwab positions + balances
+  via READ-ONLY calls (`get_account_numbers`, `get_account` with `POSITIONS`) and writes:
+  - `positions-YYYY-MM-DD.csv` / `account-YYYY-MM-DD.csv` (dated history, never modifies past dates)
+  - `latest.csv` / `latest-account.csv` (overwritten atomically via temp + `os.replace`)
+- `scripts/com.jutsu.eod-portfolio-snapshot.plist.example` — launchd template (~16:15 ET, weekdays).
+- `tests/unit/scripts/test_eod_portfolio_snapshot.py` — 22 unit tests (TDD).
+- `docs/portfolio-snapshot-contract.md` — the contract spec (owned by kurama, copied in) + an
+  addendum capturing kurama's A1–A4 decisions.
+
+**Multi-account schema** (kurama decisions A1–A4, `kurama/data/portfolio/QUESTIONS.md`):
+- Snapshots **all** accounts (iterates every `get_account_numbers()` hash, not just the first).
+- `positions` CSV gains `account_id` (first column) + `day_pnl`; one row per position across accounts.
+- `account` CSV is **one row per account**, each tagged with `account_id` (the Schwab account hash).
+- `unrealized_pnl` = open P/L; balances blank (never zero) when Schwab omits them.
+
+**Behavior** (per contract):
+- Flags: `--date YYYY-MM-DD` (default today), `--out <dir>` (default `~/dev/kurama/data/portfolio/`),
+  `--dry-run`, `--ignore-market-calendar`.
+- Skips weekends/holidays via `jutsu_engine.live.market_calendar` (passes a `date` to avoid a
+  pre-existing tz-aware-`datetime` quirk in `is_trading_day`).
+- On auth/Schwab failure: logs and exits non-zero **without** overwriting `latest*.csv`.
+- Idempotent: re-running a date overwrites only that date's dated file.
+
+**Read-only guarantee**: imports no order-execution code; a regression test asserts the
+script source contains no `order_executor` / `place_order` / `strategy_runner` references.
+
+**Note**: A *live* run requires a current Schwab token (the bundled `token.json` is past the
+7-day expiry); re-authenticate via the dashboard before scheduling.
+
+---
+
 #### **Debug: Enhanced Z-Score Calculation Logging for Investigation** (2026-02-04)
 
 Added comprehensive debug logging to `_calculate_volatility_zscore()` in both v3.5b and v3.5d strategies to investigate z-score discrepancies.

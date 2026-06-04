@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd template for the EOD portfolio snapshot (kurama contract).
+
+  Runs ~16:15 the machine's LOCAL time on weekdays (Mon-Fri). The script itself
+  skips market holidays via jutsu_engine.live.market_calendar, so a weekday-only
+  schedule is sufficient. If this machine is NOT on US/Eastern, either set the
+  machine TZ or adjust the Hour/Minute below so the run lands ~16:15 ET.
+
+  Install:
+    1. Edit the absolute paths below (PROJECT_DIR, python in .venv).
+    2. cp this file to ~/Library/LaunchAgents/com.jutsu.eod-portfolio-snapshot.plist
+    3. launchctl load ~/Library/LaunchAgents/com.jutsu.eod-portfolio-snapshot.plist
+
+  Crontab equivalent (weekdays 16:15 local):
+    15 16 * * 1-5 cd /ABS/PATH/Jutsu-Labs && .venv/bin/python scripts/eod_portfolio_snapshot.py >> logs/eod_portfolio_snapshot.log 2>&1
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jutsu.eod-portfolio-snapshot</string>
+
+    <key>WorkingDirectory</key>
+    <string>/ABS/PATH/Jutsu-Labs</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/ABS/PATH/Jutsu-Labs/.venv/bin/python</string>
+        <string>/ABS/PATH/Jutsu-Labs/scripts/eod_portfolio_snapshot.py</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>15</integer></dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/ABS/PATH/Jutsu-Labs/logs/eod_portfolio_snapshot.log</string>
+    <key>StandardErrorPath</key>
+    <string>/ABS/PATH/Jutsu-Labs/logs/eod_portfolio_snapshot.log</string>
+</dict>
+</plist>
