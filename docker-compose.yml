@@ -81,6 +81,13 @@ services:
       # NOTE: Code expects /app/data/token.json when in Docker (see schwab.py:161-162)
       - ./token.json:/app/data/token.json:ro
 
+      # EOD portfolio snapshot output for kurama. The container writes CSVs to
+      # /portfolio; on Unraid map this to the host appdata portfolio share, which
+      # Syncthing replicates to the Mac mini's kurama portfolio dir.
+      # Unraid host path is typically /mnt/user/appdata/jutsu/portfolio.
+      # Override the container dir with the PORTFOLIO_SNAPSHOT_DIR env var if needed.
+      - /appdata/jutsu/portfolio:/portfolio
+
     # Health check
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/status/health"]

@@ -1,3 +1,30 @@
+#### **Feature: Schedule EOD Portfolio Snapshot via Docker EOD job** (2026-06-04)
+
+Wired the portfolio snapshot into the existing in-container scheduler so it runs
+automatically after the close, since the Docker dashboard runs on the Unraid server
+(not the Mac mini where kurama reads). The container writes to `/portfolio`, which
+maps to the Unraid appdata share and is synced to the Mac mini via Syncthing.
+
+- `scripts/eod_portfolio_snapshot.py`: added `run_snapshot_to(out_dir, snapshot_date=None)`
+  — an importable, READ-ONLY entry point (fetch → build → write; raises before any write
+  on Schwab failure). `main()` reuses the same build path.
+- `jutsu_engine/api/scheduler.py`: `_run_portfolio_snapshot()` called from both EOD
+  finalization jobs (16:15 ET, and the 13:15 ET half-day job). Runs in a thread executor,
+  fully isolated in try/except — a snapshot failure is logged and never affects EOD
+  finalization. Output dir defaults to `/portfolio` (override via `PORTFOLIO_SNAPSHOT_DIR`).
+- `docker-compose.yml`: bind-mount `/appdata/jutsu/portfolio:/portfolio` (Unraid host path
+  is typically `/mnt/user/appdata/jutsu/portfolio`).
+- `tests/unit/scripts/test_eod_portfolio_snapshot.py`: +2 tests (24 total) for the new entry
+  point, incl. that a fetch error raises and writes nothing.
+
+Verified live: `run_snapshot_to` wrote 19 positions across 2 accounts to a `/portfolio`-style dir.
+
+**Operational (Unraid/Syncthing):** the Mac-mini Syncthing target must be kurama's
+`~/dev/kurama/data/portfolio/`; add `*.tmp` to the Syncthing ignore list (atomic writes use
+transient `.<name>.tmp` files); the Unraid container needs its own valid Schwab `token.json`.
+
+---
+
 #### **Feature: EOD Portfolio Snapshot Export (kurama contract)** (2026-06-04)
 
 Added a read-only end-of-day portfolio snapshot exporter so the `kurama` project can

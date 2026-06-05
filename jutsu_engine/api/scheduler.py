@@ -726,6 +726,9 @@ class SchedulerService:
             except Exception as e:
                 logger.error(f"EOD finalization job failed: {e}", exc_info=True)
 
+            # Write the kurama portfolio snapshot (read-only; non-fatal if it fails).
+            await self._run_portfolio_snapshot()
+
         finally:
             self._is_running_eod_finalization = False
 
@@ -784,8 +787,40 @@ class SchedulerService:
             except Exception as e:
                 logger.error(f"EOD finalization (half-day) failed: {e}", exc_info=True)
 
+            # Write the kurama portfolio snapshot (read-only; non-fatal if it fails).
+            await self._run_portfolio_snapshot()
+
         finally:
             self._is_running_eod_finalization = False
+
+    async def _run_portfolio_snapshot(self):
+        """Write the EOD portfolio snapshot CSVs for kurama (READ-ONLY Schwab calls).
+
+        Isolated and non-fatal: any failure here is logged but never affects EOD
+        finalization. Output dir defaults to /portfolio (the container path bind-
+        mounted to the Unraid portfolio share, synced to the Mac mini for kurama);
+        override with the PORTFOLIO_SNAPSHOT_DIR env var.
+        """
+        import os
+        import sys
+        from pathlib import Path
+
+        out_dir = os.getenv('PORTFOLIO_SNAPSHOT_DIR', '/portfolio')
+        try:
+            # scripts/ is importable the same way the trading job imports it.
+            project_root = Path(__file__).resolve().parents[2]
+            if str(project_root) not in sys.path:
+                sys.path.insert(0, str(project_root))
+            from scripts.eod_portfolio_snapshot import run_snapshot_to
+
+            loop = asyncio.get_event_loop()
+            summary = await loop.run_in_executor(None, run_snapshot_to, out_dir)
+            logger.info(
+                "Portfolio snapshot written to %s: %s positions across %s account(s) for %s",
+                out_dir, summary['positions'], summary['accounts'], summary['as_of_date'],
+            )
+        except Exception as e:
+            logger.error(f"Portfolio snapshot failed (non-fatal): {e}", exc_info=True)
 
     async def trigger_eod_finalization(self, target_date: Optional[date] = None) -> Dict[str, Any]:
         """

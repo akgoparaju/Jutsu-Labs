@@ -367,6 +367,36 @@ def test_main_invalid_date_returns_error(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# run_snapshot_to — importable entry point used by the Docker scheduler       #
+# --------------------------------------------------------------------------- #
+def test_run_snapshot_to_writes_and_returns_summary(tmp_path, monkeypatch):
+    import datetime
+    accounts = [("ACCT1", _sample_account_json()), ("ACCT2", _second_account_json())]
+    monkeypatch.setattr(eod, "build_schwab_client", lambda: object())
+    monkeypatch.setattr(eod, "fetch_accounts", lambda _c: accounts)
+
+    summary = eod.run_snapshot_to(str(tmp_path), datetime.date(2026, 6, 4))
+
+    assert summary == {"as_of_date": "2026-06-04", "accounts": 2, "positions": 4}
+    assert (tmp_path / "latest.csv").exists()
+    assert (tmp_path / "latest-account.csv").exists()
+
+
+def test_run_snapshot_to_raises_and_writes_nothing_on_fetch_error(tmp_path, monkeypatch):
+    import datetime
+    monkeypatch.setattr(eod, "build_schwab_client", lambda: object())
+
+    def _boom(_client):
+        raise RuntimeError("schwab down")
+
+    monkeypatch.setattr(eod, "fetch_accounts", _boom)
+
+    with pytest.raises(RuntimeError):
+        eod.run_snapshot_to(str(tmp_path), datetime.date(2026, 6, 4))
+    assert list(tmp_path.iterdir()) == []  # never wrote a partial snapshot
+
+
+# --------------------------------------------------------------------------- #
 # Read-only guarantee (contract hard requirement)                            #
 # --------------------------------------------------------------------------- #
 def test_script_has_no_order_execution_references():

@@ -358,6 +358,26 @@ def _is_trading_day(target_date: date) -> bool:
     return is_trading_day(target_date)
 
 
+def run_snapshot_to(out_dir, snapshot_date: Optional[date] = None) -> Dict[str, int]:
+    """Fetch + build + write the snapshot to ``out_dir``. READ-ONLY.
+
+    Importable entry point for in-process callers (e.g. the Docker EOD scheduler).
+    Builds the snapshot fully BEFORE writing, so a Schwab failure raises without
+    ever touching latest*.csv. Returns a small summary dict on success.
+    """
+    target = snapshot_date or date.today()
+    as_of_date = target.isoformat()
+    client = build_schwab_client()
+    accounts = fetch_accounts(client)
+    position_rows, account_rows = build_snapshot(accounts, as_of_date)
+    write_snapshot(out_dir, as_of_date, position_rows, account_rows)
+    return {
+        "as_of_date": as_of_date,
+        "accounts": len(account_rows),
+        "positions": len(position_rows),
+    }
+
+
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Export an EOD Schwab portfolio snapshot to CSV (read-only)."
