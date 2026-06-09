@@ -1,3 +1,21 @@
+#### **Fix: Portfolio snapshot CSVs world-readable (0644) for Syncthing** (2026-06-08)
+
+The atomic CSV writer used `tempfile.mkstemp`, which creates files mode `0600`
+(owner-only). In the Unraid deployment the container runs as user `jutsu` (UID
+1000), so the published CSVs were unreadable by Syncthing (a different user),
+which failed to replicate them to the Mac mini kurama dir
+(`hashing: ... permission denied`).
+
+- `scripts/eod_portfolio_snapshot.py`: `_write_csv_atomic` now `os.chmod(tmp, 0o644)`
+  before `os.replace`, so `latest.csv` / `latest-account.csv` / dated files are
+  world-readable. Verified: published files are `0o644`; 24 unit tests pass.
+
+Note: the host portfolio folder must also be writable by the container user — on
+Unraid, `chmod 777 /mnt/user/appdata/jutsu/portfolio` (it was owned by a different
+UID after being created over SMB).
+
+---
+
 #### **Feature: Schedule EOD Portfolio Snapshot via Docker EOD job** (2026-06-04)
 
 Wired the portfolio snapshot into the existing in-container scheduler so it runs

@@ -248,6 +248,9 @@ def _write_csv_atomic(path: Path, fieldnames: List[str], rows: List[Dict[str, st
             writer.writerows(rows)
             f.flush()
             os.fsync(f.fileno())
+        # mkstemp creates the temp file 0600; make the published CSV world-readable
+        # so other users/services (e.g. Syncthing, kurama) can read it.
+        os.chmod(tmp_name, 0o644)
         os.replace(tmp_name, path)
     except BaseException:
         # Don't leave a stray temp file behind on failure.
