@@ -11,8 +11,11 @@ DataFrames. Task 6 adds the backtest driver that produces the real CSVs.
 """
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
+from decimal import Decimal
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -174,3 +177,111 @@ def treasury_overlay_contribution(portfolio: pd.DataFrame) -> dict:
 
     return {"treasury_days": int(len(df)), "treasury_pnl_abs": pnl,
             "contribution_vs_cash": pnl}
+
+
+def build_strategy_instance(strategy_id: str):
+    """Instantiate a live strategy from its exact live YAML config.
+
+    Reuses LiveStrategyRunner's config->strategy mapping (strategy_runner.py:
+    _initialize_strategy), which reads config['strategy']['parameters'], drops
+    EXCLUDED_PARAMS, converts floats to Decimal, and calls strategy_class(**params)
+    then strategy.init(). Returning runner.strategy guarantees the audit backtest
+    uses the identical parameters the live deployment uses.
+    """
+    from jutsu_engine.audit.config import resolve_strategy
+    from jutsu_engine.live.strategy_runner import LiveStrategyRunner
+
+    spec = resolve_strategy(strategy_id)
+    mod = importlib.import_module(spec.module_path)
+    strategy_class = getattr(mod, spec.class_name)
+    runner = LiveStrategyRunner(strategy_class=strategy_class, config_path=spec.config_path)
+    return runner.strategy
+
+
+def _all_symbols(strategy_id: str) -> list[str]:
+    """All trading symbols the strategy touches (signal, leveraged, hedge, bonds)."""
+    from jutsu_engine.audit.config import resolve_strategy
+    from jutsu_engine.live.strategy_runner import LiveStrategyRunner
+
+    spec = resolve_strategy(strategy_id)
+    mod = importlib.import_module(spec.module_path)
+    strategy_class = getattr(mod, spec.class_name)
+    runner = LiveStrategyRunner(strategy_class=strategy_class, config_path=spec.config_path)
+    return runner.get_all_symbols()
+
+
+@dataclass
+class AttributionResult:
+    """Everything the report needs for one strategy's era/cell attribution."""
+    strategy_id: str
+    metrics: dict            # headline backtest metrics (sharpe, max_drawdown, ...)
+    era_table: pd.DataFrame
+    cell_table: pd.DataFrame
+    treasury: dict
+    regime_timeseries_csv: str
+    portfolio_csv: str
+
+
+def run_attribution(strategy_id: str, start=None, end=None,
+                    initial_capital: Decimal = Decimal("10000"),
+                    output_dir: str = "output") -> AttributionResult:
+    """Run one full-period backtest and produce era + cell + treasury attribution.
+
+    Reuses BacktestRunner (backtest_runner.py:66-102,284-331). The Hierarchical
+    strategy exposes get_current_regime, so BacktestRunner emits the regime
+    timeseries CSV and portfolio CSV that the pure functions consume.
+    """
+    from jutsu_engine.application.backtest_runner import BacktestRunner
+    from jutsu_engine.audit.config import ATTRIBUTION_START
+
+    start = start or ATTRIBUTION_START
+    end = end or date.today()
+
+    config = {
+        "symbols": _all_symbols(strategy_id),
+        "timeframe": "1D",
+        "start_date": datetime(start.year, start.month, start.day, tzinfo=timezone.utc),
+        "end_date": datetime(end.year, end.month, end.day, tzinfo=timezone.utc),
+        "initial_capital": initial_capital,
+    }
+    strategy = build_strategy_instance(strategy_id)
+
+    runner = BacktestRunner(config)
+    results = runner.run(strategy, output_dir=output_dir)
+
+    ts_csv = results.get("regime_timeseries_csv")
+    port_csv = results.get("portfolio_csv_path")
+    if not ts_csv or not Path(ts_csv).exists():
+        raise RuntimeError(
+            "Backtest did not emit a regime timeseries CSV; cannot attribute by cell. "
+            "Confirm the strategy exposes get_current_regime."
+        )
+
+    ts = pd.read_csv(ts_csv)
+    era_table = era_metrics(ts)
+    cell_table = cell_attribution(ts)
+
+    treasury = {"treasury_days": 0, "treasury_pnl_abs": 0.0, "contribution_vs_cash": 0.0}
+    if port_csv and Path(port_csv).exists():
+        port = pd.read_csv(port_csv)
+        if "Regime" in port.columns:
+            treasury = treasury_overlay_contribution(port)
+
+    metrics = {
+        "sharpe_ratio": results.get("sharpe_ratio"),
+        "max_drawdown": results.get("max_drawdown"),
+        "annualized_return": results.get("annualized_return"),
+        "total_return": results.get("total_return"),
+        "final_value": results.get("final_value"),
+        "alpha_vs_qqq": (results.get("baseline") or {}).get("alpha"),
+    }
+
+    return AttributionResult(
+        strategy_id=strategy_id,
+        metrics=metrics,
+        era_table=era_table,
+        cell_table=cell_table,
+        treasury=treasury,
+        regime_timeseries_csv=str(ts_csv),
+        portfolio_csv=str(port_csv) if port_csv else "",
+    )

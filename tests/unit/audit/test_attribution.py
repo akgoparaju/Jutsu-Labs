@@ -5,6 +5,7 @@ import pandas as pd
 from jutsu_engine.audit.attribution import (
     ERAS,
     assign_era,
+    build_strategy_instance,
     era_metrics,
     cell_attribution,
     treasury_overlay_contribution,
@@ -129,3 +130,23 @@ class TestTreasuryOverlayContribution:
         # Only the two Cell_4 rows count: one episode, diff = +300.
         assert res["treasury_days"] == 2
         assert abs(res["treasury_pnl_abs"] - 300.0) < 1e-6
+
+
+class TestBuildStrategyInstance:
+    def test_builds_v3_5b_from_live_config(self):
+        """Uses the real config/strategies/v3_5b.yaml (no DB); audit replays the exact live config via LiveStrategyRunner."""
+        strategy = build_strategy_instance("v3_5b")
+        assert strategy.__class__.__name__ == "Hierarchical_Adaptive_v3_5b"
+        # Golden param spot-checks (from v3_5b.yaml).
+        assert int(strategy.sma_fast) == 40
+        assert int(strategy.sma_slow) == 140
+        assert strategy.signal_symbol == "QQQ"
+        assert strategy.leveraged_long_symbol == "TQQQ"
+        assert bool(strategy.allow_treasury) is True
+
+    def test_builds_v3_5d_and_has_regime_hook(self):
+        """Builds v3_5d from its live config and exposes get_current_regime (required for regime CSV emission)."""
+        strategy = build_strategy_instance("v3_5d")
+        assert strategy.__class__.__name__ == "Hierarchical_Adaptive_v3_5d"
+        # get_current_regime is required for BacktestRunner to emit regime CSVs.
+        assert hasattr(strategy, "get_current_regime")
