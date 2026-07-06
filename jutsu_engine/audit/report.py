@@ -83,6 +83,20 @@ def render_live_recon_section(recon) -> str:
     else:
         lines.append("- (none)")
 
+    mismatch_rows = [r for r in (recon.day_table or []) if r.get("category") != "match"]
+    lines += ["", "### Day-level mismatches"]
+    if not mismatch_rows:
+        lines.append("_(no mismatch days)_")
+    else:
+        lines += ["| day | category | fields (stored→replay) |",
+                  "| --- | --- | --- |"]
+        for r in mismatch_rows[:40]:
+            fields = "; ".join(
+                f"{m['field']}: {m['stored']}→{m['replay']}" for m in r.get("mismatches", []))
+            lines.append(f"| {r.get('day')} | {r.get('category')} | {fields} |")
+        if len(mismatch_rows) > 40:
+            lines.append(f"_(+{len(mismatch_rows) - 40} more mismatch days)_")
+
     lines += ["", "### Snapshot provenance (snapshot_source counts)",
               "Only `scheduler` rows carry valid regime; `backfill` rows have "
               "NULL z_score/t_norm; `refresh` rows carry no regime.", ""]
@@ -104,8 +118,10 @@ def render_live_recon_section(recon) -> str:
         "### 2026-02-04 z-score discrepancy",
         f"z_score timing-category diffs observed on **{z_timing}** day(s). "
         "z_score/t_norm are intraday-computed live vs EOD-replayed here, so exact "
-        "match is not expected; these are categorized `timing`, not `logic`. See the "
-        "day-level table for the specific dates.",
+        "match is not expected; these are categorized `timing`, not `logic`. "
+        "Specific dates and values are in the day-level table above. Note: the ±0.25 z tolerance "
+        "may absorb spreads of the magnitude seen in the 2026-02-04 investigation (~0.18–0.36); "
+        "out-of-tolerance days listed above are the extreme cases.",
         "",
     ]
     return "\n".join(lines) + "\n"

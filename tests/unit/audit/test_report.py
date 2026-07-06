@@ -126,6 +126,21 @@ class TestNoneHandling:
         assert "no rows" in _df_to_md(pd.DataFrame())
 
 
+class TestDayLevelTable:
+    def test_day_table_mismatch_rows_rendered(self):
+        """Day-level mismatches section renders mismatch rows with field: stored→replay format."""
+        md = render_live_recon_section(_recon())
+        assert "Day-level mismatches" in md
+        assert "strategy_cell: 1→4" in md
+
+    def test_day_table_empty_renders_no_mismatch_days(self):
+        """Empty day_table renders the no-mismatch-days placeholder."""
+        recon = _recon()
+        recon.day_table = []
+        md = render_live_recon_section(recon)
+        assert "_(no mismatch days)_" in md
+
+
 class TestNullSourceCounts:
     def test_null_source_key_string_renders_without_crash(self):
         """render_live_recon_section does not crash and renders '(null)' when
