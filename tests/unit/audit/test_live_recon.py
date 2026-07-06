@@ -3,7 +3,9 @@ from datetime import date
 from jutsu_engine.audit.live_recon import (
     ZSCORE_TOLERANCE,
     TNORM_TOLERANCE,
+    LiveReconResult,
     categorize_day,
+    reconcile,
     summarize_diffs,
 )
 
@@ -97,3 +99,50 @@ class TestSummarizeDiffs:
         assert s["by_field"]["z_score"] == 1
         # mismatch_pct = non-match days / total
         assert abs(s["mismatch_pct"] - (2 / 3 * 100)) < 1e-9
+
+
+class TestReconcileOrchestration:
+    def test_reconcile_pairs_days_and_summarizes(self):
+        """reconcile pairs each stored day with its replay, summarizes, and tracks equity."""
+        # Two stored scheduler days for one strategy.
+        snapshots = [
+            dict(day=date(2026, 1, 5), strategy_cell=1, trend_state="BullStrong",
+                 vol_state="Low", t_norm=0.40, z_score=-0.30, total_equity=10000.0,
+                 snapshot_source="scheduler"),
+            dict(day=date(2026, 1, 6), strategy_cell=4, trend_state="Sideways",
+                 vol_state="High", t_norm=0.10, z_score=1.20, total_equity=9950.0,
+                 snapshot_source="scheduler"),
+        ]
+
+        # Fake replay: day 1 matches; day 2 replays a different cell (logic mismatch)
+        # and a different equity (for divergence).
+        def fake_replay_day(strategy_id, day):
+            if day == date(2026, 1, 5):
+                return dict(strategy_cell=1, trend_state="BullStrong", vol_state="Low",
+                            t_norm=0.41, z_score=-0.28, replay_equity=10000.0)
+            return dict(strategy_cell=5, trend_state="BearStrong", vol_state="High",
+                        t_norm=0.10, z_score=1.19, replay_equity=9900.0)
+
+        result = reconcile(
+            strategy_id="v3_5b",
+            snapshots=snapshots,
+            replay_day=fake_replay_day,
+            source_counts={"scheduler": 2, "refresh": 3},
+        )
+        assert isinstance(result, LiveReconResult)
+        assert result.strategy_id == "v3_5b"
+        assert result.summary["total_days"] == 2
+        assert result.summary["by_category"]["logic"] == 1
+        assert result.summary["mismatch_days"] == 1
+        assert result.source_counts == {"scheduler": 2, "refresh": 3}
+        # Equity divergence: replay 9900 vs stored 9950 on day 2 -> abs diff tracked.
+        assert result.pnl_divergence["final_stored_equity"] == 9950.0
+        assert result.pnl_divergence["final_replay_equity"] == 9900.0
+        assert result.day_table[1]["category"] == "logic"
+
+    def test_reconcile_empty_snapshots_is_graceful(self):
+        """reconcile with no snapshots returns zeroed summary and None equity endpoints."""
+        result = reconcile("v3_5b", snapshots=[], replay_day=lambda s, d: {},
+                           source_counts={})
+        assert result.summary["total_days"] == 0
+        assert result.pnl_divergence["final_stored_equity"] is None
