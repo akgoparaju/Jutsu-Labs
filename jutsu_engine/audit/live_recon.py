@@ -154,8 +154,20 @@ def reconcile(
 
     for snap in snapshots:
         day = snap["day"]
-        rep = replay_day(strategy_id, day) or {}
-        diff = categorize_day(snap, rep)
+        rep = replay_day(strategy_id, day)
+        if not rep:
+            # Audit-side gap (e.g. missing market_data bars): the day is
+            # unverifiable, never evidence of a production logic divergence.
+            diff = {
+                "day": day,
+                "categorical_match": False,
+                "mismatches": [{"field": "replay", "stored": None, "replay": None,
+                                "category": "data"}],
+                "category": "data",
+            }
+        else:
+            diff = categorize_day(snap, rep)
+        rep = rep or {}
         diff["stored_equity"] = snap.get("total_equity")
         diff["replay_equity"] = rep.get("replay_equity")
         day_rows.append(diff)
@@ -166,16 +178,23 @@ def reconcile(
 
     summary = summarize_diffs(day_rows)
 
+    # Build day-keyed dicts to find the last common day for abs_divergence.
+    stored_by_day = dict(stored_equity_series)
+    replay_by_day = dict(replay_equity_series)
+    common_days = sorted(set(stored_by_day) & set(replay_by_day))
+
     pnl_divergence = {
         "final_stored_equity": stored_equity_series[-1][1] if stored_equity_series else None,
         "final_replay_equity": replay_equity_series[-1][1] if replay_equity_series else None,
     }
-    if pnl_divergence["final_stored_equity"] is not None and \
-       pnl_divergence["final_replay_equity"] is not None:
+    if common_days:
+        last_common = common_days[-1]
+        pnl_divergence["divergence_day"] = last_common
         pnl_divergence["abs_divergence"] = abs(
-            pnl_divergence["final_replay_equity"] - pnl_divergence["final_stored_equity"]
+            replay_by_day[last_common] - stored_by_day[last_common]
         )
     else:
+        pnl_divergence["divergence_day"] = None
         pnl_divergence["abs_divergence"] = None
 
     return LiveReconResult(

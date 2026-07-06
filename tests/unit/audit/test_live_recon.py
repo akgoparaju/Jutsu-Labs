@@ -139,6 +139,9 @@ class TestReconcileOrchestration:
         assert result.pnl_divergence["final_stored_equity"] == 9950.0
         assert result.pnl_divergence["final_replay_equity"] == 9900.0
         assert result.day_table[1]["category"] == "logic"
+        # divergence computed on last common day (day 2: stored 9950, replay 9900)
+        assert result.pnl_divergence["divergence_day"] == date(2026, 1, 6)
+        assert result.pnl_divergence["abs_divergence"] == 50.0
 
     def test_reconcile_empty_snapshots_is_graceful(self):
         """reconcile with no snapshots returns zeroed summary and None equity endpoints."""
@@ -146,3 +149,14 @@ class TestReconcileOrchestration:
                            source_counts={})
         assert result.summary["total_days"] == 0
         assert result.pnl_divergence["final_stored_equity"] is None
+
+    def test_replay_gap_is_data_not_logic(self):
+        """A day the replay cannot reproduce (None) is a data gap, not a logic mismatch."""
+        snapshots = [dict(day=date(2026, 1, 5), strategy_cell=1, trend_state="BullStrong",
+                          vol_state="Low", t_norm=0.40, z_score=-0.30,
+                          total_equity=10000.0, snapshot_source="scheduler")]
+        result = reconcile("v3_5b", snapshots=snapshots,
+                           replay_day=lambda s, d: None, source_counts={})
+        assert result.summary["by_category"].get("logic") is None
+        assert result.summary["by_category"]["data"] == 1
+        assert result.day_table[0]["category"] == "data"
