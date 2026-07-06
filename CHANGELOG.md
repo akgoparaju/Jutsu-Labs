@@ -1,3 +1,48 @@
+#### **Feature: Baseline audit Phase 1 — live reconciliation + era/cell attribution** (2026-07-06)
+
+Added the read-only `jutsu_engine/audit/` analysis package and `jutsu audit` CLI
+group implementing Phase 1 of the baseline audit (spec:
+`docs/superpowers/specs/2026-07-06-baseline-audit-design.md`). No live/scheduler
+or strategy-config changes; the audit is strictly READ-ONLY against the database
+and writes markdown reports to `claudedocs/audit/<YYYY-MM-DD>/`.
+
+- **Module 5 — Live reconciliation** (`audit/live_recon.py`): replays each live
+  strategy (v3_5b, v3_5d) through `LiveStrategyRunner.calculate_signals` over EOD
+  `market_data` bars (250-bar warmup, fresh runner per day — mirrors
+  `scripts/backfill_regime.py`) and diffs day-by-day against
+  scheduler-authoritative `performance_snapshots`. Categorical fields
+  (strategy_cell/trend_state/vol_state) require exact match (`logic` category);
+  z_score/t_norm are compared with tolerance (`timing` category, since the
+  scheduler computed them intraday); unreplayable days (missing bars) and NaN
+  values are `data`, never `logic`; equity uses real EOD `total_equity`, never
+  the 1-day-shifted `market_data` closes. Reports snapshot_source provenance
+  counts (NULL sources rendered as `(null)`).
+- **Module 4 — Era and cell attribution** (`audit/attribution.py`): one
+  full-period (2010-02 → present) backtest per strategy via `BacktestRunner` using
+  the exact live config (built through `LiveStrategyRunner`'s param mapping);
+  per-era metrics (ET trading dates) and per-cell P&L (compounded + additive
+  columns, honestly labeled), including episode-aware Treasury-overlay (TMF/TMV,
+  cells 4-6) contribution vs a cash counterfactual.
+- **Reuse**: `BacktestRunner`, `PerformanceAnalyzer`, `LiveStrategyRunner`,
+  regime timeseries + portfolio CSVs. New code is analysis-only.
+- **CLI**: `jutsu audit live-recon|attribution|all --strategy v3_5b|v3_5d`
+  (omit `--strategy` to run both). Backtest artifacts routed under the report
+  dir. Degrades gracefully (clear stderr message, non-zero exit) when the
+  database is unavailable.
+- **Tests**: 48 DB-free unit tests in `tests/unit/audit/` + `tests/unit/cli/`
+  (pure functions on synthetic series; config→strategy mapping tested against the
+  real live YAMLs).
+- **First real run findings (2026-07-06)**: v3_5b — 93 scheduler days, 8 logic
+  mismatch days (8.6%), 37 timing days; v3_5d — 118 days, 38.1% total mismatch.
+  Both exceed the 5% fidelity threshold → live-fidelity investigation is P0 per
+  spec §10 decision gates.
+- Modified/added: `jutsu_engine/audit/{__init__,config,db,live_recon,attribution,report}.py`,
+  `jutsu_engine/cli/commands/audit.py`, `jutsu_engine/cli/main.py`,
+  `tests/unit/audit/*`, `tests/unit/cli/test_audit_command.py`.
+
+Modules 1 (WFO stability), 2 (plateau map), 3 (DSR/PBO) are deferred to later plans
+(spec build order); the package/CLI scaffolding accommodates them.
+
 #### **Fix: Episode-aware treasury P&L + honest attribution labels (audit)** (2026-07-06)
 
 Code review of the Task 5 attribution functions found two mathematically-consequential
