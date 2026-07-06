@@ -93,3 +93,27 @@ class TestWriteReport:
         assert out.name == "report_v3_5b.md"
         assert Path(out).read_text() == "# hello\n"
         assert out.parent == tmp_path
+
+
+class TestNoneHandling:
+    def test_live_recon_none_equity_renders_na_not_none(self):
+        """Phase-1 reports always have None replay equity — must render N/A, never 'None'."""
+        md = render_live_recon_section(_recon())
+        assert "N/A" in md
+        assert ": None" not in md
+
+    def test_attribution_none_metrics_do_not_crash_or_print_none(self):
+        """A partially-None metrics/treasury dict renders N/A and never crashes."""
+        attr = _attr()
+        attr.metrics = {k: None for k in attr.metrics}
+        attr.treasury = {"treasury_days": 0, "treasury_pnl_abs": None,
+                         "contribution_vs_cash": None}
+        md = render_attribution_section(attr)
+        assert "N/A" in md
+        assert "**None**" not in md
+
+    def test_df_to_md_empty_dataframe(self):
+        """Empty DataFrame renders the no-rows placeholder."""
+        import pandas as pd
+        from jutsu_engine.audit.report import _df_to_md
+        assert "no rows" in _df_to_md(pd.DataFrame())

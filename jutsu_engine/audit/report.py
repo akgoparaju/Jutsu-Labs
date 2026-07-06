@@ -15,6 +15,16 @@ import pandas as pd
 FIDELITY_MISMATCH_THRESHOLD_PCT = 5.0
 
 
+def _fmt(v, spec: str = ".2f") -> str:
+    """Format a number for the report; None -> 'N/A' (never print literal None)."""
+    if v is None:
+        return "N/A"
+    try:
+        return format(float(v), spec)
+    except (TypeError, ValueError):
+        return str(v)
+
+
 def _df_to_md(df: pd.DataFrame) -> str:
     """Render a DataFrame as a GitHub-flavored markdown table (no external deps)."""
     if df is None or df.empty:
@@ -74,10 +84,10 @@ def render_live_recon_section(recon) -> str:
     d = recon.pnl_divergence
     lines += ["", "### P&L divergence (real EOD equity)",
               f"- Final live equity (total_equity): "
-              f"{d.get('final_stored_equity')}",
-              f"- Final replayed equity: {d.get('final_replay_equity')} "
+              f"{_fmt(d.get('final_stored_equity'))}",
+              f"- Final replayed equity: {_fmt(d.get('final_replay_equity'))} "
               f"(positions-level equity replay is out of Phase-1 scope)",
-              f"- Divergence day (last common): {d.get('divergence_day')}",
+              f"- Divergence day (last common): {d.get('divergence_day') or 'N/A'}",
               ""]
 
     # z-score discrepancy note (spec §9 acceptance): report continuous-field timing diffs.
@@ -99,17 +109,17 @@ def render_attribution_section(attr) -> str:
     t = attr.treasury
     treasury_verdict = (
         "the Treasury overlay **added** value net of whipsaw"
-        if t["contribution_vs_cash"] > 0 else
+        if (t.get("contribution_vs_cash") or 0) > 0 else
         "the Treasury overlay **cost** money net of whipsaw (cells 4-6)"
     )
     lines = [
         "## Era and cell attribution (Module 4)",
         "",
         "### Headline (full-period backtest, live config)",
-        f"- Sharpe: **{m.get('sharpe_ratio')}**  |  MaxDD: **{m.get('max_drawdown')}**",
-        f"- Annualized return: **{m.get('annualized_return')}**  |  "
-        f"Total return: **{m.get('total_return')}**",
-        f"- Alpha vs QQQ: **{m.get('alpha_vs_qqq')}**",
+        f"- Sharpe: **{_fmt(m.get('sharpe_ratio'), '.4f')}**  |  MaxDD: **{_fmt(m.get('max_drawdown'), '.4f')}**",
+        f"- Annualized return: **{_fmt(m.get('annualized_return'), '.4f')}**  |  "
+        f"Total return: **{_fmt(m.get('total_return'), '.4f')}**",
+        f"- Alpha vs QQQ: **{_fmt(m.get('alpha_vs_qqq'), '.4f')}**",
         "",
         "### Era table",
         _df_to_md(attr.era_table),
@@ -125,8 +135,8 @@ def render_attribution_section(attr) -> str:
         "excluded); mid-episode rebalances can contaminate the diff._",
         "",
         f"- Treasury days: **{t['treasury_days']}**",
-        f"- Treasury sleeve P&L (abs): **{t['treasury_pnl_abs']}**",
-        f"- Contribution vs cash: **{t['contribution_vs_cash']}** — {treasury_verdict}.",
+        f"- Treasury sleeve P&L (abs): **{_fmt(t.get('treasury_pnl_abs'))}**",
+        f"- Contribution vs cash: **{_fmt(t.get('contribution_vs_cash'))}** — {treasury_verdict}.",
         "",
     ]
     return "\n".join(lines) + "\n"
