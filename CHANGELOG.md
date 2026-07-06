@@ -1,3 +1,32 @@
+#### **Fix: Episode-aware treasury P&L + honest attribution labels (audit)** (2026-07-06)
+
+Code review of the Task 5 attribution functions found two mathematically-consequential
+issues where the numbers were wrong-but-plausible (dangerous, since they feed the audit
+report that steers strategy R&D).
+
+- `jutsu_engine/audit/attribution.py`:
+  - `treasury_overlay_contribution` (C1): replaced `sleeve.iloc[-1] - sleeve.iloc[0]`
+    (which conflated cross-episode allocation flows with returns — sign-flippable error)
+    with a sum of WITHIN-EPISODE day-over-day sleeve diffs. Defensive periods are
+    non-contiguous episodes (sleeve sold to 0 outside cells 4-6,
+    Hierarchical_Adaptive_v3_5b.py:873-876); episode boundary = calendar gap > 7 days.
+    A/B example (4000→4300 then re-entry 5000→4800) now returns +100, not +800. Also
+    made TMV_Value/TMF_Value column access scalar-safe (exporter omits never-held tickers).
+  - `cell_attribution` (C2): renamed `strategy_total_return`→`strategy_compounded_return`
+    and `qqq_total_return`→`qqq_compounded_return` (compounded over a cell's non-contiguous
+    days is a per-regime quality measure, NOT additive across cells); added additive
+    `strategy_return_sum` (simple-return sum) for cross-cell contribution comparison.
+  - `era_metrics` (I2): bucket by ET trading date (`tz_convert("America/New_York")`) to
+    match the exporter's `_get_trading_date` convention.
+  - `assign_era` (M1): NaT guard returns "unknown".
+  - `_cell_from_regime` (M2): returns -1 for unparseable regimes (empty string/None/malformed)
+    instead of raising; both consumers mask out cell == -1.
+- `tests/unit/audit/test_attribution.py`: updated the treasury single-episode and cell tests
+  in place; added 4 tests (multi-episode allocation-flow exclusion, missing TMV column,
+  empty-Regime row ignored, assign_era(NaT)). 32 passed.
+
+---
+
 #### **Fix: Portfolio snapshot CSVs world-readable (0644) for Syncthing** (2026-06-08)
 
 The atomic CSV writer used `tempfile.mkstemp`, which creates files mode `0600`
