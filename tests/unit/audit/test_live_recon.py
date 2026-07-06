@@ -61,6 +61,24 @@ class TestCategorizeDay:
         assert ZSCORE_TOLERANCE > 0
         assert TNORM_TOLERANCE > 0
 
+    def test_zscore_at_exact_tolerance_is_match(self):
+        """Diff exactly equal to tolerance is in-tolerance (boundary is exclusive)."""
+        d = categorize_day(_stored(z_score=0.00), _replay(z_score=ZSCORE_TOLERANCE))
+        assert d["category"] == "match"
+
+    def test_data_gap_dominates_timing(self):
+        """A stored categorical NULL (data) outranks an out-of-tolerance z (timing)."""
+        d = categorize_day(_stored(strategy_cell=None, z_score=-0.30),
+                           _replay(z_score=-0.90))
+        assert d["category"] == "data"
+
+    def test_nan_stored_zscore_is_flagged_as_data(self):
+        """A NaN stored z_score is surfaced as a data anomaly, never a silent match."""
+        d = categorize_day(_stored(z_score=float("nan")), _replay(z_score=-0.30))
+        assert any(m["field"] == "z_score" and m["category"] == "data"
+                   for m in d["mismatches"])
+        assert d["category"] == "data"
+
 
 class TestSummarizeDiffs:
     def test_counts_by_field_and_category(self):

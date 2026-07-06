@@ -9,7 +9,9 @@ Diff categorization (spec §9 + data gotchas):
     exactly; a mismatch is 'logic' (same EOD inputs, different output -> bug).
   - Continuous fields (z_score / t_norm) were computed intraday by the scheduler,
     so exact EOD-replay match is NOT expected. Out-of-tolerance diffs are 'timing'.
-    NULL stored values (e.g. 'backfill' rows) are 'missing', not mismatches.
+    NULL stored values (e.g. 'backfill' rows) are silently skipped (None has known
+    benign provenance). NaN or non-numeric continuous values are data-quality
+    anomalies and are flagged category 'data' — never silently matched.
   - Equity divergence uses total_equity (real EOD equity), never market_data close.
 
 The categorize/summarize functions are pure and DB-free (this file's tested core).
@@ -17,8 +19,7 @@ The replay driver (run_live_recon) is DB-backed and degrades gracefully.
 """
 from __future__ import annotations
 
-from datetime import date
-from typing import Any, Optional
+import math
 
 # Tolerances for intraday-vs-EOD continuous fields. Categorical fields have NO
 # tolerance (exact match required).
@@ -64,9 +65,18 @@ def categorize_day(stored: dict, replay: dict) -> dict:
         sv = stored.get(f)
         rv = replay.get(f)
         if sv is None or rv is None:
-            continue  # 'missing' — scheduler value not stored (e.g. backfill row)
-        if abs(float(sv) - float(rv)) > tol:
-            mismatches.append({"field": f, "stored": float(sv), "replay": float(rv),
+            continue  # 'missing' — stored backfill row (sv) or replay gap (rv); known-benign
+        try:
+            sv_f, rv_f = float(sv), float(rv)
+        except (TypeError, ValueError):
+            sv_f = rv_f = float("nan")
+        if math.isnan(sv_f) or math.isnan(rv_f):
+            # NaN is a data-quality anomaly (unlike None) — surface it, never compare it.
+            mismatches.append({"field": f, "stored": sv, "replay": rv,
+                               "category": "data"})
+            continue
+        if abs(sv_f - rv_f) > tol:
+            mismatches.append({"field": f, "stored": sv_f, "replay": rv_f,
                                "category": "timing"})
 
     if any(m["category"] in ("logic", "data") for m in mismatches):
