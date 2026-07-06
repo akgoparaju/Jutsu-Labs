@@ -16,6 +16,9 @@ from jutsu_engine.audit.db import AuditDBUnavailable
 from jutsu_engine.audit.live_recon import run_live_recon
 from jutsu_engine.audit.attribution import run_attribution
 from jutsu_engine.audit.report import render_report, write_report
+from jutsu_engine.utils.logging_config import setup_logger
+
+logger = setup_logger('CLI.AUDIT', log_to_console=True)
 
 
 def _git_sha() -> str:
@@ -78,13 +81,14 @@ def _dispatch(strategy: str | None, do_recon: bool, do_attr: bool) -> None:
             _run_and_report(sid, do_recon, do_attr)
     except AuditDBUnavailable as e:
         click.echo(click.style(
-            f"✗ Database unavailable: {e}", fg="red"))
+            f"✗ Database unavailable: {e}", fg="red"), err=True)
         click.echo(click.style(
             "  The audit is read-only and needs POSTGRES_* env vars (see .env). "
-            "Unit tests run without a DB; this command needs live data.", fg="yellow"))
+            "Unit tests run without a DB; this command needs live data.", fg="yellow"), err=True)
         raise click.Abort()
     except Exception as e:  # noqa: BLE001 - surface a clean message, not a traceback
-        click.echo(click.style(f"✗ Audit failed: {e}", fg="red"))
+        logger.error(f"Audit failed: {e}", exc_info=True)
+        click.echo(click.style(f"✗ Audit failed: {e}", fg="red"), err=True)
         raise click.Abort()
 
 
