@@ -165,4 +165,5 @@ def load_snapshot_source_counts(engine, strategy_id: str, start: date) -> dict[s
         "GROUP BY snapshot_source"
     )
     with engine.connect() as c:
-        return {src: int(n) for src, n in c.execute(q, {"sid": strategy_id, "start": start})}
+        return {(src if src is not None else "(null)"): int(n)
+                for src, n in c.execute(q, {"sid": strategy_id, "start": start})}

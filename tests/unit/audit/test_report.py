@@ -117,3 +117,24 @@ class TestNoneHandling:
         import pandas as pd
         from jutsu_engine.audit.report import _df_to_md
         assert "no rows" in _df_to_md(pd.DataFrame())
+
+
+class TestNullSourceCounts:
+    def test_null_source_key_string_renders_without_crash(self):
+        """render_live_recon_section does not crash and renders '(null)' when
+        source_counts contains a '(null)' key mixed with normal string keys."""
+        recon = _recon()
+        recon.source_counts = {"scheduler": 98, "(null)": 79}
+        md = render_live_recon_section(recon)
+        assert "(null)" in md
+        assert "scheduler" in md
+
+    def test_literal_none_key_in_source_counts_does_not_crash(self):
+        """Defensive sort: a literal None key in source_counts does not crash
+        and renders as a 'None' line in the provenance section."""
+        recon = _recon()
+        recon.source_counts = {"scheduler": 1, None: 2}
+        md = render_live_recon_section(recon)
+        assert "scheduler" in md
+        # None is str()'d to "None" by the sort key; the value must appear
+        assert "2 day(s)" in md

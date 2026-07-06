@@ -64,13 +64,13 @@ def render_live_recon_section(recon) -> str:
         "### Mismatches by category",
     ]
     if s["by_category"]:
-        for cat, n in sorted(s["by_category"].items()):
+        for cat, n in sorted(s["by_category"].items(), key=lambda kv: str(kv[0])):
             lines.append(f"- {cat}: {n}")
     else:
         lines.append("- (none)")
     lines += ["", "### Mismatches by field"]
     if s["by_field"]:
-        for f, n in sorted(s["by_field"].items()):
+        for f, n in sorted(s["by_field"].items(), key=lambda kv: str(kv[0])):
             lines.append(f"- {f}: {n}")
     else:
         lines.append("- (none)")
@@ -78,7 +78,7 @@ def render_live_recon_section(recon) -> str:
     lines += ["", "### Snapshot provenance (snapshot_source counts)",
               "Only `scheduler` rows carry valid regime; `backfill` rows have "
               "NULL z_score/t_norm; `refresh` rows carry no regime.", ""]
-    for src, n in sorted(recon.source_counts.items()):
+    for src, n in sorted(recon.source_counts.items(), key=lambda kv: str(kv[0])):
         lines.append(f"- `{src}`: {n} day(s)")
 
     d = recon.pnl_divergence
