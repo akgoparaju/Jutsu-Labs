@@ -2052,6 +2052,10 @@ def dashboard(port: int, host: str, reload: bool, workers: int):
 from jutsu_engine.cli.commands.monte_carlo import monte_carlo as monte_carlo_cmd
 cli.add_command(monte_carlo_cmd, name='monte-carlo')
 
+# Import and register audit command group (baseline audit / Gauntlet v1)
+from jutsu_engine.cli.commands.audit import audit as audit_cmd
+cli.add_command(audit_cmd, name='audit')
+
 
 if __name__ == '__main__':
     cli()
