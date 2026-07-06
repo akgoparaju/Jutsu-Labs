@@ -54,12 +54,20 @@ def render_live_recon_section(recon) -> str:
         f"threshold — categorical fidelity is within tolerance."
     )
 
+    logic_days = s["by_category"].get("logic", 0)
+    data_days = s["by_category"].get("data", 0)
+    logic_pct = (logic_days / s["total_days"] * 100.0) if s["total_days"] else 0.0
+
     lines = [
         "## Live reconciliation (Module 5)",
         "",
         f"- Days compared (scheduler-authoritative): **{s['total_days']}**",
         f"- Match days: **{s['match_days']}**  |  Mismatch days: **{s['mismatch_days']}**",
         f"- {verdict}",
+        f"- Logic-category days (true divergence on same EOD inputs): **{logic_days}** "
+        f"(**{logic_pct:.1f}%**)  |  Data-gap days: **{data_days}**. "
+        f"The P0 threshold applies to logic+data fidelity; `timing` diffs "
+        f"(intraday-vs-EOD z/t) are expected by design.",
         "",
         "### Mismatches by category",
     ]

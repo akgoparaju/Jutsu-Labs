@@ -64,6 +64,13 @@ class TestRenderSections:
         assert "2.0" in md
         assert "within tolerance" in md.lower() or "below" in md.lower()
 
+    def test_live_recon_section_logic_only_line_renders(self):
+        """Logic-only divergence line shows correct pct and label (timing noise excluded)."""
+        # _recon() has by_category {"logic": 1, "timing": 1}, total_days 100
+        md = render_live_recon_section(_recon())
+        assert "Logic-category days" in md
+        assert "1.0%" in md
+
     def test_attribution_section_has_era_and_cell_and_treasury(self):
         """Attribution section contains era table, cell table, and treasury subsections."""
         md = render_attribution_section(_attr())
