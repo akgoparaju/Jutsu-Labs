@@ -16,9 +16,12 @@ Design contract:
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import math
 import random
+from decimal import Decimal
+
 import yaml
 
 import numpy as np
@@ -326,3 +329,50 @@ def joint_stats(rows: list[dict], golden_sharpe: float, bins: int = 20) -> dict:
         "max": float(arr.max()),
         "median": float(np.median(arr)),
     }
+
+
+# Mirrors LiveStrategyRunner._convert_decimal_params (strategy_runner.py:124-137).
+# Kept as its own constant so a drift between the two is caught by a unit test.
+DECIMAL_PARAMS: frozenset[str] = frozenset({
+    "measurement_noise", "process_noise_1", "process_noise_2",
+    "T_max", "t_norm_bull_thresh", "t_norm_bear_thresh",
+    "upper_thresh_z", "lower_thresh_z", "vol_crush_threshold",
+    "leverage_scalar", "w_PSQ_max", "max_bond_weight",
+    "rebalance_threshold",
+})
+
+# Metadata keys never passed to the strategy __init__ (LiveStrategyRunner EXCLUDED_PARAMS).
+_INIT_EXCLUDE = frozenset({"name", "trade_logger"})
+
+
+def _prepared_params(golden: dict, overrides: dict) -> dict:
+    """Golden params with overrides applied and floats->Decimal per DECIMAL_PARAMS.
+
+    Replicates LiveStrategyRunner: drop metadata keys, apply overrides, convert
+    the decimal set to Decimal(str(value)). Non-decimal numerics/strings/bools
+    pass through unchanged.
+    """
+    params = {k: v for k, v in golden.items() if k not in _INIT_EXCLUDE}
+    params.update(overrides)
+    for key in DECIMAL_PARAMS:
+        if key in params and not isinstance(params[key], Decimal):
+            params[key] = Decimal(str(params[key]))
+    return params
+
+
+def build_overridden_strategy(strategy_id: str, overrides: dict):
+    """Build a live strategy instance with param overrides applied (no DB).
+
+    Reads golden params from the live YAML, applies overrides, converts to the
+    same Decimal conventions LiveStrategyRunner uses, instantiates the strategy
+    class directly, and calls .init() — identical to the live construction path
+    except for the overrides.
+    """
+    spec = resolve_strategy(strategy_id)
+    mod = importlib.import_module(spec.module_path)
+    strategy_class = getattr(mod, spec.class_name)
+    golden = load_golden_params(strategy_id)
+    params = _prepared_params(golden, overrides)
+    strategy = strategy_class(**params)
+    strategy.init()
+    return strategy

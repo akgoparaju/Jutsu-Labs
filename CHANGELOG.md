@@ -1,3 +1,23 @@
+#### **Feature: Audit Phase 2 plateau — param-override strategy builder (Task 5)** (2026-07-07)
+
+Added `build_overridden_strategy` to `jutsu_engine/audit/plateau.py`, the
+fidelity-critical bridge that builds a perturbed backtest strategy using the SAME
+float→Decimal conventions as the live path, so plateau results measure parameter
+sensitivity rather than type-coercion artifacts.
+
+- `jutsu_engine/audit/plateau.py`: new `DECIMAL_PARAMS` frozenset mirroring
+  `LiveStrategyRunner._convert_decimal_params` (`strategy_runner.py:124-130`),
+  `_INIT_EXCLUDE` mirroring `EXCLUDED_PARAMS` (`strategy_runner.py:25`),
+  `_prepared_params` (drop metadata → apply overrides → convert decimal set to
+  `Decimal(str(v))`), and `build_overridden_strategy` (resolve → import class →
+  load golden YAML → prepare params → `strategy_class(**params)` → `.init()`).
+- `tests/unit/audit/test_plateau.py`: `TestBuildOverriddenStrategy` (4 tests) and
+  `TestDecimalParamsDriftGuard` (1 `inspect.getsource` drift-guard tying
+  `DECIMAL_PARAMS` to the live runner source).
+- Verified plan assumptions against the real runner: DECIMAL_PARAMS set,
+  EXCLUDED_PARAMS, and conversion semantics all match — no deviations.
+- Tests: audit + cli suite 81 → 86 (+5).
+
 #### **Fix: Audit live-recon replays the scheduler's true information set — P0 fidelity alarm resolved as audit artifact** (2026-07-06)
 
 Root-cause investigation of the 8 "logic" mismatch days

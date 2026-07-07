@@ -303,3 +303,50 @@ class TestNoneSharpeGuard:
         assert stats["errored"] == 2
         # valid sample 0.5 < golden 0.6, so 1/1 strictly below -> 100th pct
         assert stats["golden_percentile"] == pytest.approx(100.0)
+
+
+from decimal import Decimal
+
+from jutsu_engine.audit.plateau import (
+    DECIMAL_PARAMS,
+    build_overridden_strategy,
+)
+
+
+class TestBuildOverriddenStrategy:
+    def test_decimal_params_match_strategy_runner(self):
+        """DECIMAL_PARAMS mirrors LiveStrategyRunner._convert_decimal_params exactly."""
+        assert "measurement_noise" in DECIMAL_PARAMS
+        assert "t_norm_bear_thresh" in DECIMAL_PARAMS
+        assert "rebalance_threshold" in DECIMAL_PARAMS
+        # integer window params are NOT decimal
+        assert "sma_fast" not in DECIMAL_PARAMS
+
+    def test_override_applies_and_converts_to_decimal(self):
+        """Overriding a decimal param yields a strategy whose attribute is the Decimal override."""
+        strat = build_overridden_strategy("v3_5b", {"leverage_scalar": 1.2})
+        assert strat.leverage_scalar == Decimal("1.2")
+        # a non-overridden decimal param keeps its golden Decimal value
+        assert strat.max_bond_weight == Decimal("0.4")
+
+    def test_override_integer_param_stays_int(self):
+        """Overriding an integer window keeps it an int on the built strategy."""
+        strat = build_overridden_strategy("v3_5b", {"sma_fast": 32})
+        assert int(strat.sma_fast) == 32
+        assert strat.__class__.__name__ == "Hierarchical_Adaptive_v3_5b"
+
+    def test_no_overrides_reproduces_golden(self):
+        """With no overrides, the built strategy matches build_strategy_instance's golden values."""
+        strat = build_overridden_strategy("v3_5b", {})
+        assert int(strat.sma_fast) == 40
+        assert int(strat.sma_slow) == 140
+
+
+class TestDecimalParamsDriftGuard:
+    def test_matches_live_strategy_runner_set(self):
+        """DECIMAL_PARAMS stays in sync with LiveStrategyRunner's decimal_params."""
+        import inspect
+        from jutsu_engine.live import strategy_runner
+        src = inspect.getsource(strategy_runner.LiveStrategyRunner._convert_decimal_params)
+        for name in DECIMAL_PARAMS:
+            assert f"'{name}'" in src, f"{name} missing from live decimal set"
