@@ -258,3 +258,62 @@ percentile lowers the prior of parameter overfit, but the trial-count correction
 for the v2.x→v3.5b search history is still unmeasured); WFO-validate the
 quarantined bond-SMA / vol-crush / osc_smoothness candidates before anyone is
 tempted to adopt them.
+
+---
+
+## XREF-001 — Cross-findings from the Kronos regime-detection research (2026-07-07)
+
+A parallel research program (`~/dev/kronos-research/jutsu-kronos-research`,
+logbook `experiments.md`) is testing whether the Kronos time-series foundation
+model can detect regime change earlier than v3.5b's Kalman/vol-z indicators.
+It has already ingested our EXP-001/002/003 (their XREF1): honest-baseline
+Gate-2 recalibration, T-1 information-set constraint for live integration,
+era-sliced evaluation, and a deflated-Sharpe/multiple-testing rule. This entry
+records the reverse direction — their findings that bind on OUR roadmap.
+
+1. **The bar for any regime-classifier upgrade is now quantified: raw current
+   `vol_zscore` predicts vol-state@t+21 with AUC 0.828** (their VER1). Zero-shot
+   Kronos embeddings encode regime (AUC 0.76) but add NOTHING over that single
+   raw feature. Adopt as a gauntlet rule: any candidate regime input/classifier
+   must beat the best single raw feature it would replace — not a strawman or
+   trained-probe baseline.
+2. **Adopt their VER1 measurement rules** into our gauntlet (Module 3 planning):
+   (a) lead/lag claims must beat a crossing-density-matched null; (b) bounded
+   signals must be centered before sign-based scoring; (c) single-raw-feature
+   baselines mandatory (rule 1).
+3. **n=1 crash-episode caution, independently confirmed:** all ~25 of their
+   zero-shot overlay variants converge on clipping the SAME single drawdown
+   episode (~+1.5pp MaxDD, never significant). Matches our EXP-001 finding that
+   a handful of episodes decide the strategy's fate → backtest-only evidence for
+   regime improvements is structurally underpowered; Module 3 (DSR/PBO) and live
+   track record carry the real burden of proof.
+4. **Candidate input for our future regime-upgrade phase:** their I2b
+   `ema3/5_blend` of Kronos forward-vol z (50/50 with realized-vol z) passes all
+   their deployment guards (flip ratio 1.12, ΔSharpe +0.09, ΔMaxDD +1.6pp — not
+   significant, "strictly harmless"). Kronos forward-vol is genuinely
+   forward-looking (corr 0.38 w/ fwd realized vol) where v3.5b's z is backward-
+   looking. Queue it in the ablation battery alongside VIX term structure etc.,
+   evaluated in OUR harness under rule 1.
+5. **Port-fidelity risk (action for us):** their overlay sims run on
+   `jutsu_ports.py` — a REIMPLEMENTATION of v3.5b's regime pipeline validated
+   against a dashboard CSV oracle. Our audit infra can provide a stronger oracle:
+   the engine-emitted regime_timeseries CSV (per-day cells, 2010→present) from
+   `jutsu audit attribution` artifacts. Offer it; a silent port divergence would
+   shift all their Gate-2 baselines.
+6. **Their pivotal next step is I7 fine-tuning** (running on M4/MPS since
+   2026-07-07, ~28.5h): removes the A-share bearish prior that RC1 identified as
+   the binding constraint. When its overlay re-tests arrive, they should be
+   scored era-sliced (2022 crash exit) — and the natural final gate is our audit
+   gauntlet (honest baseline, stitched WFO OOS once Module 1 lands).
+
+**Shared conclusion, reached from opposite directions:** the volatility-regime
+classification channel is v3.5b's load-bearing subsystem — our EXP-003
+sensitivity ranking (upper_thresh_z / vol windows, replicated on both
+strategies) and their signal analysis (vol is the only real zero-shot Kronos
+channel) point at the same place. The improvement program has a single
+convergent target: **regime-transition quality, especially crash exit/re-entry,
+via the vol channel.**
+
+**Shared backlog item:** persist the scheduler's decision-time synthetic bar —
+needed by our audit (3 residual unverifiable days) AND their Phase-2 live
+integration (T-1 information-set constraint).
