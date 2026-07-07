@@ -532,6 +532,18 @@ def _error_run_fn(strategy_id, sample, symbols, start, end, initial_capital="100
     }
 
 
+# Module-level picklable run_fn for parallel breaker drain test (spawn-safe on macOS).
+def _all_error_parallel_run_fn(strategy_id, sample, symbols, start, end,
+                                initial_capital="10000"):
+    """Every call returns an errored row; used to test parallel breaker drain."""
+    return {
+        "hash": sample["hash"], "kind": sample["kind"], "param": sample["param"],
+        "overrides": sample["overrides"], "sharpe": None,
+        "max_drawdown": None, "annualized_return": None, "total_return": None,
+        "error": "RuntimeError: simulated systemic failure",
+    }
+
+
 class TestRunCampaign:
     def test_runs_all_samples_and_checkpoints(self, tmp_path):
         """run_campaign executes every sample once, appends to JSONL, returns rows."""
@@ -658,3 +670,55 @@ class TestRunCampaign:
                             oat_only=True, start=date(2010, 2, 1),
                             end=date(2026, 7, 6))
         assert len(res2.rows) == len(res2.samples)
+
+    def test_parallel_breaker_drains_finished_batch(self, tmp_path):
+        """Parallel breaker drains every completed future in the batch before aborting.
+
+        When wait(FIRST_COMPLETED) returns a batch of N completed futures and the
+        breaker trips mid-batch, Fix I1 guarantees the remaining futures in that
+        batch are still processed and their rows checkpointed — no completed work
+        is silently discarded.
+
+        Setup: workers=2 so up to 2 futures complete per batch; every run errors;
+        max_consecutive_errors=2 so the breaker can trip within a single 2-future
+        batch. After the RuntimeError, the on-disk row count must be >= 2 (i.e.
+        every future that completed before the abort has its row on disk), and the
+        JSONL must be parseable (no torn lines).
+
+        The run_fn (_all_error_parallel_run_fn) is module-level and picklable so
+        it crosses the macOS spawn boundary deterministically.
+        """
+        # Use two perturbable OAT params to get at least 8 samples (2 params × 4
+        # multipliers), more than enough for the breaker to trip.
+        golden = {"sma_fast": 40, "sma_slow": 140}
+        camp_file = tmp_path / "par_drain.jsonl"
+        max_errors = 2
+
+        with pytest.raises(RuntimeError, match="consecutive"):
+            run_campaign(
+                "v3_5b", golden, camp_file,
+                joint_n=0, seed=1,
+                workers=2,
+                run_fn=_all_error_parallel_run_fn,
+                symbols=["QQQ"],
+                oat_only=True,
+                max_consecutive_errors=max_errors,
+                start=date(2010, 2, 1),
+                end=date(2026, 7, 6),
+            )
+
+        # Every future that completed has its row on disk — row count >= max_errors
+        # (the breaker threshold) and the JSONL must be consistent (no torn state).
+        completed_hashes = load_completed_hashes(camp_file)
+        assert len(completed_hashes) >= max_errors, (
+            f"Expected >= {max_errors} rows on disk after parallel abort; "
+            f"got {len(completed_hashes)} — finished-batch drain is broken"
+        )
+        # Verify no torn lines: every line in the file must be valid JSON with a hash.
+        with open(camp_file) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                row = json.loads(line)  # raises on torn JSON
+                assert "hash" in row

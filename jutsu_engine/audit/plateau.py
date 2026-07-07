@@ -675,8 +675,24 @@ def _run_parallel(strategy_id: str, todo: list[dict], campaign_file: Path,
 
     Uses an explicit wait(FIRST_COMPLETED) loop rather than as_completed so that
     when the breaker trips we can stop submitting and cancel not-yet-started
-    futures — every already-completed row is still appended by the parent before
-    the RuntimeError propagates (single-writer invariant preserved).
+    futures — every already-completed row in the current batch is still appended
+    by the parent before the RuntimeError propagates (single-writer invariant
+    preserved).
+
+    Abort / ordering semantics (for operators and callers):
+
+    (a) When the breaker trips, up to `workers` still-RUNNING backtests cannot be
+        cancelled — ProcessPoolExecutor.shutdown() (implicit at context-manager
+        exit) waits for them to finish, but their results are silently discarded
+        and those samples are treated as un-run (they will be re-submitted on
+        resume, since their rows were never checkpointed).
+
+    (b) "Consecutive" errors are counted in COMPLETION order in this path
+        (submission order in the serial path). Under systemic failure every run
+        errors, so the ordering distinction vanishes and the breaker trips after
+        exactly max_consecutive_errors completions. Under flaky failures a
+        completion-order run of N consecutive errors is itself a meaningful signal
+        worth aborting on, even if the submission order would look interleaved.
     """
     consecutive_errors = 0
     done_count = 0
@@ -693,6 +709,10 @@ def _run_parallel(strategy_id: str, todo: list[dict], campaign_file: Path,
         aborted = False
         while pending and not aborted:
             finished, pending = wait(pending, return_when=FIRST_COMPLETED)
+            # Process every future in this batch before checking aborted.
+            # This ensures all rows that are already complete are checkpointed
+            # even when the breaker trips mid-batch — contradicting the docstring
+            # claim would otherwise silently discard completed work.
             for fut in finished:
                 row = fut.result()
                 # SINGLE-WRITER INVARIANT: the parent appends; workers never write.
@@ -700,15 +720,17 @@ def _run_parallel(strategy_id: str, todo: list[dict], campaign_file: Path,
                 done_count += 1
                 if _is_error_row(row):
                     consecutive_errors += 1
+                    if consecutive_errors >= max_consecutive_errors:
+                        aborted = True
+                        # Do NOT break: continue draining the rest of `finished`
+                        # so every completed row in this batch is checkpointed.
                 else:
                     consecutive_errors = 0
                 progress(f"[{done_count}/{total}] done "
                          f"sharpe={row.get('sharpe')}")
-                if consecutive_errors >= max_consecutive_errors:
-                    aborted = True
-                    break
         if aborted:
-            # Stop submitting more work and drop any not-yet-started futures.
+            # Cancel not-yet-started futures; running futures cannot be stopped
+            # (see docstring note (a) above).
             for fut in pending:
                 fut.cancel()
             raise RuntimeError(breaker_msg)
