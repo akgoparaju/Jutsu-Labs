@@ -173,6 +173,7 @@ def _plateau_summary():
         "strategy_id": "v3_5b",
         "seed": 42,
         "oat_count": 88,
+        "oat_errored": 3,   # explicit count; internally consistent (3 of 88 errored)
         "joint_count": 200,
         "golden_metrics": {"sharpe_ratio": 0.81, "max_drawdown": -0.512,
                            "annualized_return": 0.231, "total_return": 8.0},
@@ -260,6 +261,39 @@ class TestRenderPlateauSection:
         """Caption explains why worst_retained is the gate (two-sided mean can mask collapse)."""
         md = render_plateau_section(_plateau_summary())
         assert "worst" in md.lower()
+
+    def test_gfm_table_caption_not_between_separator_and_data_rows(self):
+        """The caption paragraph must NOT appear between the | --- | separator row
+        and the first data row — that would break GFM table rendering.
+
+        A valid GFM table requires that every line between the header-separator row
+        and the end of the table starts with '|'. A non-pipe line (e.g. the caption)
+        terminates the table block; if it appears there, parsers treat the data
+        rows that follow as plain paragraphs, not table cells.
+        """
+        md = render_plateau_section(_plateau_summary())
+        lines = md.splitlines()
+        sep_idx = next(
+            (i for i, ln in enumerate(lines) if ln.strip().startswith("| ---")),
+            None,
+        )
+        assert sep_idx is not None, "table separator row not found in rendered output"
+        # The line immediately after the separator must start with '|' (a data row),
+        # not with '_' (caption) or any other non-pipe character.
+        next_line = lines[sep_idx + 1].strip() if sep_idx + 1 < len(lines) else ""
+        assert next_line.startswith("|"), (
+            f"Line immediately after '| --- |' separator is not a table data row: "
+            f"{next_line!r}. Caption must live BEFORE the table, not inside it."
+        )
+
+    def test_oat_errored_count_renders_from_explicit_key(self):
+        """The explicit oat_errored key in the summary renders the correct count.
+
+        The fixture has oat_errored=3, joint errored=0 -> total_errored=3.
+        The rendered line must show 'OAT: 3', not any inferred value.
+        """
+        md = render_plateau_section(_plateau_summary())
+        assert "OAT: 3" in md
 
 
 class TestWritePlateauReport:

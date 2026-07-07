@@ -231,11 +231,9 @@ def render_plateau_section(summary: dict) -> str:
     # --- joint distribution analysis ---
     errored_joint = js.get("errored", 0)
     total_runs = summary.get("oat_count", 0) + summary.get("joint_count", 0)
-    # OAT errored count: infer from degradation table (rows excluded from table are errors)
-    oat_count = summary.get("oat_count", 0)
-    dt = summary.get("degradation_table")
-    oat_in_table = len(dt) if dt is not None and not dt.empty else 0
-    oat_errored = max(0, oat_count - oat_in_table)
+    # OAT errored count: read from summary (set explicitly in summarize_campaign).
+    # Fall back to 0 so old summaries (without the key) don't crash the renderer.
+    oat_errored = summary.get("oat_errored", 0)
     total_errored = oat_errored + errored_joint
 
     errored_line = (
@@ -279,16 +277,15 @@ def render_plateau_section(summary: dict) -> str:
         return v if (v is not None and not (isinstance(v, float) and math.isnan(v))) else 1e9
 
     ps_rows = sorted(ps.items(), key=lambda kv: _worst(kv[1]))
-    ps_lines = [
-        "| param | mean_retained | worst_retained | n_rows |",
-        "| --- | --- | --- | --- |",
+    # Caption lives BEFORE the table block so the GFM parser never sees a
+    # non-pipe line between the header-separator row and the first data row.
+    ps_caption = (
         "_Caption: sorted worst_retained ascending. "
         "worst_retained is the conservative health gate — "
         "a two-sided mean can mask a one-sided collapse (e.g. sides 1.25 and 0.125 "
-        "average to 0.688 but one direction is nearly flat)._",
-        "",
-    ]
-    ps_lines[0:2] = [
+        "average to 0.688 but one direction is nearly flat)._"
+    )
+    ps_lines = [
         "| param | mean_retained | worst_retained | n_rows |",
         "| --- | --- | --- | --- |",
     ]
@@ -323,9 +320,7 @@ def render_plateau_section(summary: dict) -> str:
         f"Total: **{_fmt(gm.get('total_return'), '.4f')}**",
         "",
         "### Plateau scores (higher = flatter = more robust)",
-        "_Caption: sorted worst_retained ascending. "
-        "worst_retained is the conservative health gate — "
-        "a two-sided mean can mask a one-sided collapse._",
+        ps_caption,
         "",
         "\n".join(ps_lines),
         "",

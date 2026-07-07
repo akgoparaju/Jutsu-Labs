@@ -724,7 +724,38 @@ class TestRunCampaign:
                 assert "hash" in row
 
 
-from jutsu_engine.audit.plateau import summarize_campaign
+from jutsu_engine.audit.plateau import run_golden_baseline, summarize_campaign
+
+
+class TestRunGoldenBaseline:
+    def test_run_golden_baseline_errored_raises(self, monkeypatch):
+        """run_golden_baseline raises RuntimeError when the baseline backtest errors (sharpe None).
+
+        Without a working baseline there is no reference Sharpe, so the plateau
+        analysis is meaningless.  The error message must mention 'baseline'.
+        """
+        import jutsu_engine.audit.plateau as plateau_mod
+
+        # Patch run_one_sample so it returns a failed row (sharpe=None, error set).
+        monkeypatch.setattr(
+            plateau_mod,
+            "run_one_sample",
+            lambda *a, **k: {
+                "hash": "golden",
+                "kind": "golden",
+                "overrides": {},
+                "sharpe": None,
+                "error": "boom",
+            },
+        )
+
+        from datetime import date
+
+        with pytest.raises(RuntimeError, match="baseline"):
+            run_golden_baseline(
+                "v3_5b", ["QQQ"],
+                date(2010, 2, 1), date(2026, 7, 6),
+            )
 
 
 class TestSummarizeCampaign:
@@ -759,6 +790,34 @@ class TestSummarizeCampaign:
         assert "worst_retained" in summary["plateau_scores"]["sma_fast"]
         # joint_stats carries errored key
         assert "errored" in summary["joint_stats"]
+        # oat_errored is an explicit key in the summary (not inferred by subtraction)
+        assert "oat_errored" in summary
+        assert summary["oat_errored"] == 0  # all 4 OAT rows have valid sharpe
+
+    def test_oat_errored_count_is_explicit_and_correct(self):
+        """oat_errored in summary counts errored OAT rows directly, not by subtraction.
+
+        2 valid OAT rows + 1 errored OAT row (sharpe=None) -> oat_errored == 1.
+        The errored row is excluded from the degradation table, but the summary
+        must still report the correct count rather than inferring it from
+        (oat_count - len(degradation_table)).
+        """
+        golden = {"sma_fast": 40}
+        valid1 = _oat_row("sma_fast", 32, 0.8)
+        valid2 = _oat_row("sma_fast", 48, 0.7)
+        errored = _oat_row("sma_fast", 36, None)
+        errored["sharpe"] = None
+        errored["error"] = "RuntimeError: simulated failure"
+        rows = [valid1, valid2, errored]
+        res = CampaignResult("v3_5b", 0, samples=rows, rows=rows,
+                             campaign_file="x.jsonl", golden=golden)
+        summary = summarize_campaign(res, golden_sharpe=1.0,
+                                     golden_metrics={"sharpe_ratio": 1.0,
+                                                     "max_drawdown": -0.5,
+                                                     "annualized_return": 0.2,
+                                                     "total_return": 5.0})
+        assert summary["oat_count"] == 3
+        assert summary["oat_errored"] == 1
 
     def test_oat_and_joint_counts_are_correct(self):
         """oat_count = len(oat rows), joint_count = len(joint rows)."""

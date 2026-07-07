@@ -681,6 +681,10 @@ def summarize_campaign(result: CampaignResult, golden_sharpe: float,
     rows = result.rows
     oat_rows = [r for r in rows if r.get("param") is not None]
     joint_rows = [r for r in rows if r.get("kind") == "joint"]
+    # Explicit OAT errored count: OAT rows whose sharpe is non-finite or has a
+    # non-None error string.  Never inferred by subtraction from the degradation
+    # table so the summary is self-consistent even when no table is built.
+    oat_errored = sum(1 for r in oat_rows if _is_error_row(r))
     per = perturbable_params(result.golden)
     scores = {name: plateau_score(rows, result.golden, golden_sharpe, name)
               for name in per}
@@ -688,6 +692,7 @@ def summarize_campaign(result: CampaignResult, golden_sharpe: float,
         "strategy_id": result.strategy_id,
         "seed": result.seed,
         "oat_count": len(oat_rows),
+        "oat_errored": oat_errored,
         "joint_count": len(joint_rows),
         "golden_metrics": golden_metrics,
         "plateau_scores": scores,
