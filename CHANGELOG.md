@@ -1,3 +1,50 @@
+#### **Feature: Baseline audit Phase 2 — parameter plateau map (Module 2)** (2026-07-06)
+
+Added `jutsu_engine/audit/plateau.py` and the `jutsu audit plateau` CLI subcommand
+implementing Module 2 of the baseline audit (spec §6:
+`docs/superpowers/specs/2026-07-06-baseline-audit-design.md`). Strictly READ-ONLY
+against the DB; reuses `BacktestRunner`/`LiveStrategyRunner` unchanged. No live,
+scheduler, or strategy-config changes.
+
+- **Perturbation-set generation (pure, seeded):** one-at-a-time (each perturbable
+  numeric parameter at x0.8/x0.9/x1.1/x1.2, integers rounded + deduped, windows
+  clamped >=5, periods >=2, negative thresholds keep sign) and N joint uniform
+  samples (default 200) in a +/-15% box (seeded `random.Random`, seed recorded in
+  output). Perturbable = numeric non-bool strategy params from the live YAML,
+  excluding symbols/strings, booleans, and execution/infra keys (22 params for
+  v3_5b; derived per-strategy from the YAML).
+- **Campaign runner:** each sample = one full-period backtest (2010-02 -> present)
+  via a param-override extension of the Phase-1 bridge (`build_overridden_strategy`,
+  replicating `LiveStrategyRunner`'s float->Decimal conversion). Mandatory
+  checkpoint/resume: each result appended as a JSONL row keyed by params-hash;
+  reruns skip completed hashes. Opt-in parallelism via `ProcessPoolExecutor`
+  (`--workers`, default 1 serial; each worker builds its own runner). Reduced
+  output: each backtest writes CSVs to a throwaway tempdir (no per-run regime/
+  portfolio CSVs in the report dir).
+- **Review-driven hardening:** errored-run rows excluded from analysis with loud
+  per-run counts logged; worst-side Sharpe retention (min of OAT pair retained so
+  plateau scores are conservative); consecutive-error circuit breaker (default 10
+  consecutive errors aborts campaign, any success resets counter); fsync
+  checkpoint writes (durable append before next sample starts); `--retry-errors`
+  flag to re-run previously errored hashes on resume.
+- **Pure analysis (DB-free, unit-tested):** plateau score (mean retained Sharpe
+  fraction at +/-20%), per-param degradation table, cliff list (params losing
+  >30% Sharpe at +/-10%), joint-sample stats (histogram + golden Sharpe percentile).
+- **Report:** `render_plateau_section` + `write_plateau_report` -> NEW
+  `report_plateau_<strategy>.md` (does not touch the Phase-1 report); embeds seed,
+  sample counts, golden baseline, plateau/cliff tables, percentile verdict, and the
+  spec §10 cliff-threshold row.
+- **CLI:** `jutsu audit plateau --strategy v3_5b|v3_5d [--joint-samples N]
+  [--workers K] [--oat-only] [--params NAME ...] [--seed S] [--retry-errors]`;
+  graceful `AuditDBUnavailable` degrade.
+- Compute note: ~290 backtests/strategy default (~2-3 min each) => ~10-15h serial;
+  hence checkpoint/resume + workers. The overnight campaign is a post-merge
+  operational step, not part of this change; a 4-backtest smoke campaign
+  (`--oat-only --params sma_fast`) validated the pipeline end-to-end.
+- Tests: 130 new unit tests (perturbation generation, analysis math, checkpoint
+  I/O, campaign orchestration via injected run_fn, report rendering, CLI wiring),
+  all DB-free.
+
 #### **Feature: Audit Phase 2 plateau — campaign orchestrator with resume, opt-in workers, circuit breaker (Task 7)** (2026-07-07)
 
 Added `run_campaign` to `jutsu_engine/audit/plateau.py`: the top-level driver that
