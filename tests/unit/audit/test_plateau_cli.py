@@ -131,6 +131,37 @@ class TestPlateauCLI:
         assert kwargs.get("retry_errors") is False
 
 
+class TestMidnightSafeResume:
+    def test_existing_campaign_file_older_date_dir_resumes_without_run_date(self, tmp_path):
+        """Existing campaign file in an older date dir + no --run-date → output contains 'Resuming existing campaign' and uses that path."""
+        summary = _make_summary()
+        # Build a fake claudedocs/audit/<old-date>/v3_5b/campaign_v3_5b.jsonl structure.
+        old_date = "2026-07-05"
+        today_date = "2026-07-07"
+        old_run_dir = tmp_path / "claudedocs" / "audit" / old_date
+        old_campaign_file = old_run_dir / "v3_5b" / "campaign_v3_5b.jsonl"
+        old_campaign_file.parent.mkdir(parents=True, exist_ok=True)
+        old_campaign_file.write_text('{"hash":"abc","kind":"oat"}\n')
+
+        # report_output_dir() must return a path whose .parent is the scan base.
+        # Returning tmp_path/claudedocs/audit/<today>/ means .parent is
+        # tmp_path/claudedocs/audit/, which contains our old_date dir → resume found.
+        today_dir = tmp_path / "claudedocs" / "audit" / today_date
+
+        with mock.patch("jutsu_engine.cli.commands.audit.report_output_dir",
+                        return_value=today_dir), \
+             mock.patch("jutsu_engine.audit.plateau.run_plateau",
+                        return_value=summary) as m:
+            runner = CliRunner()
+            res = runner.invoke(audit, ["plateau", "--strategy", "v3_5b", "--oat-only"])
+
+        assert res.exit_code == 0, res.output
+        assert "Resuming existing campaign" in res.output
+        # run_plateau must have been called with the OLD run_dir, not today's
+        called_run_dir = m.call_args[0][1]
+        assert old_date in str(called_run_dir)
+
+
 class TestLoadCompletedHashesRetryErrors:
     """Unit tests for load_completed_hashes retry_errors parameter (plateau.py)."""
 

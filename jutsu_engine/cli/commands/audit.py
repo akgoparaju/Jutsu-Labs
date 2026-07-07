@@ -7,11 +7,12 @@ Read-only: never mutates the DB; outputs markdown to claudedocs/audit/<date>/.
 from __future__ import annotations
 
 import subprocess
-from datetime import date
+from datetime import date, datetime
+from pathlib import Path
 
 import click
 
-from jutsu_engine.audit.config import report_output_dir, resolve_strategy
+from jutsu_engine.audit.config import PROJECT_ROOT, report_output_dir, resolve_strategy
 from jutsu_engine.audit.db import AuditDBUnavailable
 from jutsu_engine.audit.live_recon import run_live_recon
 from jutsu_engine.audit.attribution import run_attribution
@@ -121,6 +122,62 @@ def all_cmd(strategy):
     _dispatch(strategy, do_recon=True, do_attr=True)
 
 
+def _resolve_run_dir(run_date_str: str | None, strategy_id: str) -> Path:
+    """Resolve the campaign run directory with midnight-safe resume logic.
+
+    Resolution order:
+      (a) If --run-date is given, use that dated directory unconditionally.
+      (b) If any existing campaign_<strategy>.jsonl files exist under
+          PROJECT_ROOT/claudedocs/audit/*/, pick the NEWEST by date-dir name
+          (lexicographic ISO-8601 ordering is correct for dates) and reuse its
+          directory — loud echo so the operator knows which campaign is resuming.
+      (c) Otherwise use today's directory (fresh campaign).
+
+    This prevents an overnight crash-resume from silently creating a new empty
+    directory (date.today() after midnight) and restarting the 400+-sample
+    campaign from scratch.
+
+    The audit scan base is derived from ``report_output_dir()`` so that test
+    patches of that function also control which directory is scanned — preventing
+    the scan from hitting real campaign files in PROJECT_ROOT during unit tests.
+    """
+    if run_date_str is not None:
+        # (a) Explicit --run-date: parse and use directly.
+        try:
+            run_date = datetime.strptime(run_date_str, "%Y-%m-%d").date()
+        except ValueError:
+            raise click.BadParameter(
+                f"Invalid date format {run_date_str!r}; expected YYYY-MM-DD",
+                param_hint="--run-date",
+            )
+        return report_output_dir(run_date=run_date)
+
+    # (b) Scan for existing campaign files; pick the newest date-dir.
+    # Derive the scan base from report_output_dir() so test mocks of that function
+    # also redirect the scan, preventing tests from hitting real campaign files.
+    # In production: report_output_dir() returns PROJECT_ROOT/claudedocs/audit/<date>/,
+    # so .parent gives PROJECT_ROOT/claudedocs/audit/ — the correct scan root.
+    audit_base = report_output_dir().parent
+    campaign_pattern = f"campaign_{strategy_id}.jsonl"
+    candidates = sorted(
+        audit_base.glob(f"*/{strategy_id}/{campaign_pattern}"),
+        key=lambda p: p.parent.parent.name,  # sort by date-dir name (ISO-8601)
+        reverse=True,
+    )
+    if candidates:
+        newest = candidates[0]
+        run_dir = newest.parent.parent  # .../claudedocs/audit/<date>/
+        click.echo(click.style(
+            f"  Resuming existing campaign: {newest} "
+            f"(pass --run-date to override)",
+            fg="yellow",
+        ))
+        return run_dir
+
+    # (c) Fresh campaign — use today's directory.
+    return report_output_dir()
+
+
 @audit.command("plateau")
 @_STRATEGY_OPTION
 @click.option("--joint-samples", "joint_samples", type=int, default=200,
@@ -139,15 +196,19 @@ def all_cmd(strategy):
               help="Re-run previously errored checkpoint rows (non-finite sharpe or "
                    "non-None error) rather than treating them as completed. Use after "
                    "a transient failure (e.g. DB blip) without deleting the JSONL.")
+@click.option("--run-date", "run_date", type=str, default=None, metavar="YYYY-MM-DD",
+              help="Use a specific dated run directory (YYYY-MM-DD) instead of "
+                   "auto-detecting an existing campaign. Useful when resuming after "
+                   "midnight without accidentally creating a new campaign in today's dir.")
 def plateau_cmd(strategy, joint_samples, workers, oat_only, params, seed,
-                retry_errors):
+                retry_errors, run_date):
     """Module 2: parameter plateau map (perturbation campaign + robustness report)."""
     from jutsu_engine.audit import plateau as plateau_mod
 
-    run_dir = report_output_dir()
     param_list = list(params) or None
     try:
         for sid in _strategy_ids(strategy):
+            run_dir = _resolve_run_dir(run_date, sid)
             campaign_file = run_dir / sid / f"campaign_{sid}.jsonl"
             click.echo(
                 f"[{sid}] plateau campaign "

@@ -429,6 +429,18 @@ def load_completed_hashes(path: Path, retry_errors: bool = False) -> set[str]:
     partial JSON fragment, which is silently skipped so a crash never poisons
     resume. Only well-formed rows carrying a `hash` are counted.
 
+    Last-wins dedup (mirrors _reload_rows):
+        append_result only appends; a retried sample produces two rows (old error +
+        new success). load_completed_hashes deduplicates by hash keeping the LAST
+        occurrence before applying the retry_errors filter. This means:
+          - error then success → the last row is a success → always counts as done
+            (regardless of retry_errors), which is correct: a successful retry is
+            complete and must not be re-run.
+          - success then error → last row is an error → with retry_errors=True: NOT
+            done (will be re-run); with retry_errors=False: done (standard resume).
+            The success-then-error order is unusual but possible (e.g. manual JSONL
+            edits); last-wins handles it consistently.
+
     retry_errors:
         When False (default), ALL rows present in the file are counted as done —
         including errored rows (error non-None or non-finite sharpe). This is the
@@ -441,7 +453,8 @@ def load_completed_hashes(path: Path, retry_errors: bool = False) -> set[str]:
     path = Path(path)
     if not path.exists():
         return set()
-    done = set()
+    # Collect last-wins row for each hash (same semantics as _reload_rows).
+    last_row: dict = {}
     with open(path, "r") as f:
         for line in f:
             line = line.strip()
@@ -452,9 +465,13 @@ def load_completed_hashes(path: Path, retry_errors: bool = False) -> set[str]:
                 h = row["hash"]
             except (json.JSONDecodeError, KeyError):
                 continue  # tolerate a partially-written trailing line
-            if retry_errors and _is_error_row(row):
-                continue  # treat errored rows as not-yet-done
-            done.add(h)
+            last_row[h] = row  # last-wins: overwrite prior row for this hash
+
+    done = set()
+    for h, row in last_row.items():
+        if retry_errors and _is_error_row(row):
+            continue  # last occurrence is an error -> treat as not-yet-done
+        done.add(h)
     return done
 
 
@@ -566,21 +583,36 @@ def _reload_rows(path: Path) -> list[dict]:
 
     Tolerates a truncated/corrupt final line (crash mid-write): malformed lines
     are silently skipped, mirroring load_completed_hashes.
+
+    Dedup semantics — last-wins by hash:
+        append_result only ever appends; after ``--retry-errors`` a retried sample
+        has TWO rows (old error + new success). _reload_rows keeps the LAST
+        occurrence of each hash so a successful retry supersedes its earlier error
+        row. This prevents double-counting in summarize_campaign (inflated
+        oat_count/oat_errored, joint count, histogram base, and false >10% banner).
     """
     path = Path(path)
     if not path.exists():
         return []
-    rows = []
+    # Collect all well-formed rows, preserving order (later rows overwrite earlier).
+    by_hash: dict = {}
+    order: list = []
     with open(path, "r") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             try:
-                rows.append(json.loads(line))
+                row = json.loads(line)
             except json.JSONDecodeError:
                 continue
-    return rows
+            h = row.get("hash")
+            if h is None:
+                continue
+            if h not in by_hash:
+                order.append(h)
+            by_hash[h] = row  # last-wins: overwrite any prior row for this hash
+    return [by_hash[h] for h in order]
 
 
 def _is_error_row(row: dict) -> bool:
@@ -624,6 +656,12 @@ def run_campaign(strategy_id: str, golden: dict, campaign_file: Path,
         while still writing every already-completed row before raising. Note:
         errored rows that DID get checkpointed are treated as completed on resume
         (they are not retried) — investigate and delete them before rerunning.
+
+    Midnight / multi-day note (M3):
+        ``end`` defaults to ``date.today()`` at call time and is NOT part of sample
+        hashes. A campaign that spans midnight resumes with a 1-day-longer backtest
+        window for later samples. For 16-year backtests this is negligible (<0.02%
+        difference in window length); document and accept rather than change.
 
     SINGLE-WRITER INVARIANT (do not move into workers):
       - ALL append_result calls happen here, in the parent/orchestrator process.
@@ -763,6 +801,12 @@ def run_plateau(strategy_id: str, run_dir: Path,
 
     Raises RuntimeError if the golden baseline backtest itself fails — no baseline
     means no retained fractions means no analysis (see run_golden_baseline).
+
+    Midnight / multi-day note (M3):
+        ``end`` is fixed to ``date.today()`` at the moment run_plateau is called and
+        is NOT embedded in sample hashes. A campaign resumed after midnight continues
+        with a 1-day-longer backtest window for later samples. For 16-year backtests
+        this difference is negligible (<0.02%); document and accept, don't change.
     """
     from jutsu_engine.audit.attribution import _all_symbols
 

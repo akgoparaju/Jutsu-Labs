@@ -724,7 +724,75 @@ class TestRunCampaign:
                 assert "hash" in row
 
 
-from jutsu_engine.audit.plateau import run_golden_baseline, summarize_campaign
+from jutsu_engine.audit.plateau import _reload_rows, run_golden_baseline, summarize_campaign
+
+
+class TestReloadRowsDedup:
+    def test_reload_rows_dedups_by_hash_last_wins(self, tmp_path):
+        """Error row then success row for same hash → one row, the success; summarize_campaign reflects 1 sample, 0 errored."""
+        import json
+        from jutsu_engine.audit.plateau import summarize_campaign, CampaignResult
+
+        f = tmp_path / "camp.jsonl"
+        h = "dup_hash_001"
+        # First row: errored
+        error_row = {"hash": h, "kind": "oat", "param": "sma_fast",
+                     "overrides": {"sma_fast": 32}, "sharpe": None,
+                     "max_drawdown": None, "annualized_return": None,
+                     "total_return": None, "error": "RuntimeError: transient"}
+        # Second row: successful retry
+        success_row = {"hash": h, "kind": "oat", "param": "sma_fast",
+                       "overrides": {"sma_fast": 32}, "sharpe": 0.75,
+                       "max_drawdown": -0.3, "annualized_return": 0.15,
+                       "total_return": 2.0, "error": None}
+        with open(f, "w") as fh:
+            fh.write(json.dumps(error_row) + "\n")
+            fh.write(json.dumps(success_row) + "\n")
+
+        rows = _reload_rows(f)
+        # Last-wins: only one row, and it's the success
+        assert len(rows) == 1
+        assert rows[0]["sharpe"] == 0.75
+        assert rows[0]["error"] is None
+
+        # summarize_campaign reflects 1 OAT sample, 0 errored
+        golden = {"sma_fast": 40}
+        res = CampaignResult("v3_5b", 42, samples=[success_row], rows=rows,
+                             campaign_file=str(f), golden=golden)
+        summary = summarize_campaign(res, golden_sharpe=1.0,
+                                     golden_metrics={"sharpe_ratio": 1.0,
+                                                     "max_drawdown": -0.5,
+                                                     "annualized_return": 0.2,
+                                                     "total_return": 5.0})
+        assert summary["oat_count"] == 1
+        assert summary["oat_errored"] == 0
+
+    def test_load_completed_hashes_last_wins_with_retry(self, tmp_path):
+        """Error-then-success → done even with retry_errors=True; success-then-error → NOT done with retry_errors=True, done without."""
+        import json
+        from jutsu_engine.audit.plateau import load_completed_hashes
+
+        f = tmp_path / "camp.jsonl"
+        # Hash A: error then success (last = success → always done)
+        a_error = {"hash": "hash_a", "sharpe": None, "error": "RuntimeError: boom"}
+        a_success = {"hash": "hash_a", "sharpe": 0.8, "error": None}
+        # Hash B: success then error (unusual — last = error → NOT done with retry_errors)
+        b_success = {"hash": "hash_b", "sharpe": 0.9, "error": None}
+        b_error = {"hash": "hash_b", "sharpe": None, "error": "RuntimeError: late failure"}
+
+        with open(f, "w") as fh:
+            for row in [a_error, a_success, b_success, b_error]:
+                fh.write(json.dumps(row) + "\n")
+
+        # With retry_errors=True: hash_a (last=success) → done; hash_b (last=error) → NOT done
+        done_retry = load_completed_hashes(f, retry_errors=True)
+        assert "hash_a" in done_retry
+        assert "hash_b" not in done_retry
+
+        # Without retry_errors: both count as done (standard resume — last row is any row)
+        done_std = load_completed_hashes(f, retry_errors=False)
+        assert "hash_a" in done_std
+        assert "hash_b" in done_std
 
 
 class TestRunGoldenBaseline:
