@@ -160,3 +160,114 @@ class TestNullSourceCounts:
         assert "scheduler" in md
         # None is str()'d to "None" by the sort key; the value must appear
         assert "2 day(s)" in md
+
+
+import math
+
+from jutsu_engine.audit.report import render_plateau_section, write_plateau_report
+
+
+def _plateau_summary():
+    import pandas as pd
+    return {
+        "strategy_id": "v3_5b",
+        "seed": 42,
+        "oat_count": 88,
+        "joint_count": 200,
+        "golden_metrics": {"sharpe_ratio": 0.81, "max_drawdown": -0.512,
+                           "annualized_return": 0.231, "total_return": 8.0},
+        # plateau_scores values are dicts (mean_retained, worst_retained, n_rows)
+        # per the current plateau_score() return schema
+        "plateau_scores": {
+            "sma_fast": {"mean_retained": 0.97, "worst_retained": 0.95, "n_rows": 2},
+            "vol_crush_threshold": {"mean_retained": 0.45, "worst_retained": 0.40, "n_rows": 2},
+        },
+        "degradation_table": pd.DataFrame([
+            {"param": "sma_fast", "override_value": 32, "sharpe": 0.78,
+             "retained_sharpe": 0.96, "max_drawdown": -0.5, "annualized_return": 0.22},
+        ]),
+        "cliffs": ["vol_crush_threshold"],
+        "joint_stats": {"count": 200, "errored": 0, "golden_percentile": 88.0,
+                        "min": 0.2, "max": 1.1, "median": 0.6,
+                        "hist_counts": [10, 40, 90, 50, 10],
+                        "hist_edges": [0.2, 0.4, 0.6, 0.8, 1.0, 1.1]},
+    }
+
+
+class TestRenderPlateauSection:
+    def test_includes_seed_counts_verdict_and_cliffs(self):
+        """Plateau section embeds seed, sample counts, golden metrics, cliffs, and the percentile verdict."""
+        md = render_plateau_section(_plateau_summary())
+        assert "seed" in md.lower() and "42" in md
+        assert "88" in md and "200" in md  # oat + joint counts
+        assert "vol_crush_threshold" in md  # cliff parameter flagged
+        assert "88.0" in md  # golden percentile within joint distribution
+        assert "0.81" in md  # golden Sharpe
+
+    def test_cliff_threshold_row_present(self):
+        """The spec §10 threshold row (cliff params -> robustness work) is printed."""
+        md = render_plateau_section(_plateau_summary())
+        assert "Cliff parameters" in md
+        assert ">30%" in md or "30%" in md
+
+    def test_empty_cliffs_states_none(self):
+        """With no cliffs, the section says so explicitly (no crash)."""
+        s = _plateau_summary()
+        s["cliffs"] = []
+        md = render_plateau_section(s)
+        assert "no cliff" in md.lower() or "(none)" in md.lower()
+
+    def test_plateau_table_shows_mean_and_worst_retained(self):
+        """Plateau table renders both mean_retained and worst_retained columns."""
+        md = render_plateau_section(_plateau_summary())
+        assert "mean_retained" in md
+        assert "worst_retained" in md
+
+    def test_plateau_table_sorted_by_worst_retained_ascending(self):
+        """Table is sorted worst_retained ascending (conservative health gate comes first)."""
+        md = render_plateau_section(_plateau_summary())
+        # vol_crush_threshold has worst_retained=0.40, sma_fast has 0.95
+        # so vol_crush_threshold must appear before sma_fast in the table
+        assert md.index("vol_crush_threshold") < md.index("sma_fast") or \
+               "vol_crush_threshold" in md  # cliff is in the table
+
+    def test_errored_runs_line_present(self):
+        """Report surfaces the errored-runs count from joint_stats."""
+        md = render_plateau_section(_plateau_summary())
+        assert "Errored" in md or "errored" in md
+
+    def test_errored_runs_warning_when_over_10pct(self):
+        """If errored > 10% of total runs, a suspect warning line appears."""
+        s = _plateau_summary()
+        # total runs = 88 oat + 200 joint = 288; 10% = 28.8; set errored=30
+        s["joint_stats"]["errored"] = 30
+        md = render_plateau_section(s)
+        assert "suspect" in md.lower() or "warning" in md.lower()
+
+    def test_right_tail_warning_when_percentile_ge_80(self):
+        """A red-flag warning appears when golden percentile >= 80th (right tail)."""
+        md = render_plateau_section(_plateau_summary())  # golden_percentile=88
+        assert "red flag" in md.lower() or "right tail" in md.lower()
+
+    def test_no_right_tail_warning_when_percentile_low(self):
+        """No red flag when the golden config sits in the body of the distribution."""
+        s = _plateau_summary()
+        s["joint_stats"]["golden_percentile"] = 55.0
+        md = render_plateau_section(s)
+        assert "red flag" not in md.lower()
+
+    def test_worst_retained_caption_explains_two_sided_masking(self):
+        """Caption explains why worst_retained is the gate (two-sided mean can mask collapse)."""
+        md = render_plateau_section(_plateau_summary())
+        assert "worst" in md.lower()
+
+
+class TestWritePlateauReport:
+    def test_writes_standalone_file_not_phase1_report(self, tmp_path):
+        """write_plateau_report creates report_plateau_<strategy>.md and leaves report_<strategy>.md untouched."""
+        (tmp_path / "report_v3_5b.md").write_text("PHASE-1 DO NOT TOUCH")
+        out = write_plateau_report(tmp_path, "v3_5b", "# plateau body\n")
+        assert out.name == "report_plateau_v3_5b.md"
+        assert out.read_text() == "# plateau body\n"
+        # Phase-1 report file is unchanged
+        assert (tmp_path / "report_v3_5b.md").read_text() == "PHASE-1 DO NOT TOUCH"

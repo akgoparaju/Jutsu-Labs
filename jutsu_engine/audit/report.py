@@ -200,3 +200,164 @@ def write_report(run_dir: Path, strategy_id: str, markdown: str) -> Path:
     out = run_dir / f"report_{strategy_id}.md"
     out.write_text(markdown)
     return out
+
+
+# spec §10 decision threshold for Module 2.
+CLIFF_LOSS_THRESHOLD_PCT = 30.0
+
+
+def render_plateau_section(summary: dict) -> str:
+    """Render the Parameter Plateau (Module 2) section as a markdown string.
+
+    ``summary`` keys:
+      strategy_id, seed, oat_count, joint_count, golden_metrics,
+      plateau_scores {param: {"mean_retained": float, "worst_retained": float, "n_rows": int}},
+      degradation_table (DataFrame), cliffs (list[str]),
+      joint_stats {count, errored, golden_percentile, min, max, median, ...}.
+
+    Schema note: plateau_scores values are dicts (not plain floats). The table shows
+    BOTH mean_retained and worst_retained columns, sorted worst_retained ascending.
+    worst_retained is the conservative health gate — a two-sided mean can mask a
+    one-sided collapse (e.g. sides 1.25 and 0.125 average to 0.688, hiding that one
+    direction is nearly flat).
+    """
+    import math
+
+    gm = summary["golden_metrics"]
+    js = summary["joint_stats"]
+    cliffs = summary["cliffs"]
+    pct = js.get("golden_percentile")
+
+    # --- joint distribution analysis ---
+    errored_joint = js.get("errored", 0)
+    total_runs = summary.get("oat_count", 0) + summary.get("joint_count", 0)
+    # OAT errored count: infer from degradation table (rows excluded from table are errors)
+    oat_count = summary.get("oat_count", 0)
+    dt = summary.get("degradation_table")
+    oat_in_table = len(dt) if dt is not None and not dt.empty else 0
+    oat_errored = max(0, oat_count - oat_in_table)
+    total_errored = oat_errored + errored_joint
+
+    errored_line = (
+        f"Errored runs excluded from analysis: **{total_errored}** "
+        f"(OAT: {oat_errored}, joint: {errored_joint})"
+    )
+    suspect_warning = ""
+    if total_runs > 0 and total_errored > total_runs * 0.10:
+        suspect_warning = (
+            "\n> **Warning:** errored runs exceed 10% of total samples — "
+            "campaign conclusions are suspect. Investigate failures before acting on results."
+        )
+
+    # --- golden percentile verdict ---
+    _pct_isnan = pct is None or (isinstance(pct, float) and math.isnan(pct))
+    right_tail = (not _pct_isnan and pct >= 80.0)
+    if _pct_isnan:
+        percentile_verdict = "golden Sharpe percentile within joint distribution: N/A (no valid joint runs)."
+    else:
+        percentile_verdict = (
+            f"golden Sharpe sits at the **{_fmt(pct, '.1f')}th percentile** of its own "
+            f"+/-15% neighborhood — "
+            + ("**far in the right tail (>=80th): a red flag that the golden config is "
+               "a local peak fit to its neighborhood.**"
+               if right_tail else
+               "within the body of its neighborhood distribution (not an isolated peak).")
+        )
+
+    # --- cliff line ---
+    cliff_line = (", ".join(f"`{c}`" for c in cliffs) if cliffs
+                  else "_(none) — no parameter loses >30% of Sharpe at +/-10%_")
+
+    # --- plateau-score table (both mean_retained and worst_retained), sorted worst-first ---
+    ps = summary["plateau_scores"]
+
+    def _worst(score_val):
+        if isinstance(score_val, dict):
+            v = score_val.get("worst_retained", float("nan"))
+        else:
+            v = score_val  # backward compat if plain float
+        return v if (v is not None and not (isinstance(v, float) and math.isnan(v))) else 1e9
+
+    ps_rows = sorted(ps.items(), key=lambda kv: _worst(kv[1]))
+    ps_lines = [
+        "| param | mean_retained | worst_retained | n_rows |",
+        "| --- | --- | --- | --- |",
+        "_Caption: sorted worst_retained ascending. "
+        "worst_retained is the conservative health gate — "
+        "a two-sided mean can mask a one-sided collapse (e.g. sides 1.25 and 0.125 "
+        "average to 0.688 but one direction is nearly flat)._",
+        "",
+    ]
+    ps_lines[0:2] = [
+        "| param | mean_retained | worst_retained | n_rows |",
+        "| --- | --- | --- | --- |",
+    ]
+    for name, score_val in ps_rows:
+        if isinstance(score_val, dict):
+            mean_r = score_val.get("mean_retained")
+            worst_r = score_val.get("worst_retained")
+            n_r = score_val.get("n_rows", 0)
+        else:
+            mean_r = worst_r = score_val
+            n_r = "?"
+        ps_lines.append(
+            f"| `{name}` | {_fmt(mean_r, '.3f')} | {_fmt(worst_r, '.3f')} | {n_r} |"
+        )
+
+    lines = [
+        "## Parameter plateau map (Module 2)",
+        "",
+        f"- Strategy: **{summary['strategy_id']}**  |  RNG seed: **{summary['seed']}**",
+        f"- One-at-a-time samples: **{summary['oat_count']}**  |  "
+        f"Joint (+/-15% box) samples: **{summary['joint_count']}**",
+        f"- {errored_line}",
+    ]
+    if suspect_warning:
+        lines.append(suspect_warning)
+    lines += [
+        "",
+        "### Golden baseline (full-period backtest, live config)",
+        f"- Sharpe: **{_fmt(gm.get('sharpe_ratio'), '.4f')}**  |  "
+        f"MaxDD: **{_fmt(gm.get('max_drawdown'), '.4f')}**",
+        f"- Annualized: **{_fmt(gm.get('annualized_return'), '.4f')}**  |  "
+        f"Total: **{_fmt(gm.get('total_return'), '.4f')}**",
+        "",
+        "### Plateau scores (higher = flatter = more robust)",
+        "_Caption: sorted worst_retained ascending. "
+        "worst_retained is the conservative health gate — "
+        "a two-sided mean can mask a one-sided collapse._",
+        "",
+        "\n".join(ps_lines),
+        "",
+        "### Cliff parameters (spec §10 threshold)",
+        "| Signal | Threshold | Consequence |",
+        "| --- | --- | --- |",
+        f"| Cliff parameters (a +/-10% move loses >{CLIFF_LOSS_THRESHOLD_PCT:.0f}% "
+        f"of Sharpe) | any | Flag for robustness work before further optimization "
+        f"of those parameters |",
+        "",
+        f"- Cliff parameters: {cliff_line}",
+        "",
+        "### Joint-perturbation distribution",
+        f"- Samples: **{js.get('count')}**  |  min/median/max Sharpe: "
+        f"**{_fmt(js.get('min'), '.3f')}** / **{_fmt(js.get('median'), '.3f')}** / "
+        f"**{_fmt(js.get('max'), '.3f')}**",
+        f"- {percentile_verdict}",
+        "",
+        "### Per-parameter degradation table",
+        _df_to_md(summary["degradation_table"]),
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def write_plateau_report(run_dir: Path, strategy_id: str, markdown: str) -> Path:
+    """Write report_plateau_<strategy>.md into run_dir (created if missing).
+
+    Deliberately a SEPARATE file from the Phase-1 report_<strategy>.md so the
+    plateau run never touches or overwrites the recon/attribution report.
+    """
+    run_dir = Path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    out = run_dir / f"report_plateau_{strategy_id}.md"
+    out.write_text(markdown)
+    return out
