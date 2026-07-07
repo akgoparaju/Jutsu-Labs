@@ -113,3 +113,44 @@ class TestParamsHash:
     def test_hash_differs_on_value_change(self):
         """A changed value changes the hash."""
         assert params_hash({"sma_fast": 40}) != params_hash({"sma_fast": 41})
+
+
+from jutsu_engine.audit.plateau import JOINT_BOX_FRACTION, joint_samples
+
+
+class TestJointSamples:
+    def test_default_count_and_seed_reproducibility(self):
+        """joint_samples(N, seed) yields N reproducible samples for a fixed seed."""
+        golden = {"sma_fast": 40, "leverage_scalar": 1.0, "signal_symbol": "QQQ"}
+        a = joint_samples(golden, n=10, seed=7)
+        b = joint_samples(golden, n=10, seed=7)
+        assert len(a) == 10
+        assert [s["overrides"] for s in a] == [s["overrides"] for s in b]
+
+    def test_different_seed_gives_different_samples(self):
+        """A different seed produces a different sample sequence."""
+        golden = {"sma_fast": 40, "leverage_scalar": 1.0}
+        a = joint_samples(golden, n=10, seed=1)
+        b = joint_samples(golden, n=10, seed=2)
+        assert [s["overrides"] for s in a] != [s["overrides"] for s in b]
+
+    def test_every_sample_perturbs_all_params_within_box(self):
+        """Each joint sample perturbs every perturbable param within +/-15% (integers rounded)."""
+        golden = {"leverage_scalar": 1.0, "sma_fast": 40, "signal_symbol": "QQQ"}
+        s = joint_samples(golden, n=50, seed=3)[0]
+        assert set(s["overrides"]) == {"leverage_scalar", "sma_fast"}
+        lo, hi = 1.0 * (1 - JOINT_BOX_FRACTION), 1.0 * (1 + JOINT_BOX_FRACTION)
+        assert lo <= s["overrides"]["leverage_scalar"] <= hi
+        assert isinstance(s["overrides"]["sma_fast"], int)
+
+    def test_negative_param_stays_negative_in_box(self):
+        """A negative threshold stays negative across the whole +/-15% box."""
+        golden = {"t_norm_bear_thresh": -0.3}
+        samples = joint_samples(golden, n=100, seed=5)
+        assert all(s["overrides"]["t_norm_bear_thresh"] < 0 for s in samples)
+
+    def test_sample_kind_and_hash_present(self):
+        """Joint samples are tagged kind='joint' and carry a params hash."""
+        s = joint_samples({"sma_fast": 40}, n=1, seed=9)[0]
+        assert s["kind"] == "joint"
+        assert len(s["hash"]) == 16

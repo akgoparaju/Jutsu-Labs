@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import random
 import yaml
 
 from jutsu_engine.audit.config import resolve_strategy
@@ -125,4 +126,40 @@ def oat_samples(golden: dict) -> list[dict]:
                 "overrides": overrides,
                 "hash": params_hash(overrides),
             })
+    return out
+
+
+# Spec §6: joint samples inside a +/-15% box around golden.
+JOINT_BOX_FRACTION: float = 0.15
+DEFAULT_JOINT_SAMPLES: int = 200
+
+
+def joint_samples(golden: dict, n: int = DEFAULT_JOINT_SAMPLES,
+                  seed: int = 0) -> list[dict]:
+    """N seeded uniform samples in the +/-15% box over all perturbable params.
+
+    Every perturbable parameter is independently drawn uniformly in
+    [g*(1-0.15), g*(1+0.15)]; integers are rounded and floor-clamped via
+    _apply_validity; sign is preserved by construction. RNG is a per-call
+    random.Random(seed) so results are reproducible and the seed is recorded
+    in the campaign output.
+    """
+    rng = random.Random(seed)
+    per = perturbable_params(golden)
+    out = []
+    for i in range(n):
+        overrides = {}
+        for name, gval in per.items():
+            lo = gval * (1.0 - JOINT_BOX_FRACTION)
+            hi = gval * (1.0 + JOINT_BOX_FRACTION)
+            if lo > hi:  # negative golden: bounds are swapped, fix ordering
+                lo, hi = hi, lo
+            raw = rng.uniform(lo, hi)
+            overrides[name] = _apply_validity(name, raw, gval)
+        out.append({
+            "kind": "joint",
+            "param": None,
+            "overrides": overrides,
+            "hash": params_hash(overrides),
+        })
     return out
