@@ -25,6 +25,7 @@ in-sample numbers optimistic by construction.
 |----|------|----------|--------------------|
 | EXP-001 | 2026-07-06 | What are the honest baseline numbers, and does live match backtest? | Full-period Sharpe ~0.8 (not 2.8); initial 8.6% fidelity alarm raised |
 | EXP-002 | 2026-07-06 | Are the 8 logic-mismatch days a production bug? | No — audit artifact (information-set mismatch); true divergence 1.1% |
+| EXP-003 | 2026-07-07 | How robust is the golden config to small parameter perturbations (plateau vs cliff)? | Campaign pending — filled in after the overnight run |
 
 ---
 
@@ -140,3 +141,58 @@ production bug, prove the replay's information set matches the decision-maker's.
 Also: tolerances defined for continuous fields must be honored when their
 threshold-crossings surface as categorical flips, or the same noise gets counted
 twice under two names.
+
+---
+
+## EXP-003 — Baseline audit Phase 2: parameter plateau map (2026-07-07)
+
+**Question.** Does the golden config sit on a robustness *plateau* (small parameter
+perturbations barely move Sharpe) or on a *cliff* (a +/-10% move on some parameter
+collapses Sharpe)? Where in its own +/-15% neighborhood distribution does the
+golden Sharpe sit — is it an isolated peak (right-tail = overfit red flag) or in
+the body?
+
+**Why.** EXP-001 established the honest full-period baseline (Sharpe ~0.8, not the
+in-sample ~2.8) and pointed improvement effort at regime-transition quality over
+parameter micro-tuning. Module 2 quantifies *how fragile* the golden parameters
+are: cliff parameters are the ones most likely fit to noise and are flagged for
+robustness work (spec §6, §10). Decision framework: spec
+`docs/superpowers/specs/2026-07-06-baseline-audit-design.md` §6/§10.
+
+**Method.** Built `jutsu_engine/audit/plateau.py` (perturbation-set generation +
+checkpoint/resume campaign runner + pure analysis) and `jutsu audit plateau`.
+- Perturbable params: 22 numeric non-bool strategy params from the live YAML
+  (symbols/booleans/execution excluded), derived per strategy.
+- One-at-a-time: each param at x0.8/x0.9/x1.1/x1.2 (integers rounded/deduped,
+  windows >=5, periods >=2, negative thresholds keep sign); worst-side Sharpe
+  retained (min of OAT pair) so plateau scores are conservative.
+- Joint: 200 seeded uniform samples in a +/-15% box (seed 42, recorded in report).
+- Each sample = one full-period (2010-02 -> 2026-07) `BacktestRunner` run via
+  `build_overridden_strategy` (Phase-1 bridge + param overrides, same float->Decimal
+  conventions as `LiveStrategyRunner`). Results checkpointed to JSONL (resume by
+  params-hash); CSVs to a throwaway tempdir (reduced output).
+- **Hardening (review-driven):** errored-run rows excluded from analysis with loud
+  per-run counts logged; consecutive-error circuit breaker (default 10 consecutive
+  errors aborts campaign, any success resets counter); fsync checkpoint writes
+  (durable append before next sample starts); `--retry-errors` flag re-runs
+  previously errored hashes on resume.
+- Command (overnight): `jutsu audit plateau --strategy v3_5b --workers 4`
+  then `--strategy v3_5d`. Smoke validation:
+  `jutsu audit plateau --strategy v3_5b --oat-only --params sma_fast`.
+
+**Results.** _Campaign pending — filled in after the overnight run._
+(Expected fields once run: per-parameter plateau scores; cliff list; joint-sample
+Sharpe histogram; golden Sharpe percentile within the joint distribution; the
+plateau-vs-cliff verdict per strategy.)
+
+**Verdict / decisions.** _Pending campaign results._ (Interpretation contract:
+cliff parameters -> flag for robustness work before further optimization of those
+parameters, spec §10; a golden Sharpe far in the right tail of its own neighborhood
+-> treat the config as a fragile local peak.)
+
+**Artifacts.** Code on `feature/audit-phase2-plateau`; reports (once run)
+`claudedocs/audit/2026-07-06/report_plateau_v3_5{b,d}.md`; campaign JSONL
+`claudedocs/audit/2026-07-06/v3_5{b,d}/campaign_v3_5{b,d}.jsonl`.
+
+**Follow-ups spawned.** _TBD after results._ (Anticipated: Module 1 WFO stability,
+Module 3 DSR/PBO per spec §14.)
