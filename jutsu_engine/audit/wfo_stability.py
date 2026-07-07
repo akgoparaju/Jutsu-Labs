@@ -75,3 +75,80 @@ def generate_windows(total_start: date, total_end: date,
     if windows_limit is not None:
         windows = windows[:windows_limit]
     return windows
+
+
+# ---------------------------------------------------------------------------
+# Task 2 — Evidence-driven grid (EXP-003 sensitivity ranking)
+# ---------------------------------------------------------------------------
+import hashlib
+import itertools
+import json
+
+# Sensitive-parameter product (EXP-003 ranking); each axis centered on golden.
+WFO_GRID_AXES: dict[str, list] = {
+    "upper_thresh_z": [0.8, 1.0, 1.2],      # #1 sensitivity (EXP-003), golden 1.0
+    "realized_vol_window": [16, 21, 26],    # #2 sensitivity, golden 21
+    "sma_slow": [120, 140, 160],            # #4 sensitivity, golden 140
+}
+
+# Quarantined EXP-003 candidates: each swapped into the golden config one at a
+# time so WFO validates or kills them OUT-of-sample (single in-sample gains of
+# their magnitude are within selection noise per EXP-003).
+WFO_QUARANTINE_OVERRIDES: list[dict] = [
+    {"vol_crush_threshold": -0.12},
+    {"bond_sma_fast": 24},
+    {"bond_sma_slow": 66},
+    {"osc_smoothness": 12},
+]
+
+# Six inert knobs (EXP-003 retained ~1.000 at +/-20%) DELIBERATELY EXCLUDED —
+# perturbing them is pure compute waste. Documenting the exclusion is a spec §5
+# requirement.
+WFO_INERT_EXCLUDED: tuple[str, ...] = (
+    "process_noise_1", "strength_smoothness", "w_PSQ_max",
+    "rebalance_threshold", "leverage_scalar", "lower_thresh_z",
+)
+
+
+def combo_hash(overrides: dict) -> str:
+    """Stable 16-char hex hash of a combo's overrides (order-independent)."""
+    payload = json.dumps(overrides, sort_keys=True, separators=(",", ":"),
+                         default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def expand_grid() -> list[dict]:
+    """Expand the evidence-driven grid into 31 combos (27 product + 4 quarantine).
+
+    Each combo is {"combo_id", "kind", "overrides", "hash"}. Combo 0 (product,
+    all axes at golden) IS the golden anchor. Quarantine combos hold golden axis
+    values and swap in exactly one quarantined candidate.
+    """
+    names = list(WFO_GRID_AXES.keys())
+    value_lists = [WFO_GRID_AXES[n] for n in names]
+    # Golden axis values (the middle element of each axis is golden by construction).
+    golden_axis = {"upper_thresh_z": 1.0, "realized_vol_window": 21, "sma_slow": 140}
+
+    combos: list[dict] = []
+    cid = 0
+    # Generate all product combos; put the golden anchor (all axes at golden value)
+    # first so combo_id 0 is always the baseline. Golden values are the middle
+    # element of each axis by construction. Sort product so golden combo leads.
+    all_product = list(itertools.product(*value_lists))
+    golden_tuple = tuple(golden_axis[n] for n in names)
+    all_product.sort(key=lambda t: (t != golden_tuple))  # golden first, rest unchanged
+    for values in all_product:
+        overrides = dict(zip(names, values))
+        combos.append({
+            "combo_id": cid, "kind": "product",
+            "overrides": overrides, "hash": combo_hash(overrides),
+        })
+        cid += 1
+    for q in WFO_QUARANTINE_OVERRIDES:
+        overrides = {**golden_axis, **q}
+        combos.append({
+            "combo_id": cid, "kind": "quarantine",
+            "overrides": overrides, "hash": combo_hash(overrides),
+        })
+        cid += 1
+    return combos

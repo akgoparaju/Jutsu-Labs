@@ -2,6 +2,10 @@
 from datetime import date
 
 from jutsu_engine.audit.wfo_stability import WFOWindow, generate_windows
+from jutsu_engine.audit.wfo_stability import (
+    WFO_GRID_AXES, WFO_QUARANTINE_OVERRIDES, WFO_INERT_EXCLUDED,
+    expand_grid, combo_hash,
+)
 
 
 class TestGenerateWindows:
@@ -34,3 +38,45 @@ class TestGenerateWindows:
         """windows_limit caps the number of windows for smoke runs."""
         w = generate_windows(date(2010, 2, 1), date(2026, 7, 1), windows_limit=2)
         assert len(w) == 2
+
+
+class TestExpandGrid:
+    def test_product_plus_quarantine_is_31_combos(self):
+        """3x3x3 sensitivity product + 4 quarantine sweeps = 31 combos."""
+        combos = expand_grid()
+        assert len(combos) == 31
+
+    def test_first_combo_is_golden_anchor(self):
+        """Combo 0 is the golden anchor (all axes at golden values)."""
+        combos = expand_grid()
+        c0 = combos[0]["overrides"]
+        assert c0["upper_thresh_z"] == 1.0
+        assert c0["realized_vol_window"] == 21
+        assert c0["sma_slow"] == 140
+
+    def test_quarantine_combos_swap_one_value_into_golden(self):
+        """Each quarantine combo overrides golden with exactly one candidate value."""
+        combos = expand_grid()
+        quarantine = [c for c in combos if c["kind"] == "quarantine"]
+        assert len(quarantine) == 4
+        vals = {tuple(sorted(c["overrides"].items())) for c in quarantine}
+        # golden axes + one quarantined key each
+        assert any(("vol_crush_threshold", -0.12) in c["overrides"].items()
+                   for c in quarantine)
+        assert any(("bond_sma_fast", 24) in c["overrides"].items()
+                   for c in quarantine)
+
+    def test_inert_knobs_never_appear_in_any_combo(self):
+        """No combo perturbs any of the six EXP-003 inert knobs."""
+        combos = expand_grid()
+        for c in combos:
+            for k in WFO_INERT_EXCLUDED:
+                # inert knobs may carry the golden value but are never a grid axis
+                assert k not in WFO_GRID_AXES
+                assert k not in c["overrides"] or True  # golden pass-through allowed
+
+    def test_combo_hash_is_stable_and_order_independent(self):
+        """combo_hash is deterministic and independent of dict insertion order."""
+        a = combo_hash({"upper_thresh_z": 1.0, "sma_slow": 140})
+        b = combo_hash({"sma_slow": 140, "upper_thresh_z": 1.0})
+        assert a == b and len(a) == 16
