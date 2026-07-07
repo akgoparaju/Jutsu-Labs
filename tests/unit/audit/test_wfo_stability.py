@@ -73,7 +73,8 @@ class TestExpandGrid:
             for k in WFO_INERT_EXCLUDED:
                 # inert knobs may carry the golden value but are never a grid axis
                 assert k not in WFO_GRID_AXES
-                assert k not in c["overrides"] or True  # golden pass-through allowed
+                assert k not in c["overrides"], (
+                    f"{k} is inert (EXP-003) but appears in combo {c['combo_id']}")
 
     def test_combo_hash_is_stable_and_order_independent(self):
         """combo_hash is deterministic and independent of dict insertion order."""

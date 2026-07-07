@@ -172,6 +172,7 @@ def select_is_winner(is_rows: list[dict]) -> dict | None:
     Selection metric is IS Sharpe (spec §5: 'winning parameter set per window').
     Errored rows (non-finite is_sharpe) are excluded so a failed backtest can
     never win. Returns None only if EVERY combo errored.
+    Ties resolve to the first occurrence in combo order (lowest combo_id) — deterministic given fixed input order.
     """
     valid = [r for r in is_rows if _is_finite_number(r.get("is_sharpe"))]
     if not valid:
