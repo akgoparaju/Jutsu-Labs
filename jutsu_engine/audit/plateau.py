@@ -19,6 +19,7 @@ import hashlib
 import importlib
 import json
 import math
+import os
 import random
 import shutil
 import tempfile
@@ -449,11 +450,11 @@ def _ends_with_newline(path: Path) -> bool:
 
 
 def append_result(path: Path, row: dict) -> None:
-    """Append one result row as a JSONL line (created if missing). Flushed to disk.
+    """Append one result row as a JSONL line (created if missing). fsynced to disk.
 
-    Flushing per line makes resume crash-safe: a completed backtest is durable
-    the moment its row is written, so a later crash loses at most the in-flight
-    runs, never a finished one.
+    fsyncing per line makes resume crash-safe: a completed backtest is durable
+    the moment its row is written, surviving both process crashes and power loss,
+    so a later failure loses at most the in-flight runs, never a finished one.
 
     If a prior process was killed mid-write and left a partial line with no
     trailing newline, a leading newline is inserted before the new row so the new
@@ -467,6 +468,7 @@ def append_result(path: Path, row: dict) -> None:
     with open(path, "a") as f:
         f.write(prefix + json.dumps(record, default=str) + "\n")
         f.flush()
+        os.fsync(f.fileno())
 
 
 def run_one_sample(strategy_id: str, sample: dict, symbols: list[str],
