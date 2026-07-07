@@ -175,33 +175,68 @@ _PLATEAU_MULTIPLIERS = (0.8, 1.2)
 _TEN_PCT_MULTIPLIERS = (0.9, 1.1)
 
 
+def _valid_sharpe(r: dict) -> bool:
+    """True when the row carries a finite numeric sharpe (errored runs don't)."""
+    s = r.get("sharpe")
+    return isinstance(s, (int, float)) and not isinstance(s, bool) and math.isfinite(s)
+
+
 def _rows_for_param(rows: list[dict], param: str) -> list[dict]:
     return [r for r in rows if r.get("param") == param]
 
 
 def _override_matches_multiplier(row: dict, golden: dict, param: str,
                                  mult: float) -> bool:
-    """True if this OAT row's override for `param` equals golden*mult after validity."""
-    gval = golden[param]
+    """True if this OAT row's override for `param` equals golden*mult after validity.
+
+    Uses golden.get(param) so callers with partial golden dicts don't KeyError.
+    """
+    gval = golden.get(param)
+    if gval is None:
+        return False
     want = _apply_validity(param, gval * mult, gval)
     return row["overrides"].get(param) == want
 
 
 def plateau_score(rows: list[dict], golden: dict, golden_sharpe: float,
-                  param: str) -> float:
-    """Mean retained Sharpe fraction at +/-20% (x0.8, x1.2) for one parameter.
+                  param: str) -> dict:
+    """Retained Sharpe fractions at +/-20% (x0.8, x1.2) for one parameter.
 
-    Retained fraction = perturbed_sharpe / golden_sharpe. Returns NaN if no
-    +/-20% rows were collected for the parameter.
+    Returns a dict with keys:
+      - ``mean_retained``: mean of (perturbed_sharpe / golden_sharpe) over the
+        two +/-20% steps.
+      - ``worst_retained``: min of the same fractions — the conservative signal.
+        Two-sided mean can mask a one-sided collapse (e.g. sides 1.25 and 0.125
+        average to 0.688, hiding that one direction is nearly flat). Use
+        ``worst_retained`` as the gate; ``cliff_list`` adds per-step granularity.
+      - ``n_rows``: number of valid +/-20% rows used.
+
+    Returns ``{"mean_retained": nan, "worst_retained": nan, "n_rows": 0}`` when
+    no +/-20% rows with finite Sharpe were collected for this parameter.
+
+    Note: retained-fraction semantics are fragile when golden Sharpe is near
+    zero/sub-1 (ours is ~0.8): a negative perturbed Sharpe yields retained < 0,
+    which is directionally correct for cliff detection but not a clean
+    "percentage".  Rows whose Sharpe is None or NaN are excluded before
+    computing fractions.
     """
     prows = _rows_for_param(rows, param)
     fracs = []
     for mult in _PLATEAU_MULTIPLIERS:
         for r in prows:
             if _override_matches_multiplier(r, golden, param, mult):
+                if not _valid_sharpe(r):
+                    continue
                 if golden_sharpe not in (0, 0.0):
                     fracs.append(r["sharpe"] / golden_sharpe)
-    return float(np.mean(fracs)) if fracs else float("nan")
+    if not fracs:
+        return {"mean_retained": float("nan"), "worst_retained": float("nan"),
+                "n_rows": 0}
+    return {
+        "mean_retained": float(np.mean(fracs)),
+        "worst_retained": float(np.min(fracs)),
+        "n_rows": len(fracs),
+    }
 
 
 def degradation_table(rows: list[dict], golden: dict,
@@ -210,11 +245,15 @@ def degradation_table(rows: list[dict], golden: dict,
 
     Columns: param, override_value, sharpe, retained_sharpe, max_drawdown,
     annualized_return. Only OAT rows (param is not None) are included.
+    Rows whose Sharpe is None or NaN (errored runs) are silently skipped so
+    division by golden_sharpe never operates on bad values.
     """
     recs = []
     for r in rows:
         p = r.get("param")
         if p is None:
+            continue
+        if not _valid_sharpe(r):
             continue
         recs.append({
             "param": p,
@@ -229,13 +268,24 @@ def degradation_table(rows: list[dict], golden: dict,
 
 
 def cliff_list(rows: list[dict], golden: dict, golden_sharpe: float) -> list[str]:
-    """Params whose +/-10% (x0.9 or x1.1) move loses > CLIFF_LOSS_FRACTION of Sharpe."""
+    """Params whose +/-10% (x0.9 or x1.1) move loses > CLIFF_LOSS_FRACTION of Sharpe.
+
+    Rows whose Sharpe is None or NaN (errored runs) are excluded before computing
+    the retained fraction so division is never attempted on bad values.
+
+    Note: retained-fraction semantics are fragile when golden Sharpe is near
+    zero/sub-1 (ours is ~0.8): a negative perturbed Sharpe yields retained < 0,
+    which is directionally correct for cliff detection but not a clean
+    "percentage".
+    """
     cliffs = set()
     for param, gval in perturbable_params(golden).items():
         for mult in _TEN_PCT_MULTIPLIERS:
             for r in _rows_for_param(rows, param):
                 if _override_matches_multiplier(r, golden, param, mult):
                     if golden_sharpe in (0, 0.0):
+                        continue
+                    if not _valid_sharpe(r):
                         continue
                     retained = r["sharpe"] / golden_sharpe
                     if retained < (1.0 - CLIFF_LOSS_FRACTION):
@@ -247,11 +297,19 @@ def joint_stats(rows: list[dict], golden_sharpe: float, bins: int = 20) -> dict:
     """Histogram of joint-sample Sharpe + golden config's percentile within it.
 
     golden_percentile = fraction of joint samples with Sharpe strictly below the
-    golden Sharpe, as a percentage. NaN percentile when no joint rows exist.
+    golden Sharpe, as a percentage. NaN percentile when no valid joint rows exist.
+
+    ``count`` is the number of valid (finite Sharpe) rows used; ``errored`` is
+    the number of joint rows that were excluded due to None/NaN Sharpe — a
+    non-zero errored count means the campaign had failures that would silently
+    skew the distribution if not excluded.
     """
-    sharpes = [r["sharpe"] for r in rows if r.get("kind") == "joint"]
+    joint_rows = [r for r in rows if r.get("kind") == "joint"]
+    valid_rows = [r for r in joint_rows if _valid_sharpe(r)]
+    errored = len(joint_rows) - len(valid_rows)
+    sharpes = [r["sharpe"] for r in valid_rows]
     if not sharpes:
-        return {"count": 0, "golden_percentile": float("nan"),
+        return {"count": 0, "errored": errored, "golden_percentile": float("nan"),
                 "hist_counts": [], "hist_edges": [],
                 "min": float("nan"), "max": float("nan"), "median": float("nan")}
     arr = np.asarray(sharpes, dtype=float)
@@ -260,6 +318,7 @@ def joint_stats(rows: list[dict], golden_sharpe: float, bins: int = 20) -> dict:
     counts, edges = np.histogram(arr, bins=bins)
     return {
         "count": len(arr),
+        "errored": errored,
         "golden_percentile": pct,
         "hist_counts": counts.tolist(),
         "hist_edges": edges.tolist(),

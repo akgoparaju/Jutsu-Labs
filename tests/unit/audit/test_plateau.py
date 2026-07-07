@@ -174,7 +174,7 @@ def _oat_row(param, override_val, sharpe):
 
 class TestPlateauScore:
     def test_mean_retained_sharpe_fraction_at_20pct(self):
-        """plateau_score = mean(perturbed sharpe / golden sharpe) over the +/-20% (x0.8, x1.2) rows."""
+        """plateau_score returns dict with mean_retained = mean(perturbed/golden) over +/-20% rows."""
         golden = {"sma_fast": 40}
         golden_sharpe = 1.0
         # x0.8 -> sma 32 retains 0.9; x1.2 -> sma 48 retains 0.7; +/-10% ignored for the score
@@ -184,12 +184,30 @@ class TestPlateauScore:
             _oat_row("sma_fast", 44, 0.99),  # x1.1, ignored
             _oat_row("sma_fast", 48, 0.7),
         ]
-        score = plateau_score(rows, golden, golden_sharpe, "sma_fast")
-        assert score == pytest.approx((0.9 + 0.7) / 2)
+        result = plateau_score(rows, golden, golden_sharpe, "sma_fast")
+        assert result["mean_retained"] == pytest.approx((0.9 + 0.7) / 2)
+        assert result["worst_retained"] == pytest.approx(0.7)
+        assert result["n_rows"] == 2
 
     def test_missing_rows_return_nan(self):
         """A parameter with no +/-20% rows collected yields NaN (not a crash)."""
-        assert math.isnan(plateau_score([], {"sma_fast": 40}, 1.0, "sma_fast"))
+        result = plateau_score([], {"sma_fast": 40}, 1.0, "sma_fast")
+        assert math.isnan(result["mean_retained"])
+        assert math.isnan(result["worst_retained"])
+        assert result["n_rows"] == 0
+
+    def test_plateau_score_worst_retained_exposes_one_sided_collapse(self):
+        """worst_retained catches a one-sided collapse that mean_retained would mask."""
+        # sides 1.25 and 0.125 -> mean 0.688 (looks ok), worst 0.125 (clearly bad)
+        golden = {"sma_fast": 40}
+        rows = [
+            _oat_row("sma_fast", 32, 1.25),  # x0.8 side: good
+            _oat_row("sma_fast", 48, 0.125),  # x1.2 side: collapse
+        ]
+        result = plateau_score(rows, golden, 1.0, "sma_fast")
+        assert result["mean_retained"] == pytest.approx((1.25 + 0.125) / 2)
+        assert result["worst_retained"] == pytest.approx(0.125)
+        assert result["n_rows"] == 2
 
 
 class TestDegradationTable:
@@ -242,3 +260,46 @@ class TestJointStats:
         stats = joint_stats([], golden_sharpe=0.6)
         assert stats["count"] == 0
         assert math.isnan(stats["golden_percentile"])
+
+
+def _joint_row(sharpe):
+    return {"hash": "x", "kind": "joint", "param": None, "overrides": {},
+            "sharpe": sharpe, "max_drawdown": -0.2, "annualized_return": 0.1,
+            "total_return": 1.0}
+
+
+class TestNoneSharpeGuard:
+    def test_none_sharpe_rows_are_excluded_not_crashing(self):
+        """OAT row with sharpe None + a valid pair: plateau_score/degradation_table/cliff_list don't raise; None row absent from outputs."""
+        golden = {"sma_fast": 40}
+        bad_row = _oat_row("sma_fast", 32, None)
+        bad_row["sharpe"] = None
+        good_row = _oat_row("sma_fast", 48, 0.8)
+        rows = [bad_row, good_row]
+
+        # plateau_score: only the good x1.2 row counts
+        result = plateau_score(rows, golden, 1.0, "sma_fast")
+        assert result["n_rows"] == 1
+        assert result["mean_retained"] == pytest.approx(0.8)
+
+        # degradation_table: None-sharpe row excluded
+        tbl = degradation_table(rows, golden, golden_sharpe=1.0)
+        assert len(tbl) == 1
+        assert tbl.iloc[0]["override_value"] == 48
+
+        # cliff_list: no crash (the bad row is skipped)
+        cliffs = cliff_list(rows, golden, golden_sharpe=1.0)
+        assert isinstance(cliffs, list)
+
+    def test_joint_stats_reports_errored_count(self):
+        """3 joint rows, one sharpe None, one NaN -> count == 1, errored == 2, percentile over valid only."""
+        rows = [
+            _joint_row(0.5),   # valid
+            _joint_row(None),  # errored
+            _joint_row(float("nan")),  # errored
+        ]
+        stats = joint_stats(rows, golden_sharpe=0.6)
+        assert stats["count"] == 1
+        assert stats["errored"] == 2
+        # valid sample 0.5 < golden 0.6, so 1/1 strictly below -> 100th pct
+        assert stats["golden_percentile"] == pytest.approx(100.0)
