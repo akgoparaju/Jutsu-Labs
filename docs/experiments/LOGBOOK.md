@@ -25,7 +25,7 @@ in-sample numbers optimistic by construction.
 |----|------|----------|--------------------|
 | EXP-001 | 2026-07-06 | What are the honest baseline numbers, and does live match backtest? | Full-period Sharpe ~0.8 (not 2.8); initial 8.6% fidelity alarm raised |
 | EXP-002 | 2026-07-06 | Are the 8 logic-mismatch days a production bug? | No — audit artifact (information-set mismatch); true divergence 1.1% |
-| EXP-003 | 2026-07-07 | How robust is the golden config to small parameter perturbations (plateau vs cliff)? | Plateau, no cliffs; golden at 48th pct of own neighborhood; vol-regime channel most sensitive (v3_5b done; v3_5d running) |
+| EXP-003 | 2026-07-07 | How robust is the golden config to small parameter perturbations (plateau vs cliff)? | Plateau, no cliffs (both strategies); golden at 48th/57.5th pct of own neighborhood; vol-regime channel most sensitive |
 
 ---
 
@@ -207,7 +207,22 @@ collapse to duplicates and dedup by hash), 0 errored, campaign 2026-07-07
   in-sample runs of this magnitude are within selection noise — adopting them
   would repeat the exact mistake EXP-001 exposed. They are candidates for
   Module-1 WFO validation only.
-- v3_5d campaign launched 2026-07-07 (same protocol); results to be appended.
+**Results (v3_5d — appended 2026-07-07 after the second campaign: 286 runs, 0
+errored, ~12:05→14:59 PT, workers=4).** Same verdict as v3_5b:
+- **No cliff parameters**; golden Sharpe 0.7872 at the **57.5th percentile** of
+  its own ±15% neighborhood (200 samples: 0.583 / 0.770 / 0.966) — body, not peak.
+- **Identical sensitivity ranking**: `upper_thresh_z` 0.77, `realized_vol_window`
+  0.81, `vol_baseline_window` 0.88, `sma_slow` 0.91 — the same four
+  vol-regime-classification inputs lead on both strategies, independently
+  confirming the load-bearing-subsystem finding.
+- Same bond-SMA/osc_smoothness in-sample improvements appear (bond_sma_fast
+  worst_retained 1.026, i.e. both ±20% sides beat golden) — quarantined, as above.
+- **Measurement gap:** `cell1_exit_confirmation_days` (v3_5d's distinguishing
+  parameter, golden value 2) received ZERO OAT samples — every ±10/20%
+  multiplicative step of an integer at 2 rounds back to 2. This is the known
+  small-integer degeneracy of the multiplicative OAT scheme (flagged in review);
+  measuring it needs explicit step values (1, 3), which the original v3_5d grid
+  search already covered ([1..5]). Noted for any future small-integer parameter.
 
 **Verdict / decisions.**
 1. **The golden config is parameter-robust: a plateau, not a cliff.** In the
@@ -229,12 +244,13 @@ collapse to duplicates and dedup by hash), 0 errored, campaign 2026-07-07
    fragile at sub-1 golden Sharpe; the cliff gate and percentile verdicts are the
    robust reads.
 
-**Artifacts.** Report `claudedocs/audit/2026-07-07/report_plateau_v3_5b.md`;
-campaign JSONL `claudedocs/audit/2026-07-07/v3_5b/campaign_v3_5b.jsonl` (286
-fsync'd rows, seed 42); code merged to main @ `7b4b684` (133 unit tests). Serena:
-`plateau_campaign_phase2_shipped_running_2026-07-07`.
+**Artifacts.** Reports `claudedocs/audit/2026-07-07/report_plateau_v3_5{b,d}.md`;
+campaign JSONLs `claudedocs/audit/2026-07-07/v3_5{b,d}/campaign_v3_5{b,d}.jsonl`
+(286 fsync'd rows each, seed 42); code merged to main @ `7b4b684` (133 unit
+tests). Serena: `plateau_campaign_phase2_shipped_running_2026-07-07`,
+`plateau_campaign_v3_5b_results_2026-07-07`.
 
-**Follow-ups spawned.** v3_5d campaign (running; append results here);
+**Follow-ups spawned.**
 Module 1 WFO stability — the orthogonal question this experiment cannot answer
 (parameters flat *today* may still drift *across time windows*; that is the test
 that finally settles the adaptive-parameters idea); Module 3 DSR/PBO (the 48th
