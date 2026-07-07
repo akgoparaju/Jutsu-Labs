@@ -1,3 +1,25 @@
+#### **Fix: Audit live-recon replays the scheduler's true information set — P0 fidelity alarm resolved as audit artifact** (2026-07-06)
+
+Root-cause investigation of the 8 "logic" mismatch days
+(`claudedocs/audit/2026-07-06/logic_mismatch_rootcause.md`): the replay fed day
+D's own EOD bar, while the live scheduler decides ~15 min after the open of D
+(bars ≤ D-1 + an unpersisted intraday quote). 5/8 days reproduced the scheduler
+exactly when replayed at T-1 (z to ~0.01); market-data tampering ruled out.
+
+- `jutsu_engine/audit/live_recon.py`: `make_replay_day` now loads bars strictly
+  before D; categorical flips whose continuous driver (z_score↔vol_state,
+  t_norm↔trend_state) differs within tolerance are downgraded from `logic` to
+  `timing` (threshold-crossing artifacts of expected intraday-vs-EOD noise).
+- Re-measured fidelity: logic days v3_5b 8 (8.6%) → **1 (1.1%)**, v3_5d → 1
+  (0.8%) — both well under the 5% P0 threshold. **Production scheduler is
+  faithful**; the long-standing z-score discrepancy (2026-02-04) is explained as
+  three different information sets, not bugs.
+- Follow-up (backlog): persist the scheduler's decision-time synthetic bar so
+  future audits can replay the exact information set; `scripts/backfill_regime.py`
+  `recompute_regime` shares the old as_of=D convention (its June backfill rows
+  validated against calm days — acceptable, but use T-1 for future backfills).
+- Tests: 54 (4 new threshold-crossing tests).
+
 #### **Feature: Baseline audit Phase 1 — live reconciliation + era/cell attribution** (2026-07-06)
 
 Added the read-only `jutsu_engine/audit/` analysis package and `jutsu audit` CLI
