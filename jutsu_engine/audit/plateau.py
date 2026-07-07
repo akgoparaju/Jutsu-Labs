@@ -422,12 +422,21 @@ def build_campaign_samples(golden: dict, joint_n: int = DEFAULT_JOINT_SAMPLES,
     return out
 
 
-def load_completed_hashes(path: Path) -> set[str]:
+def load_completed_hashes(path: Path, retry_errors: bool = False) -> set[str]:
     """Set of params-hashes already present in a campaign JSONL file (empty if missing).
 
     Tolerates a truncated/corrupt final line: a process killed mid-write leaves a
     partial JSON fragment, which is silently skipped so a crash never poisons
     resume. Only well-formed rows carrying a `hash` are counted.
+
+    retry_errors:
+        When False (default), ALL rows present in the file are counted as done —
+        including errored rows (error non-None or non-finite sharpe). This is the
+        standard checkpoint-resume behaviour.
+        When True, errored rows are excluded from the completed set so they are
+        re-submitted on the next run. Use ``--retry-errors`` at the CLI when a
+        transient failure (e.g. a DB blip) produced error rows that should be
+        retried without deleting the JSONL.
     """
     path = Path(path)
     if not path.exists():
@@ -439,9 +448,13 @@ def load_completed_hashes(path: Path) -> set[str]:
             if not line:
                 continue
             try:
-                done.add(json.loads(line)["hash"])
+                row = json.loads(line)
+                h = row["hash"]
             except (json.JSONDecodeError, KeyError):
                 continue  # tolerate a partially-written trailing line
+            if retry_errors and _is_error_row(row):
+                continue  # treat errored rows as not-yet-done
+            done.add(h)
     return done
 
 
@@ -590,6 +603,7 @@ def run_campaign(strategy_id: str, golden: dict, campaign_file: Path,
                  start: date | None = None, end: date | None = None,
                  initial_capital: str = "10000",
                  max_consecutive_errors: int = DEFAULT_MAX_CONSECUTIVE_ERRORS,
+                 retry_errors: bool = False,
                  progress=lambda msg: None) -> CampaignResult:
     """Run (or resume) a perturbation campaign, checkpointing each result to JSONL.
 
@@ -631,7 +645,7 @@ def run_campaign(strategy_id: str, golden: dict, campaign_file: Path,
     end = end or date.today()
     samples = build_campaign_samples(golden, joint_n=joint_n, seed=seed,
                                      oat_only=oat_only, params=params)
-    done = load_completed_hashes(campaign_file)
+    done = load_completed_hashes(campaign_file, retry_errors=retry_errors)
     todo = [s for s in samples if s["hash"] not in done]
     progress(f"{len(samples)} samples, {len(done)} already done, "
              f"{len(todo)} to run")
@@ -738,6 +752,7 @@ def run_plateau(strategy_id: str, run_dir: Path,
                 joint_n: int = DEFAULT_JOINT_SAMPLES, seed: int = 0,
                 workers: int = 1, oat_only: bool = False,
                 params: list[str] | None = None,
+                retry_errors: bool = False,
                 progress=lambda msg: None) -> dict:
     """End-to-end Module 2 for one strategy: baseline -> campaign -> analysis summary.
 
@@ -764,7 +779,8 @@ def run_plateau(strategy_id: str, run_dir: Path,
     result = run_campaign(
         strategy_id, golden, campaign_file, joint_n=joint_n, seed=seed,
         workers=workers, oat_only=oat_only, params=params,
-        symbols=symbols, start=start, end=end, progress=progress)
+        symbols=symbols, start=start, end=end,
+        retry_errors=retry_errors, progress=progress)
 
     return summarize_campaign(result, golden_sharpe, golden_metrics)
 

@@ -15,7 +15,10 @@ from jutsu_engine.audit.config import report_output_dir, resolve_strategy
 from jutsu_engine.audit.db import AuditDBUnavailable
 from jutsu_engine.audit.live_recon import run_live_recon
 from jutsu_engine.audit.attribution import run_attribution
-from jutsu_engine.audit.report import render_report, write_report
+from jutsu_engine.audit.report import (
+    render_report, write_report,
+    render_plateau_section, write_plateau_report,
+)
 from jutsu_engine.utils.logging_config import setup_logger
 
 logger = setup_logger('CLI.AUDIT', log_to_console=True)
@@ -116,3 +119,61 @@ def attribution_cmd(strategy):
 def all_cmd(strategy):
     """Run all Phase-1 modules (live-recon + attribution) and write reports."""
     _dispatch(strategy, do_recon=True, do_attr=True)
+
+
+@audit.command("plateau")
+@_STRATEGY_OPTION
+@click.option("--joint-samples", "joint_samples", type=int, default=200,
+              show_default=True, help="Number of joint +/-15% random samples.")
+@click.option("--workers", type=int, default=1, show_default=True,
+              help="Parallel worker processes (1 = serial; each worker builds its "
+                   "own BacktestRunner).")
+@click.option("--oat-only", is_flag=True, default=False,
+              help="Run only one-at-a-time perturbations (skip joint samples).")
+@click.option("--params", multiple=True, default=(),
+              help="Restrict OAT perturbations to these parameter name(s). "
+                   "Repeatable; used for the smoke campaign.")
+@click.option("--seed", type=int, default=42, show_default=True,
+              help="RNG seed for the joint samples (recorded in the report).")
+@click.option("--retry-errors", "retry_errors", is_flag=True, default=False,
+              help="Re-run previously errored checkpoint rows (non-finite sharpe or "
+                   "non-None error) rather than treating them as completed. Use after "
+                   "a transient failure (e.g. DB blip) without deleting the JSONL.")
+def plateau_cmd(strategy, joint_samples, workers, oat_only, params, seed,
+                retry_errors):
+    """Module 2: parameter plateau map (perturbation campaign + robustness report)."""
+    from jutsu_engine.audit import plateau as plateau_mod
+
+    run_dir = report_output_dir()
+    param_list = list(params) or None
+    try:
+        for sid in _strategy_ids(strategy):
+            campaign_file = run_dir / sid / f"campaign_{sid}.jsonl"
+            click.echo(
+                f"[{sid}] plateau campaign "
+                f"(joint={0 if oat_only else joint_samples}, workers={workers}, "
+                f"seed={seed}, retry_errors={retry_errors})\n"
+                f"  campaign file: {campaign_file}"
+            )
+            summary = plateau_mod.run_plateau(
+                sid, run_dir, joint_n=joint_samples, seed=seed, workers=workers,
+                oat_only=oat_only, params=param_list,
+                retry_errors=retry_errors,
+                progress=lambda msg: click.echo(click.style(f"  {msg}", fg="cyan")))
+            md = render_plateau_section(summary)
+            out = write_plateau_report(run_dir, sid, md)
+            click.echo(click.style(f"  report: {out}", fg="green"))
+    except AuditDBUnavailable as e:
+        click.echo(click.style(f"✗ Database unavailable: {e}", fg="red"), err=True)
+        click.echo(click.style(
+            "  The audit is read-only and needs POSTGRES_* env vars (see .env). "
+            "Unit tests run without a DB; this command needs live data.",
+            fg="yellow"), err=True)
+        raise click.Abort()
+    except RuntimeError as e:
+        click.echo(click.style(f"✗ Campaign aborted: {e}", fg="red"), err=True)
+        raise click.Abort()
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Plateau audit failed: {e}", exc_info=True)
+        click.echo(click.style(f"✗ Plateau audit failed: {e}", fg="red"), err=True)
+        raise click.Abort()
