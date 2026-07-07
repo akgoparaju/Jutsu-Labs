@@ -21,6 +21,9 @@ import math
 import random
 import yaml
 
+import numpy as np
+import pandas as pd
+
 from jutsu_engine.audit.config import resolve_strategy
 
 # Infra / symbol / string keys that are numeric-looking or must never perturb.
@@ -163,3 +166,104 @@ def joint_samples(golden: dict, n: int = DEFAULT_JOINT_SAMPLES,
             "hash": params_hash(overrides),
         })
     return out
+
+
+# Spec §6: a param losing >30% of Sharpe at a +/-10% move is a "cliff".
+CLIFF_LOSS_FRACTION: float = 0.30
+# Steps counted as "+/-20%" for plateau_score (multiplicative x0.8 / x1.2).
+_PLATEAU_MULTIPLIERS = (0.8, 1.2)
+_TEN_PCT_MULTIPLIERS = (0.9, 1.1)
+
+
+def _rows_for_param(rows: list[dict], param: str) -> list[dict]:
+    return [r for r in rows if r.get("param") == param]
+
+
+def _override_matches_multiplier(row: dict, golden: dict, param: str,
+                                 mult: float) -> bool:
+    """True if this OAT row's override for `param` equals golden*mult after validity."""
+    gval = golden[param]
+    want = _apply_validity(param, gval * mult, gval)
+    return row["overrides"].get(param) == want
+
+
+def plateau_score(rows: list[dict], golden: dict, golden_sharpe: float,
+                  param: str) -> float:
+    """Mean retained Sharpe fraction at +/-20% (x0.8, x1.2) for one parameter.
+
+    Retained fraction = perturbed_sharpe / golden_sharpe. Returns NaN if no
+    +/-20% rows were collected for the parameter.
+    """
+    prows = _rows_for_param(rows, param)
+    fracs = []
+    for mult in _PLATEAU_MULTIPLIERS:
+        for r in prows:
+            if _override_matches_multiplier(r, golden, param, mult):
+                if golden_sharpe not in (0, 0.0):
+                    fracs.append(r["sharpe"] / golden_sharpe)
+    return float(np.mean(fracs)) if fracs else float("nan")
+
+
+def degradation_table(rows: list[dict], golden: dict,
+                      golden_sharpe: float) -> pd.DataFrame:
+    """Per-param, per-step degradation: retained Sharpe fraction for each OAT row.
+
+    Columns: param, override_value, sharpe, retained_sharpe, max_drawdown,
+    annualized_return. Only OAT rows (param is not None) are included.
+    """
+    recs = []
+    for r in rows:
+        p = r.get("param")
+        if p is None:
+            continue
+        recs.append({
+            "param": p,
+            "override_value": r["overrides"].get(p),
+            "sharpe": r["sharpe"],
+            "retained_sharpe": (r["sharpe"] / golden_sharpe
+                                if golden_sharpe not in (0, 0.0) else float("nan")),
+            "max_drawdown": r["max_drawdown"],
+            "annualized_return": r["annualized_return"],
+        })
+    return pd.DataFrame(recs).sort_values(["param", "override_value"]).reset_index(drop=True)
+
+
+def cliff_list(rows: list[dict], golden: dict, golden_sharpe: float) -> list[str]:
+    """Params whose +/-10% (x0.9 or x1.1) move loses > CLIFF_LOSS_FRACTION of Sharpe."""
+    cliffs = set()
+    for param, gval in perturbable_params(golden).items():
+        for mult in _TEN_PCT_MULTIPLIERS:
+            for r in _rows_for_param(rows, param):
+                if _override_matches_multiplier(r, golden, param, mult):
+                    if golden_sharpe in (0, 0.0):
+                        continue
+                    retained = r["sharpe"] / golden_sharpe
+                    if retained < (1.0 - CLIFF_LOSS_FRACTION):
+                        cliffs.add(param)
+    return sorted(cliffs)
+
+
+def joint_stats(rows: list[dict], golden_sharpe: float, bins: int = 20) -> dict:
+    """Histogram of joint-sample Sharpe + golden config's percentile within it.
+
+    golden_percentile = fraction of joint samples with Sharpe strictly below the
+    golden Sharpe, as a percentage. NaN percentile when no joint rows exist.
+    """
+    sharpes = [r["sharpe"] for r in rows if r.get("kind") == "joint"]
+    if not sharpes:
+        return {"count": 0, "golden_percentile": float("nan"),
+                "hist_counts": [], "hist_edges": [],
+                "min": float("nan"), "max": float("nan"), "median": float("nan")}
+    arr = np.asarray(sharpes, dtype=float)
+    below = float(np.sum(arr < golden_sharpe))
+    pct = below / len(arr) * 100.0
+    counts, edges = np.histogram(arr, bins=bins)
+    return {
+        "count": len(arr),
+        "golden_percentile": pct,
+        "hist_counts": counts.tolist(),
+        "hist_edges": edges.tolist(),
+        "min": float(arr.min()),
+        "max": float(arr.max()),
+        "median": float(np.median(arr)),
+    }

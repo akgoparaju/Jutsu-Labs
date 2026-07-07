@@ -154,3 +154,91 @@ class TestJointSamples:
         s = joint_samples({"sma_fast": 40}, n=1, seed=9)[0]
         assert s["kind"] == "joint"
         assert len(s["hash"]) == 16
+
+
+from jutsu_engine.audit.plateau import (
+    CLIFF_LOSS_FRACTION,
+    cliff_list,
+    degradation_table,
+    joint_stats,
+    plateau_score,
+)
+
+
+def _oat_row(param, override_val, sharpe):
+    ov = {param: override_val}
+    return {"hash": params_hash(ov), "kind": "oat", "param": param,
+            "overrides": ov, "sharpe": sharpe, "max_drawdown": -0.2,
+            "annualized_return": 0.1, "total_return": 1.0}
+
+
+class TestPlateauScore:
+    def test_mean_retained_sharpe_fraction_at_20pct(self):
+        """plateau_score = mean(perturbed sharpe / golden sharpe) over the +/-20% (x0.8, x1.2) rows."""
+        golden = {"sma_fast": 40}
+        golden_sharpe = 1.0
+        # x0.8 -> sma 32 retains 0.9; x1.2 -> sma 48 retains 0.7; +/-10% ignored for the score
+        rows = [
+            _oat_row("sma_fast", 32, 0.9),
+            _oat_row("sma_fast", 36, 0.95),  # x0.9, ignored by the +/-20% score
+            _oat_row("sma_fast", 44, 0.99),  # x1.1, ignored
+            _oat_row("sma_fast", 48, 0.7),
+        ]
+        score = plateau_score(rows, golden, golden_sharpe, "sma_fast")
+        assert score == pytest.approx((0.9 + 0.7) / 2)
+
+    def test_missing_rows_return_nan(self):
+        """A parameter with no +/-20% rows collected yields NaN (not a crash)."""
+        assert math.isnan(plateau_score([], {"sma_fast": 40}, 1.0, "sma_fast"))
+
+
+class TestDegradationTable:
+    def test_one_row_per_param_step_with_retained_fraction(self):
+        """degradation_table returns per-param, per-step retained Sharpe and MAR fractions."""
+        golden = {"sma_fast": 40}
+        rows = [_oat_row("sma_fast", 32, 0.5), _oat_row("sma_fast", 48, 1.0)]
+        tbl = degradation_table(rows, golden, golden_sharpe=1.0)
+        assert set(tbl["param"]) == {"sma_fast"}
+        # retained_sharpe for the sma_fast=32 row = 0.5 / 1.0
+        r = tbl[tbl["override_value"] == 32].iloc[0]
+        assert r["retained_sharpe"] == pytest.approx(0.5)
+
+
+class TestCliffList:
+    def test_flags_params_losing_more_than_30pct_at_10pct(self):
+        """cliff_list flags params whose +/-10% (x0.9 or x1.1) move loses > 30% of Sharpe."""
+        golden = {"sma_fast": 40, "sma_slow": 140}
+        rows = [
+            _oat_row("sma_fast", 36, 0.5),   # x0.9 of 40 -> retains 0.5 -> cliff (>30% loss)
+            _oat_row("sma_fast", 44, 0.95),
+            _oat_row("sma_slow", 126, 0.98), # x0.9 of 140
+            _oat_row("sma_slow", 154, 0.99),
+        ]
+        cliffs = cliff_list(rows, golden, golden_sharpe=1.0)
+        assert "sma_fast" in cliffs
+        assert "sma_slow" not in cliffs
+
+    def test_cliff_threshold_constant(self):
+        """The cliff loss threshold is 30% (spec §6)."""
+        assert CLIFF_LOSS_FRACTION == 0.30
+
+
+class TestJointStats:
+    def test_histogram_and_golden_percentile(self):
+        """joint_stats returns histogram bins and the golden Sharpe's percentile in the joint sample."""
+        rows = [{"hash": str(i), "kind": "joint", "param": None, "overrides": {},
+                 "sharpe": s, "max_drawdown": -0.2, "annualized_return": 0.1,
+                 "total_return": 1.0}
+                for i, s in enumerate([0.2, 0.4, 0.6, 0.8, 1.0])]
+        stats = joint_stats(rows, golden_sharpe=0.6, bins=5)
+        assert stats["count"] == 5
+        # golden 0.6: two of five samples (0.2, 0.4) are strictly below -> 40th pct
+        assert stats["golden_percentile"] == pytest.approx(40.0)
+        assert len(stats["hist_counts"]) == 5
+        assert len(stats["hist_edges"]) == 6
+
+    def test_empty_joint_returns_nan_percentile(self):
+        """No joint rows -> count 0 and NaN percentile (graceful)."""
+        stats = joint_stats([], golden_sharpe=0.6)
+        assert stats["count"] == 0
+        assert math.isnan(stats["golden_percentile"])
