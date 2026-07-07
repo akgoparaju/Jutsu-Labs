@@ -23,6 +23,8 @@ import os
 import random
 import shutil
 import tempfile
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -32,7 +34,7 @@ import yaml
 import numpy as np
 import pandas as pd
 
-from jutsu_engine.audit.config import resolve_strategy
+from jutsu_engine.audit.config import ATTRIBUTION_START, resolve_strategy
 
 # Infra / symbol / string keys that are numeric-looking or must never perturb.
 # Booleans are dropped separately by an isinstance(v, bool) guard (bool is int).
@@ -518,3 +520,195 @@ def run_one_sample(strategy_id: str, sample: dict, symbols: list[str],
         "total_return": results.get("total_return") if error is None else None,
         "error": error,
     }
+
+
+def default_workers() -> int:
+    """Default worker count: min(4, cpu_count). Parallelism is opt-in via --workers."""
+    return min(4, os.cpu_count() or 1)
+
+
+# Consecutive errored-row limit before the campaign aborts. A DB outage (or any
+# systemic failure) makes EVERY sample error out; without this breaker a run
+# would burn through all 400+ samples in minutes, checkpointing them all as
+# errored rows that resume would then treat as "completed" and never retry.
+DEFAULT_MAX_CONSECUTIVE_ERRORS: int = 10
+
+
+@dataclass
+class CampaignResult:
+    """Everything the report needs from a completed (or resumed) campaign."""
+    strategy_id: str
+    seed: int
+    samples: list          # the full sample list (post-filter)
+    rows: list             # result rows collected THIS run + reloaded from file
+    campaign_file: str
+    golden: dict
+
+
+def _reload_rows(path: Path) -> list[dict]:
+    """Load all result rows from a campaign JSONL (for resume + report).
+
+    Tolerates a truncated/corrupt final line (crash mid-write): malformed lines
+    are silently skipped, mirroring load_completed_hashes.
+    """
+    path = Path(path)
+    if not path.exists():
+        return []
+    rows = []
+    with open(path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return rows
+
+
+def _is_error_row(row: dict) -> bool:
+    """True if a result row represents a failed run (no finite Sharpe).
+
+    A row is an error when it carries a non-null `error` string OR its `sharpe`
+    is not a finite number — either way the analysis layer excludes it, and the
+    circuit breaker counts it toward the consecutive-error limit.
+    """
+    if row.get("error") is not None:
+        return True
+    return not _valid_sharpe(row)
+
+
+def run_campaign(strategy_id: str, golden: dict, campaign_file: Path,
+                 joint_n: int = DEFAULT_JOINT_SAMPLES, seed: int = 0,
+                 workers: int = 1, oat_only: bool = False,
+                 params: list[str] | None = None,
+                 run_fn=run_one_sample, symbols: list[str] | None = None,
+                 start: date | None = None, end: date | None = None,
+                 initial_capital: str = "10000",
+                 max_consecutive_errors: int = DEFAULT_MAX_CONSECUTIVE_ERRORS,
+                 progress=lambda msg: None) -> CampaignResult:
+    """Run (or resume) a perturbation campaign, checkpointing each result to JSONL.
+
+    Behaviour:
+      - Samples already present in `campaign_file` (by hash) are skipped (resume),
+        in BOTH the serial and parallel paths, before any work is submitted.
+      - workers <= 1 runs serially; workers > 1 uses a ProcessPoolExecutor (each
+        worker builds its own BacktestRunner + strategy — verified safe).
+      - Every completed sample is appended immediately so a crash loses at most
+        the in-flight backtests, never a finished one.
+
+    Circuit breaker (systemic-failure guard):
+      - If `max_consecutive_errors` samples come back as errored rows in a row
+        (e.g. the market-data DB is down), the campaign ABORTS with a RuntimeError
+        instead of quietly checkpointing every remaining sample as an error. A
+        single success resets the counter. The breaker applies to both paths; in
+        the parallel path it stops submitting new work and cancels pending futures,
+        while still writing every already-completed row before raising. Note:
+        errored rows that DID get checkpointed are treated as completed on resume
+        (they are not retried) — investigate and delete them before rerunning.
+
+    SINGLE-WRITER INVARIANT (do not move into workers):
+      - ALL append_result calls happen here, in the parent/orchestrator process.
+        Workers (and the injected run_fn) ONLY compute and RETURN a row; they must
+        never write the JSONL themselves. A single writer is what makes the
+        concurrent parallel path's appends safe (no interleaved partial lines from
+        competing processes). Moving append_result into a worker would break this.
+
+    run_fn injectability & the spawn boundary:
+      - run_fn is injectable so the orchestration logic is unit-testable without a
+        DB. In the parallel path (workers > 1) the callable is submitted across a
+        process boundary, which on macOS uses `spawn` and therefore requires a
+        PICKLABLE callable. The default `run_one_sample` is module-level and
+        picklable; a test/closure run_fn is only spawn-safe if it too is a
+        module-level function. Non-picklable closures must use workers == 1.
+    """
+    campaign_file = Path(campaign_file)
+    start = start or ATTRIBUTION_START
+    end = end or date.today()
+    samples = build_campaign_samples(golden, joint_n=joint_n, seed=seed,
+                                     oat_only=oat_only, params=params)
+    done = load_completed_hashes(campaign_file)
+    todo = [s for s in samples if s["hash"] not in done]
+    progress(f"{len(samples)} samples, {len(done)} already done, "
+             f"{len(todo)} to run")
+
+    breaker_msg = (
+        f"aborting: {max_consecutive_errors} consecutive errored runs — "
+        "systemic failure (DB down?). Completed-as-error rows are checkpointed "
+        "and will NOT be retried on resume; investigate (and delete them) before "
+        "rerunning."
+    )
+
+    if workers <= 1:
+        consecutive_errors = 0
+        for i, sample in enumerate(todo, 1):
+            row = run_fn(strategy_id, sample, symbols or [], start, end,
+                         initial_capital)
+            # SINGLE-WRITER INVARIANT: the parent appends; run_fn never writes.
+            append_result(campaign_file, row)
+            if _is_error_row(row):
+                consecutive_errors += 1
+            else:
+                consecutive_errors = 0
+            progress(f"[{i}/{len(todo)}] {sample['kind']} "
+                     f"{sample['param'] or 'joint'} sharpe={row.get('sharpe')}")
+            if consecutive_errors >= max_consecutive_errors:
+                raise RuntimeError(breaker_msg)
+    else:
+        _run_parallel(strategy_id, todo, campaign_file, run_fn, symbols or [],
+                      start, end, initial_capital, workers,
+                      max_consecutive_errors, breaker_msg, progress)
+
+    rows = _reload_rows(campaign_file)
+    return CampaignResult(strategy_id=strategy_id, seed=seed, samples=samples,
+                          rows=rows, campaign_file=str(campaign_file),
+                          golden=golden)
+
+
+def _run_parallel(strategy_id: str, todo: list[dict], campaign_file: Path,
+                  run_fn, symbols: list[str], start: date, end: date,
+                  initial_capital: str, workers: int,
+                  max_consecutive_errors: int, breaker_msg: str,
+                  progress) -> None:
+    """Parallel campaign execution with resume + circuit breaker (parent-only writes).
+
+    Uses an explicit wait(FIRST_COMPLETED) loop rather than as_completed so that
+    when the breaker trips we can stop submitting and cancel not-yet-started
+    futures — every already-completed row is still appended by the parent before
+    the RuntimeError propagates (single-writer invariant preserved).
+    """
+    consecutive_errors = 0
+    done_count = 0
+    total = len(todo)
+    with ProcessPoolExecutor(max_workers=workers) as ex:
+        # run_fn is submitted directly (picklable module-level callable, plain-dict
+        # args) so it is macOS-spawn-safe. append_result is NOT submitted — the
+        # parent is the sole writer.
+        pending = {
+            ex.submit(run_fn, strategy_id, s, symbols, start, end,
+                      initial_capital)
+            for s in todo
+        }
+        aborted = False
+        while pending and not aborted:
+            finished, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for fut in finished:
+                row = fut.result()
+                # SINGLE-WRITER INVARIANT: the parent appends; workers never write.
+                append_result(campaign_file, row)
+                done_count += 1
+                if _is_error_row(row):
+                    consecutive_errors += 1
+                else:
+                    consecutive_errors = 0
+                progress(f"[{done_count}/{total}] done "
+                         f"sharpe={row.get('sharpe')}")
+                if consecutive_errors >= max_consecutive_errors:
+                    aborted = True
+                    break
+        if aborted:
+            # Stop submitting more work and drop any not-yet-started futures.
+            for fut in pending:
+                fut.cancel()
+            raise RuntimeError(breaker_msg)

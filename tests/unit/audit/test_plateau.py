@@ -507,3 +507,154 @@ class TestRunOneSampleErrorHandling:
         run_one_sample("v3_5b", sample, ["QQQ"], date(2010, 2, 1), date(2026, 7, 6))
         after = set(glob.glob(tempfile.gettempdir() + "/plateau_*"))
         assert after == before  # no new plateau_ tempdir left behind
+
+
+from jutsu_engine.audit.plateau import CampaignResult, run_campaign
+
+
+def _fake_run_fn(strategy_id, sample, symbols, start, end, initial_capital="10000"):
+    # deterministic fake: constant successful row for every sample
+    return {
+        "hash": sample["hash"], "kind": sample["kind"], "param": sample["param"],
+        "overrides": sample["overrides"], "sharpe": 0.8,
+        "max_drawdown": -0.5, "annualized_return": 0.23, "total_return": 5.0,
+        "error": None,
+    }
+
+
+def _error_run_fn(strategy_id, sample, symbols, start, end, initial_capital="10000"):
+    # deterministic fake: every sample comes back as an errored row (sharpe=None)
+    return {
+        "hash": sample["hash"], "kind": sample["kind"], "param": sample["param"],
+        "overrides": sample["overrides"], "sharpe": None,
+        "max_drawdown": None, "annualized_return": None, "total_return": None,
+        "error": "RuntimeError: simulated DB outage",
+    }
+
+
+class TestRunCampaign:
+    def test_runs_all_samples_and_checkpoints(self, tmp_path):
+        """run_campaign executes every sample once, appends to JSONL, returns rows."""
+        golden = {"sma_fast": 40, "leverage_scalar": 1.0}
+        camp_file = tmp_path / "campaign_v3_5b.jsonl"
+        res = run_campaign(
+            "v3_5b", golden, camp_file, joint_n=3, seed=1, workers=1,
+            run_fn=_fake_run_fn, symbols=["QQQ"], start=date(2010, 2, 1),
+            end=date(2026, 7, 6),
+        )
+        assert isinstance(res, CampaignResult)
+        assert len(res.rows) == len(res.samples)
+        assert load_completed_hashes(camp_file) == {s["hash"] for s in res.samples}
+        assert res.seed == 1
+
+    def test_resume_skips_completed(self, tmp_path):
+        """A second run over the same file skips already-completed samples (no re-run)."""
+        golden = {"sma_fast": 40}
+        camp_file = tmp_path / "c.jsonl"
+        calls = {"n": 0}
+
+        def counting_run_fn(*a, **k):
+            calls["n"] += 1
+            return _fake_run_fn(*a, **k)
+
+        run_campaign("v3_5b", golden, camp_file, joint_n=0, seed=1, workers=1,
+                     run_fn=counting_run_fn, symbols=["QQQ"], oat_only=True,
+                     start=date(2010, 2, 1), end=date(2026, 7, 6))
+        first = calls["n"]
+        # second invocation: everything already in the file -> zero new run_fn calls
+        run_campaign("v3_5b", golden, camp_file, joint_n=0, seed=1, workers=1,
+                     run_fn=counting_run_fn, symbols=["QQQ"], oat_only=True,
+                     start=date(2010, 2, 1), end=date(2026, 7, 6))
+        assert calls["n"] == first  # no new work
+
+    def test_params_filter_limits_to_smoke_set(self, tmp_path):
+        """params filter + oat_only runs only the named parameter's four OAT samples."""
+        golden = {"sma_fast": 40, "sma_slow": 140}
+        camp_file = tmp_path / "smoke.jsonl"
+        res = run_campaign("v3_5b", golden, camp_file, joint_n=0, seed=1, workers=1,
+                           run_fn=_fake_run_fn, symbols=["QQQ"], oat_only=True,
+                           params=["sma_fast"], start=date(2010, 2, 1),
+                           end=date(2026, 7, 6))
+        assert {r["param"] for r in res.rows} == {"sma_fast"}
+        assert len(res.rows) == 4  # x0.8/x0.9/x1.1/x1.2, none collapse for sma_fast=40
+
+    def test_circuit_breaker_trips_on_consecutive_errors(self, tmp_path):
+        """N consecutive errored runs abort the campaign (guards against a DB outage)."""
+        # Enough perturbable params to produce >N samples of pure OAT.
+        golden = {"sma_fast": 40, "sma_slow": 140, "realized_vol_window": 20,
+                  "vol_baseline_window": 60, "leverage_scalar": 1.0}
+        camp_file = tmp_path / "outage.jsonl"
+        with pytest.raises(RuntimeError, match="consecutive"):
+            run_campaign("v3_5b", golden, camp_file, joint_n=0, seed=1, workers=1,
+                         run_fn=_error_run_fn, symbols=["QQQ"], oat_only=True,
+                         max_consecutive_errors=3, start=date(2010, 2, 1),
+                         end=date(2026, 7, 6))
+        # Exactly the breaker threshold of errored rows were checkpointed before abort.
+        assert len(load_completed_hashes(camp_file)) == 3
+
+    def test_success_resets_consecutive_error_counter(self, tmp_path):
+        """A single success between errors resets the counter so the breaker does not trip."""
+        golden = {"sma_fast": 40, "sma_slow": 140, "realized_vol_window": 20,
+                  "vol_baseline_window": 60, "leverage_scalar": 1.0}
+        camp_file = tmp_path / "flaky.jsonl"
+        calls = {"n": 0}
+
+        def flaky_run_fn(strategy_id, sample, *a, **k):
+            # error, error, SUCCESS, error, error, ... — never 3 errors in a row
+            calls["n"] += 1
+            if calls["n"] % 3 == 0:
+                return _fake_run_fn(strategy_id, sample, *a, **k)
+            return _error_run_fn(strategy_id, sample, *a, **k)
+
+        # With threshold 3 and a success every third call, the breaker must not trip.
+        res = run_campaign("v3_5b", golden, camp_file, joint_n=0, seed=1, workers=1,
+                           run_fn=flaky_run_fn, symbols=["QQQ"], oat_only=True,
+                           max_consecutive_errors=3, start=date(2010, 2, 1),
+                           end=date(2026, 7, 6))
+        # Campaign completed (no exception); all samples checkpointed.
+        assert len(res.rows) == len(res.samples)
+
+    def test_single_writer_invariant_serial(self, tmp_path):
+        """The orchestrator (not run_fn) is the sole writer of the JSONL.
+
+        run_fn only returns rows; it must never touch the campaign file. We assert
+        the file is empty until the orchestrator appends, by having run_fn observe
+        the on-disk state at call time (it stays empty of that sample's own hash).
+        """
+        golden = {"sma_fast": 40}
+        camp_file = tmp_path / "sw.jsonl"
+        observed = []
+
+        def observing_run_fn(strategy_id, sample, *a, **k):
+            # run_fn sees the file WITHOUT its own row (parent writes after return).
+            done_now = load_completed_hashes(camp_file)
+            observed.append(sample["hash"] in done_now)
+            return _fake_run_fn(strategy_id, sample, *a, **k)
+
+        run_campaign("v3_5b", golden, camp_file, joint_n=0, seed=1, workers=1,
+                     run_fn=observing_run_fn, symbols=["QQQ"], oat_only=True,
+                     start=date(2010, 2, 1), end=date(2026, 7, 6))
+        # No run_fn call ever saw its own hash already written -> parent is sole writer.
+        assert observed and not any(observed)
+
+    def test_parallel_path_runs_and_resumes(self, tmp_path):
+        """workers>1 uses ProcessPoolExecutor with a picklable module-level run_fn.
+
+        The parallel path submits the given run_fn directly, so it must be a
+        module-level (picklable) function to cross the macOS spawn boundary.
+        _fake_run_fn is module-level and DB-free, so it is spawn-safe. Every
+        sample must land, and a second parallel run must do zero new work.
+        """
+        golden = {"sma_fast": 40}
+        camp_file = tmp_path / "par.jsonl"
+        res = run_campaign("v3_5b", golden, camp_file, joint_n=0, seed=1,
+                           workers=2, run_fn=_fake_run_fn, symbols=["QQQ"],
+                           oat_only=True, start=date(2010, 2, 1),
+                           end=date(2026, 7, 6))
+        assert load_completed_hashes(camp_file) == {s["hash"] for s in res.samples}
+        # Resume: a second parallel run over the same file does zero new work.
+        res2 = run_campaign("v3_5b", golden, camp_file, joint_n=0, seed=1,
+                            workers=2, run_fn=_fake_run_fn, symbols=["QQQ"],
+                            oat_only=True, start=date(2010, 2, 1),
+                            end=date(2026, 7, 6))
+        assert len(res2.rows) == len(res2.samples)

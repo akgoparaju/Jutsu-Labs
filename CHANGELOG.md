@@ -1,3 +1,33 @@
+#### **Feature: Audit Phase 2 plateau — campaign orchestrator with resume, opt-in workers, circuit breaker (Task 7)** (2026-07-07)
+
+Added `run_campaign` to `jutsu_engine/audit/plateau.py`: the top-level driver that
+builds the sample list, skips already-checkpointed hashes (resume), runs each
+sample (serially or via `ProcessPoolExecutor`), appends each result row to the
+JSONL as it lands, and returns a `CampaignResult`. The DB-touching path stays
+unit-testable by injecting a fake `run_fn`.
+
+- `jutsu_engine/audit/plateau.py`: new `CampaignResult` dataclass, `default_workers`
+  (`min(4, cpu_count)`), `_reload_rows`, `_is_error_row`, `run_campaign`, and the
+  `_run_parallel` helper. Added `DEFAULT_MAX_CONSECUTIVE_ERRORS = 10`.
+- **Consecutive-error circuit breaker** (added beyond the plan per Task-6 review):
+  N consecutive errored rows (default 10, `max_consecutive_errors` param) abort the
+  campaign with a `RuntimeError` — a DB outage would otherwise checkpoint all 400+
+  samples as errors that resume then treats as completed. Any success resets the
+  counter. Applies to both paths; the parallel path stops submitting + cancels
+  pending futures, writing every already-completed row before raising.
+- **Single-writer invariant**: ALL `append_result` calls happen in the parent
+  orchestrator; workers/`run_fn` only compute and return rows. Stated explicitly in
+  the docstring as an invariant that must not move into workers (single-writer is
+  what makes the concurrent parallel appends safe).
+- Parallel path submits the module-level picklable `run_fn` with plain-dict args
+  (macOS-spawn-safe); the docstring documents that a closure `run_fn` requires
+  `workers == 1`.
+- `tests/unit/audit/test_plateau.py`: `TestRunCampaign` (7 tests) — runs+checkpoints,
+  resume skips completed, params-filter smoke set, breaker trips at N (serial),
+  success resets the counter, single-writer invariant (run_fn never sees its own
+  row on disk), parallel path runs + resumes via real spawn (DB-free fake run_fn).
+- Tests: audit + cli suite 95 → 102 (+7).
+
 #### **Feature: Audit Phase 2 plateau — param-override strategy builder (Task 5)** (2026-07-07)
 
 Added `build_overridden_strategy` to `jutsu_engine/audit/plateau.py`, the
