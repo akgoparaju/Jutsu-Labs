@@ -72,6 +72,58 @@ report that steers strategy R&D).
 
 ---
 
+#### **Data: Reverse-fill production after Schwab token outage (2026-06-19 → 06-26)** (2026-06-27)
+
+The Schwab API credentials lapsed for ~1.5 weeks; the scheduler stopped writing
+regime after **06-18** and `refresh` snapshots froze equity at the last-known
+value (`10871.42` for v3_5b) from **06-22** on. Three production tables were stale
+and were reverse-filled (DB: `tower.local:5423/jutsu_labs`). All writes backed up.
+
+- **market_data (1D)**: synced the 6 strategy symbols (`QQQ TLT TQQQ PSQ TMF TMV`)
+  via `jutsu sync` for **06-18 → 06-25**. **06-26 not yet available**: Schwab labels
+  each daily bar with the *next trading day's* date, so the 06-26 session bar appears
+  only once 06-29 exists; it fills on the next prod sync (Mon 06-29).
+- **regime (performance_snapshots)**: `scripts/backfill_regime.py --apply` recomputed
+  categorical regime for **06-05, 06-22..06-25** (×2 strategies = 10 rows; validate 12/12).
+  **06-26 also filled** (cell-4/Sideways/High) — its real close is already the latest DB bar
+  (the date-shift stores real 06-26 close under DB trade_date 06-25), so `recompute_regime`
+  through 06-26 resolves it now; same value as 06-25, consistent with 6 prior sessions.
+  z_score/t_norm left NULL (categorical-only).
+- **daily_performance**: reconstructed **06-22 → 06-26** for v3_5b, v3_5d, and baseline
+  QQQ (now continuous, 140 rows each). The frozen snapshots could not be naively
+  finalized (flat curve), so equity was rebuilt from held positions × **real EOD close**:
+  `equity = cash + TMF_qty × TMF_close` (only TMF held; v3_5b 122sh/$6435.50,
+  v3_5d 119sh/$6249.745200; positions frozen — regime stayed cell-4 so no rebalance).
+  Baseline = buy-and-hold chained from 06-18 via real QQQ closes. KPIs continued from
+  06-18 via `update_kpis_incremental` (production Welford). Regime present for all gap days
+  (incl. 06-26); also propagated 06-05 regime into daily_performance (KPIs untouched).
+  Result: **no NULL-regime strategy rows remain**.
+- **snapshots (latest per gap day) equity/positions_value/baseline_value** updated to the
+  real values so the live view is correct and any EOD startup-recovery re-run reproduces
+  correct numbers (recovery re-runs the last 7 trading days off snapshots).
+
+**Critical convention note:** `market_data` stores daily bars on a **1-trading-day-shifted**
+date label vs the real/snapshot close convention (DB trade_date T close == Schwab label T+1).
+Regime uses market_data consistently (so it validated fine), but **equity valuation must use
+the Schwab-label / snapshot real closes** — using market_data closes mis-dates equity by a day.
+
+**Latent bugs found in `scripts/backfill_daily_performance.py` (NOT used here, NOT run):**
+(1) `get_daily_equities` uses `func.max(total_equity)` (daily *max*) instead of the *last*
+(closing) snapshot — a full reprocess corrupts historical equity to intraday highs;
+(2) no trading-day filter, so stray weekend/holiday refresh snapshots create bogus rows.
+Both should be fixed (with tests) before that script is run again.
+
+Backups (revert paths): `claudedocs/daily_performance_backup_20260627.json` (full table, 408),
+`claudedocs/regime_backfill_backup_20260627.json`, `claudedocs/snapshot_equity_backfill_backup_20260627.json`,
+`claudedocs/regime_0626_backfill_backup_20260627.json`.
+
+**Follow-ups:** prod scheduler confirmed running with the fresh token (resumes live writes).
+On the next sync (Mon 06-29) the DB also gets a `market_data` trade_date-06-26 bar (cosmetic;
+regime/daily_perf already complete). Fix the two `backfill_daily_performance.py` bugs before reuse.
+
+---
+
+
 #### **Fix: Portfolio snapshot CSVs world-readable (0644) for Syncthing** (2026-06-08)
 
 The atomic CSV writer used `tempfile.mkstemp`, which creates files mode `0600`
