@@ -25,7 +25,7 @@ in-sample numbers optimistic by construction.
 |----|------|----------|--------------------|
 | EXP-001 | 2026-07-06 | What are the honest baseline numbers, and does live match backtest? | Full-period Sharpe ~0.8 (not 2.8); initial 8.6% fidelity alarm raised |
 | EXP-002 | 2026-07-06 | Are the 8 logic-mismatch days a production bug? | No — audit artifact (information-set mismatch); true divergence 1.1% |
-| EXP-003 | 2026-07-07 | How robust is the golden config to small parameter perturbations (plateau vs cliff)? | Campaign pending — filled in after the overnight run |
+| EXP-003 | 2026-07-07 | How robust is the golden config to small parameter perturbations (plateau vs cliff)? | Plateau, no cliffs; golden at 48th pct of own neighborhood; vol-regime channel most sensitive (v3_5b done; v3_5d running) |
 
 ---
 
@@ -83,6 +83,10 @@ Decision framework: spec `docs/superpowers/specs/2026-07-06-baseline-audit-desig
 **Artifacts.** Reports `claudedocs/audit/2026-07-06/report_v3_5{b,d}.md`; code merged
 to main (`feature/baseline-audit`, 19 commits, HEAD then `15d5e9e`); 50 unit tests.
 Serena: `baseline_audit_phase1_implementation_2026-07-06`.
+*Provenance note (added 2026-07-07): the recon sections of those report files were
+regenerated after the EXP-002 information-set fix and now show the corrected 1.1%
+fidelity numbers; the initial 8.6%-alarm figures are preserved only in this entry
+(claudedocs is not under version control).*
 
 **Follow-ups spawned.** EXP-002 (root-cause); treasury qty×Δprice isolation;
 warmup-row "unknown"-era investigation; Modules 2 (plateau), 1 (WFO stability),
@@ -180,19 +184,61 @@ checkpoint/resume campaign runner + pure analysis) and `jutsu audit plateau`.
   then `--strategy v3_5d`. Smoke validation:
   `jutsu audit plateau --strategy v3_5b --oat-only --params sma_fast`.
 
-**Results.** _Campaign pending — filled in after the overnight run._
-(Expected fields once run: per-parameter plateau scores; cliff list; joint-sample
-Sharpe histogram; golden Sharpe percentile within the joint distribution; the
-plateau-vs-cliff verdict per strategy.)
+**Results (v3_5b — 286 runs: golden + 86 OAT + 200 joint (some joint draws
+collapse to duplicates and dedup by hash), 0 errored, campaign 2026-07-07
+09:26→11:55 PT, workers=4).**
+- **No cliff parameters.** Nothing loses >30% of Sharpe at ±10% (cliff list empty).
+- **Golden Sharpe 0.8051 sits at the 48th percentile of its own ±15% joint
+  neighborhood** (200 samples: min 0.578 / median 0.809 / max 0.991) — squarely in
+  the body of the distribution, not an isolated peak. Grid-search selection did
+  NOT overfit to a sharp parameter optimum.
+- **The volatility-regime classification channel is the most sensitive subsystem.**
+  Worst-side retention ranking (worst_retained at ±20%): `upper_thresh_z` 0.79
+  (Sharpe 0.636 when 1.0→0.8 — the deadband narrows and High-vol triggers early),
+  `realized_vol_window` 0.83, `vol_baseline_window` 0.89, `sma_slow` 0.92. The
+  top four sensitivity slots are all regime-classification inputs.
+- **Six knobs are inert** (retained ≈ 1.000 across ±20%): `process_noise_1`,
+  `strength_smoothness`, `w_PSQ_max` (PSQ is disabled), `rebalance_threshold`,
+  `leverage_scalar`, `lower_thresh_z` — dead dimensions in every past grid search.
+- **Several single perturbations improve in-sample Sharpe modestly (+3–9%)** and
+  some also cut MaxDD: `bond_sma_fast` 24 (Sharpe 0.857, MaxDD −0.42 vs golden
+  −0.51), `bond_sma_slow` 66 (0.875), `osc_smoothness` 12 (0.852),
+  `vol_crush_threshold` −0.12 (0.856). **Quarantined**: single full-period
+  in-sample runs of this magnitude are within selection noise — adopting them
+  would repeat the exact mistake EXP-001 exposed. They are candidates for
+  Module-1 WFO validation only.
+- v3_5d campaign launched 2026-07-07 (same protocol); results to be appended.
 
-**Verdict / decisions.** _Pending campaign results._ (Interpretation contract:
-cliff parameters -> flag for robustness work before further optimization of those
-parameters, spec §10; a golden Sharpe far in the right tail of its own neighborhood
--> treat the config as a fragile local peak.)
+**Verdict / decisions.**
+1. **The golden config is parameter-robust: a plateau, not a cliff.** In the
+   parameter dimension, grid-search did not fit noise (48th percentile of its own
+   neighborhood). The config's fragility, established in EXP-001, lives in the
+   time dimension (era dependence), not the parameter dimension.
+2. **Parameter tuning upside is small and bounded** — the best config in the
+   entire ±15% neighborhood reaches Sharpe 0.99 vs golden 0.81, and that gap is
+   partly noise. Confirms EXP-001 decision: R&D effort belongs in
+   regime-transition quality, not parameter search. An adaptive parameter-tuning
+   agent has even less to chase than previously argued: the local surface is flat.
+3. **The sensitivity ranking independently re-identifies the volatility
+   classifier as the load-bearing subsystem** (upper_thresh_z and the vol windows
+   dominate). This is the third independent signal (after EXP-001's cell-4/6
+   losses and 2022 failure) pointing at regime classification as the improvement
+   target.
+4. Drop the six inert knobs from any future grid search (pure compute waste).
+5. Interpretation caveat carried from the report: retained-fraction semantics are
+   fragile at sub-1 golden Sharpe; the cliff gate and percentile verdicts are the
+   robust reads.
 
-**Artifacts.** Code on `feature/audit-phase2-plateau`; reports (once run)
-`claudedocs/audit/2026-07-06/report_plateau_v3_5{b,d}.md`; campaign JSONL
-`claudedocs/audit/2026-07-06/v3_5{b,d}/campaign_v3_5{b,d}.jsonl`.
+**Artifacts.** Report `claudedocs/audit/2026-07-07/report_plateau_v3_5b.md`;
+campaign JSONL `claudedocs/audit/2026-07-07/v3_5b/campaign_v3_5b.jsonl` (286
+fsync'd rows, seed 42); code merged to main @ `7b4b684` (133 unit tests). Serena:
+`plateau_campaign_phase2_shipped_running_2026-07-07`.
 
-**Follow-ups spawned.** _TBD after results._ (Anticipated: Module 1 WFO stability,
-Module 3 DSR/PBO per spec §14.)
+**Follow-ups spawned.** v3_5d campaign (running; append results here);
+Module 1 WFO stability — the orthogonal question this experiment cannot answer
+(parameters flat *today* may still drift *across time windows*; that is the test
+that finally settles the adaptive-parameters idea); Module 3 DSR/PBO (the 48th
+percentile lowers the prior of parameter overfit, but the trial-count correction
+for the v2.x→v3.5b search history is still unmeasured); WFO-validate the
+quarantined bond-SMA / vol-crush / osc_smoothness candidates before anyone is
+tempted to adopt them.
