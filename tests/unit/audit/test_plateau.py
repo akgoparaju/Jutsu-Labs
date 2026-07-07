@@ -1,6 +1,7 @@
 # tests/unit/audit/test_plateau.py
 import json
 import math
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -360,3 +361,149 @@ class TestDecimalParamsDriftGuard:
             f"  in live, missing from DECIMAL_PARAMS: {live_names - DECIMAL_PARAMS}\n"
             f"  in DECIMAL_PARAMS, missing from live: {DECIMAL_PARAMS - live_names}"
         )
+
+
+from jutsu_engine.audit.plateau import (
+    append_result,
+    build_campaign_samples,
+    load_completed_hashes,
+    run_one_sample,
+)
+
+
+class TestCheckpointIO:
+    def test_append_and_reload_hashes(self, tmp_path):
+        """append_result writes a JSONL row; load_completed_hashes reads back its hash."""
+        f = tmp_path / "campaign.jsonl"
+        row = {"hash": "abc123", "kind": "oat", "param": "sma_fast",
+               "overrides": {"sma_fast": 32}, "sharpe": 0.5,
+               "max_drawdown": -0.2, "annualized_return": 0.1, "total_return": 1.0}
+        append_result(f, row)
+        assert load_completed_hashes(f) == {"abc123"}
+
+    def test_missing_file_is_empty_set(self, tmp_path):
+        """load_completed_hashes on a nonexistent file returns an empty set (fresh start)."""
+        assert load_completed_hashes(tmp_path / "nope.jsonl") == set()
+
+    def test_two_rows_two_hashes(self, tmp_path):
+        """Multiple appended rows all resume-skippable by hash."""
+        f = tmp_path / "c.jsonl"
+        append_result(f, {"hash": "h1", "overrides": {}, "sharpe": 1.0,
+                          "max_drawdown": -0.1, "annualized_return": 0.1,
+                          "total_return": 1.0, "kind": "joint", "param": None})
+        append_result(f, {"hash": "h2", "overrides": {}, "sharpe": 1.0,
+                          "max_drawdown": -0.1, "annualized_return": 0.1,
+                          "total_return": 1.0, "kind": "joint", "param": None})
+        assert load_completed_hashes(f) == {"h1", "h2"}
+
+    def test_truncated_trailing_line_is_tolerated(self, tmp_path):
+        """A killed process mid-write leaves a partial final line; resume still reads the good rows.
+
+        Simulates a crash where the last JSONL line was only partially flushed:
+        load_completed_hashes must return the completed hashes and silently drop
+        the corrupt trailing fragment (crash must not poison resume).
+        """
+        f = tmp_path / "c.jsonl"
+        append_result(f, {"hash": "h1", "overrides": {}, "sharpe": 1.0,
+                          "max_drawdown": -0.1, "annualized_return": 0.1,
+                          "total_return": 1.0, "kind": "oat", "param": "sma_fast"})
+        # Append a truncated JSON fragment with no trailing newline (mid-write crash).
+        with open(f, "a") as fh:
+            fh.write('{"hash": "h2", "overrides": {"sma_fast": 3')
+        assert load_completed_hashes(f) == {"h1"}
+        # And a fresh append after the corrupt fragment still recovers cleanly.
+        append_result(f, {"hash": "h3", "overrides": {}, "sharpe": 1.0,
+                          "max_drawdown": -0.1, "annualized_return": 0.1,
+                          "total_return": 1.0, "kind": "oat", "param": "sma_slow"})
+        assert load_completed_hashes(f) == {"h1", "h3"}
+
+
+class TestBuildCampaignSamples:
+    def test_combines_oat_and_joint_deduped(self):
+        """build_campaign_samples concatenates OAT + joint and drops duplicate hashes."""
+        golden = {"sma_fast": 40, "leverage_scalar": 1.0}
+        samples = build_campaign_samples(golden, joint_n=5, seed=1)
+        hashes = [s["hash"] for s in samples]
+        assert len(hashes) == len(set(hashes))  # no dup hashes
+        kinds = {s["kind"] for s in samples}
+        assert kinds == {"oat", "joint"}
+
+    def test_oat_only_flag_skips_joint(self):
+        """oat_only=True yields only one-at-a-time samples."""
+        golden = {"sma_fast": 40}
+        samples = build_campaign_samples(golden, joint_n=5, seed=1, oat_only=True)
+        assert {s["kind"] for s in samples} == {"oat"}
+
+    def test_params_filter_restricts_oat(self):
+        """params filter restricts OAT samples to the named parameters (for the smoke run)."""
+        golden = {"sma_fast": 40, "sma_slow": 140}
+        samples = build_campaign_samples(golden, joint_n=0, seed=1, oat_only=True,
+                                         params=["sma_fast"])
+        assert {s["param"] for s in samples} == {"sma_fast"}
+
+
+class TestRunOneSampleErrorHandling:
+    def test_backtest_failure_records_loud_error_row(self, monkeypatch, tmp_path):
+        """A failed backtest returns a row with sharpe=None + an error string, not an exception.
+
+        The campaign must record failures loudly (so the analysis layer's
+        _valid_sharpe guard excludes them and joint_stats counts them as errored)
+        rather than crashing the whole run.
+        """
+        import jutsu_engine.audit.plateau as plateau_mod
+
+        class _BoomRunner:
+            def __init__(self, config):
+                pass
+
+            def run(self, strategy, output_dir):
+                raise RuntimeError("backtest exploded")
+
+        # BacktestRunner is imported lazily inside run_one_sample; patch it there.
+        import jutsu_engine.application.backtest_runner as br_mod
+        monkeypatch.setattr(br_mod, "BacktestRunner", _BoomRunner)
+        # build_overridden_strategy would need the DB/YAML; stub it too.
+        monkeypatch.setattr(plateau_mod, "build_overridden_strategy",
+                             lambda sid, ov: object())
+
+        sample = {"hash": "boom1", "kind": "oat", "param": "sma_fast",
+                  "overrides": {"sma_fast": 32}}
+        row = run_one_sample("v3_5b", sample, ["QQQ"],
+                             date(2010, 2, 1), date(2026, 7, 6))
+        assert row["hash"] == "boom1"
+        assert row["kind"] == "oat"
+        assert row["sharpe"] is None
+        assert isinstance(row["error"], str)
+        assert "backtest exploded" in row["error"]
+
+        # The loud error survives the JSONL round-trip (append + reload).
+        f = tmp_path / "camp.jsonl"
+        append_result(f, row)
+        reloaded = load_completed_hashes(f)
+        assert reloaded == {"boom1"}
+
+    def test_error_row_leaves_no_tempdir(self, monkeypatch):
+        """Even on backtest failure, the per-run tempdir is cleaned up (no repo litter)."""
+        import glob
+        import tempfile
+
+        import jutsu_engine.audit.plateau as plateau_mod
+
+        class _BoomRunner:
+            def __init__(self, config):
+                pass
+
+            def run(self, strategy, output_dir):
+                raise RuntimeError("boom")
+
+        import jutsu_engine.application.backtest_runner as br_mod
+        monkeypatch.setattr(br_mod, "BacktestRunner", _BoomRunner)
+        monkeypatch.setattr(plateau_mod, "build_overridden_strategy",
+                             lambda sid, ov: object())
+
+        before = set(glob.glob(tempfile.gettempdir() + "/plateau_*"))
+        sample = {"hash": "boom2", "kind": "joint", "param": None,
+                  "overrides": {}}
+        run_one_sample("v3_5b", sample, ["QQQ"], date(2010, 2, 1), date(2026, 7, 6))
+        after = set(glob.glob(tempfile.gettempdir() + "/plateau_*"))
+        assert after == before  # no new plateau_ tempdir left behind

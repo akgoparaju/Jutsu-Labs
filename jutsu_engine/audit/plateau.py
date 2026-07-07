@@ -20,7 +20,11 @@ import importlib
 import json
 import math
 import random
+import shutil
+import tempfile
+from datetime import date, datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 
 import yaml
 
@@ -376,3 +380,139 @@ def build_overridden_strategy(strategy_id: str, overrides: dict):
     strategy = strategy_class(**params)
     strategy.init()
     return strategy
+
+
+# Keys written to (and read back from) the campaign JSONL. `error` is included
+# so a failed run's diagnostic string survives the round-trip; it is None for
+# successful rows (the analysis layer keys off `sharpe`, not `error`).
+_RESULT_KEYS = ("hash", "kind", "param", "overrides",
+                "sharpe", "max_drawdown", "annualized_return", "total_return",
+                "error")
+
+
+def build_campaign_samples(golden: dict, joint_n: int = DEFAULT_JOINT_SAMPLES,
+                           seed: int = 0, oat_only: bool = False,
+                           params: list[str] | None = None) -> list[dict]:
+    """Assemble the full perturbation set: OAT (optionally filtered) + joint.
+
+    `params` restricts the OAT set to the named parameters (used by the smoke
+    run). Duplicate hashes across OAT/joint are dropped, first occurrence wins.
+
+    The golden (unperturbed) baseline is NOT part of this list: it is run
+    separately by run_golden_baseline (Task 9) so its Sharpe is available as the
+    plateau reference before/independently of the perturbation campaign.
+    """
+    oat = oat_samples(golden)
+    if params is not None:
+        oat = [s for s in oat if s["param"] in set(params)]
+    joint = [] if oat_only or joint_n <= 0 else joint_samples(golden, n=joint_n, seed=seed)
+    seen: set = set()
+    out = []
+    for s in oat + joint:
+        if s["hash"] in seen:
+            continue
+        seen.add(s["hash"])
+        out.append(s)
+    return out
+
+
+def load_completed_hashes(path: Path) -> set[str]:
+    """Set of params-hashes already present in a campaign JSONL file (empty if missing).
+
+    Tolerates a truncated/corrupt final line: a process killed mid-write leaves a
+    partial JSON fragment, which is silently skipped so a crash never poisons
+    resume. Only well-formed rows carrying a `hash` are counted.
+    """
+    path = Path(path)
+    if not path.exists():
+        return set()
+    done = set()
+    with open(path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                done.add(json.loads(line)["hash"])
+            except (json.JSONDecodeError, KeyError):
+                continue  # tolerate a partially-written trailing line
+    return done
+
+
+def _ends_with_newline(path: Path) -> bool:
+    """True if the file's final byte is a newline (or the file is empty/absent)."""
+    if not path.exists() or path.stat().st_size == 0:
+        return True
+    with open(path, "rb") as f:
+        f.seek(-1, 2)  # last byte
+        return f.read(1) == b"\n"
+
+
+def append_result(path: Path, row: dict) -> None:
+    """Append one result row as a JSONL line (created if missing). Flushed to disk.
+
+    Flushing per line makes resume crash-safe: a completed backtest is durable
+    the moment its row is written, so a later crash loses at most the in-flight
+    runs, never a finished one.
+
+    If a prior process was killed mid-write and left a partial line with no
+    trailing newline, a leading newline is inserted before the new row so the new
+    (good) row is never concatenated onto — and corrupted by — the dangling
+    fragment. The fragment itself is still dropped on read by load_completed_hashes.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {k: row.get(k) for k in _RESULT_KEYS}
+    prefix = "" if _ends_with_newline(path) else "\n"
+    with open(path, "a") as f:
+        f.write(prefix + json.dumps(record, default=str) + "\n")
+        f.flush()
+
+
+def run_one_sample(strategy_id: str, sample: dict, symbols: list[str],
+                   start: date, end: date,
+                   initial_capital: str = "10000") -> dict:
+    """Run ONE full-period backtest for a perturbation sample; return a result row.
+
+    Picklable (plain args only) so it can run inside a ProcessPoolExecutor worker.
+    Writes ALL CSVs to a throwaway tempdir that is removed afterward, so no per-run
+    regime/portfolio CSVs land in the report directory (spec §6 reduced-output).
+    Reuses BacktestRunner exactly as run_attribution does (attribution.py:234-251).
+
+    A backtest that raises does NOT crash the campaign: the error is recorded
+    LOUDLY as a row with sharpe=None and an `error` string. The analysis layer's
+    _valid_sharpe guard then excludes it and joint_stats counts it as errored,
+    rather than silently skewing the distribution.
+    """
+    from jutsu_engine.application.backtest_runner import BacktestRunner
+
+    config = {
+        "symbols": symbols,
+        "timeframe": "1D",
+        "start_date": datetime(start.year, start.month, start.day, tzinfo=timezone.utc),
+        "end_date": datetime(end.year, end.month, end.day, tzinfo=timezone.utc),
+        "initial_capital": Decimal(str(initial_capital)),
+    }
+    tmpdir = tempfile.mkdtemp(prefix="plateau_")
+    error = None
+    results: dict = {}
+    try:
+        strategy = build_overridden_strategy(strategy_id, sample["overrides"])
+        runner = BacktestRunner(config)
+        results = runner.run(strategy, output_dir=tmpdir)
+    except Exception as exc:  # noqa: BLE001 — record loudly, never crash the campaign
+        error = f"{type(exc).__name__}: {exc}"
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    return {
+        "hash": sample["hash"],
+        "kind": sample["kind"],
+        "param": sample["param"],
+        "overrides": sample["overrides"],
+        "sharpe": results.get("sharpe_ratio") if error is None else None,
+        "max_drawdown": results.get("max_drawdown") if error is None else None,
+        "annualized_return": results.get("annualized_return") if error is None else None,
+        "total_return": results.get("total_return") if error is None else None,
+        "error": error,
+    }
