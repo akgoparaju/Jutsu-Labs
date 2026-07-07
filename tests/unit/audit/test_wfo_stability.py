@@ -80,3 +80,32 @@ class TestExpandGrid:
         a = combo_hash({"upper_thresh_z": 1.0, "sma_slow": 140})
         b = combo_hash({"sma_slow": 140, "upper_thresh_z": 1.0})
         assert a == b and len(a) == 16
+
+
+from jutsu_engine.audit.wfo_stability import select_is_winner
+
+
+class TestSelectISWinner:
+    def test_picks_highest_is_sharpe(self):
+        """Winner is the combo with the highest finite in-sample Sharpe."""
+        rows = [
+            {"hash": "a", "overrides": {"upper_thresh_z": 0.8}, "is_sharpe": 0.5},
+            {"hash": "b", "overrides": {"upper_thresh_z": 1.0}, "is_sharpe": 0.9},
+            {"hash": "c", "overrides": {"upper_thresh_z": 1.2}, "is_sharpe": 0.7},
+        ]
+        w = select_is_winner(rows)
+        assert w["hash"] == "b"
+
+    def test_skips_errored_rows(self):
+        """Rows with non-finite is_sharpe (errored backtests) are ignored."""
+        rows = [
+            {"hash": "a", "overrides": {}, "is_sharpe": None},
+            {"hash": "b", "overrides": {}, "is_sharpe": float("nan")},
+            {"hash": "c", "overrides": {}, "is_sharpe": 0.3},
+        ]
+        assert select_is_winner(rows)["hash"] == "c"
+
+    def test_all_errored_returns_none(self):
+        """If every IS combo errored, there is no winner (returns None)."""
+        rows = [{"hash": "a", "overrides": {}, "is_sharpe": None}]
+        assert select_is_winner(rows) is None

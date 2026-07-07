@@ -152,3 +152,28 @@ def expand_grid() -> list[dict]:
         })
         cid += 1
     return combos
+
+
+# ---------------------------------------------------------------------------
+# Task 3 — IS-winner selection
+# ---------------------------------------------------------------------------
+import math
+
+
+def _is_finite_number(v) -> bool:
+    """True when v is a finite non-bool number."""
+    return (isinstance(v, (int, float)) and not isinstance(v, bool)
+            and math.isfinite(v))
+
+
+def select_is_winner(is_rows: list[dict]) -> dict | None:
+    """Return the IS combo row with the highest finite in-sample Sharpe (or None).
+
+    Selection metric is IS Sharpe (spec §5: 'winning parameter set per window').
+    Errored rows (non-finite is_sharpe) are excluded so a failed backtest can
+    never win. Returns None only if EVERY combo errored.
+    """
+    valid = [r for r in is_rows if _is_finite_number(r.get("is_sharpe"))]
+    if not valid:
+        return None
+    return max(valid, key=lambda r: r["is_sharpe"])
