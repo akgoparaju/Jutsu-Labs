@@ -7,6 +7,7 @@ from jutsu_engine.audit.live_recon import (
     categorize_day,
     reconcile,
     summarize_diffs,
+    _downgrade_threshold_crossings,
 )
 
 
@@ -116,12 +117,15 @@ class TestReconcileOrchestration:
 
         # Fake replay: day 1 matches; day 2 replays a different cell (logic mismatch)
         # and a different equity (for divergence).
+        # t_norm=0.25 on day 2 → diff |0.10-0.25|=0.15 > TNORM_TOLERANCE(0.10), so
+        # the trend_state "Sideways"→"BearStrong" mismatch is NOT a threshold-crossing
+        # artifact and correctly stays "logic" under the new downgrade rule.
         def fake_replay_day(strategy_id, day):
             if day == date(2026, 1, 5):
                 return dict(strategy_cell=1, trend_state="BullStrong", vol_state="Low",
                             t_norm=0.41, z_score=-0.28, replay_equity=10000.0)
             return dict(strategy_cell=5, trend_state="BearStrong", vol_state="High",
-                        t_norm=0.10, z_score=1.19, replay_equity=9900.0)
+                        t_norm=0.25, z_score=1.19, replay_equity=9900.0)
 
         result = reconcile(
             strategy_id="v3_5b",
@@ -160,3 +164,56 @@ class TestReconcileOrchestration:
         assert result.summary["by_category"].get("logic") is None
         assert result.summary["by_category"]["data"] == 1
         assert result.day_table[0]["category"] == "data"
+
+
+class TestDowngradeThresholdCrossings:
+    def test_threshold_crossing_volstate_is_timing(self):
+        """vol_state flip with z_score diff within tolerance → day category timing, no logic."""
+        # stored z=-0.90, replay z=-1.05; diff=0.15 < ZSCORE_TOLERANCE(0.25)
+        stored = _stored(vol_state="Low", z_score=-0.90)
+        replay = _replay(vol_state="High", z_score=-1.05)
+        d = categorize_day(stored, replay)
+        assert d["category"] == "timing"
+        assert not any(m["category"] == "logic" for m in d["mismatches"])
+        vol_entry = next(m for m in d["mismatches"] if m["field"] == "vol_state")
+        assert vol_entry["category"] == "timing"
+
+    def test_threshold_crossing_cell_downgraded_with_drivers(self):
+        """Cell and vol_state mismatches both downgraded when vol driver is in tolerance."""
+        # stored: cell 5 / trend BearStrong / vol Low / t_norm -0.35 / z 0.90
+        # replay: cell 6 / trend BearStrong / vol High / t_norm -0.36 / z 1.05
+        # vol driver: |0.90 - 1.05| = 0.15 <= 0.25 → vol_state downgraded
+        # trend matches exactly → no trend mismatch
+        # cell: downgraded because every vol/trend mismatch was downgraded (or absent)
+        stored = _stored(strategy_cell=5, trend_state="BearStrong", vol_state="Low",
+                         t_norm=-0.35, z_score=0.90)
+        replay = _replay(strategy_cell=6, trend_state="BearStrong", vol_state="High",
+                         t_norm=-0.36, z_score=1.05)
+        d = categorize_day(stored, replay)
+        assert d["category"] == "timing"
+        assert not any(m["category"] == "logic" for m in d["mismatches"])
+        cell_entry = next(m for m in d["mismatches"] if m["field"] == "strategy_cell")
+        assert cell_entry["category"] == "timing"
+        vol_entry = next(m for m in d["mismatches"] if m["field"] == "vol_state")
+        assert vol_entry["category"] == "timing"
+
+    def test_out_of_tolerance_categorical_stays_logic(self):
+        """vol_state flip with z_score diff exceeding tolerance stays logic."""
+        # stored z=0.30, replay z=1.01; diff=0.71 > ZSCORE_TOLERANCE(0.25)
+        stored = _stored(vol_state="Low", z_score=0.30)
+        replay = _replay(vol_state="High", z_score=1.01)
+        d = categorize_day(stored, replay)
+        assert d["category"] == "logic"
+        vol_entry = next(m for m in d["mismatches"] if m["field"] == "vol_state")
+        assert vol_entry["category"] == "logic"
+
+    def test_cell_mismatch_without_driver_mismatch_stays_logic(self):
+        """Cell differs but trend/vol match exactly → logic (unexplained, no downgrade)."""
+        # trend and vol are identical; only cell differs → no vol/trend logic entries
+        # → downgraded_count stays 0 → cell stays logic
+        stored = _stored(strategy_cell=1, trend_state="BullStrong", vol_state="Low")
+        replay = _replay(strategy_cell=4, trend_state="BullStrong", vol_state="Low")
+        d = categorize_day(stored, replay)
+        assert d["category"] == "logic"
+        cell_entry = next(m for m in d["mismatches"] if m["field"] == "strategy_cell")
+        assert cell_entry["category"] == "logic"

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 # Tolerances for intraday-vs-EOD continuous fields. Categorical fields have NO
@@ -31,6 +31,69 @@ TNORM_TOLERANCE = 0.10
 
 _CATEGORICAL = ("strategy_cell", "trend_state", "vol_state")
 _CONTINUOUS = (("z_score", ZSCORE_TOLERANCE), ("t_norm", TNORM_TOLERANCE))
+
+
+# Mapping from categorical field name to its continuous driver field and tolerance.
+_CATEGORICAL_DRIVER = {
+    "vol_state":   ("z_score", ZSCORE_TOLERANCE),
+    "trend_state": ("t_norm",  TNORM_TOLERANCE),
+}
+
+
+def _downgrade_threshold_crossings(stored: dict, replay: dict,
+                                   mismatches: list[dict]) -> list[dict]:
+    """Downgrade categorical mismatches caused by in-tolerance continuous drivers.
+
+    A categorical flip on vol_state or trend_state whose continuous driver
+    (z_score / t_norm respectively) differs within tolerance is a
+    threshold-crossing artifact of intraday-vs-EOD noise — downgrade from
+    "logic" to "timing".
+
+    A strategy_cell mismatch is downgraded to "timing" only when every
+    co-occurring trend_state / vol_state categorical mismatch on that day was
+    itself downgraded (or absent), AND at least one downgrade happened.  A
+    cell mismatch with NO accompanying trend/vol mismatch is left "logic"
+    (unexplained root cause).
+
+    Returns the mismatches list with entries mutated in-place (same objects).
+    """
+    downgraded_count = 0
+
+    for m in mismatches:
+        field = m["field"]
+        if m["category"] != "logic":
+            continue
+        if field not in _CATEGORICAL_DRIVER:
+            continue
+        driver_field, driver_tol = _CATEGORICAL_DRIVER[field]
+        s_val = stored.get(driver_field)
+        r_val = replay.get(driver_field)
+        # Both driver values must be present and numeric (non-NaN).
+        if s_val is None or r_val is None:
+            continue
+        try:
+            s_f, r_f = float(s_val), float(r_val)
+        except (TypeError, ValueError):
+            continue
+        if math.isnan(s_f) or math.isnan(r_f):
+            continue
+        if abs(s_f - r_f) <= driver_tol:
+            m["category"] = "timing"
+            downgraded_count += 1
+
+    # Conditionally downgrade strategy_cell mismatches.
+    if downgraded_count > 0:
+        # Are there any remaining "logic" categorical entries (excluding cell itself)?
+        remaining_logic_cats = {
+            m["field"] for m in mismatches
+            if m["category"] == "logic" and m["field"] in _CATEGORICAL_DRIVER
+        }
+        if not remaining_logic_cats:
+            for m in mismatches:
+                if m["field"] == "strategy_cell" and m["category"] == "logic":
+                    m["category"] = "timing"
+
+    return mismatches
 
 
 def categorize_day(stored: dict, replay: dict) -> dict:
@@ -44,8 +107,14 @@ def categorize_day(stored: dict, replay: dict) -> dict:
 
     Returns a dict:
         {day, categorical_match, mismatches: [{field, stored, replay, category}],
-         category}  where category is one of 'match','logic','timing'
-         (logic dominates timing when both present).
+         category}  where category is one of 'match','logic','timing','data'
+         (logic dominates timing; data dominates timing).
+
+    Categorical mismatches whose continuous driver (z_score for vol_state,
+    t_norm for trend_state) differs within tolerance are reclassified from
+    "logic" to "timing" by _downgrade_threshold_crossings — these are
+    threshold-crossing artifacts of the expected intraday-vs-EOD noise, not
+    strategy divergence.
     """
     mismatches: list[dict] = []
 
@@ -81,6 +150,9 @@ def categorize_day(stored: dict, replay: dict) -> dict:
         if abs(sv_f - rv_f) > tol:
             mismatches.append({"field": f, "stored": sv_f, "replay": rv_f,
                                "category": "timing"})
+
+    # Downgrade threshold-crossing categorical flips from "logic" to "timing".
+    mismatches = _downgrade_threshold_crossings(stored, replay, mismatches)
 
     if any(m["category"] in ("logic", "data") for m in mismatches):
         category = "logic" if any(m["category"] == "logic" for m in mismatches) else "data"
@@ -209,14 +281,18 @@ def reconcile(
 def make_replay_day(engine, strategy_id: str, lookback: int = 250):
     """Build a replay_day(strategy_id, day) callable backed by the live engine.
 
-    Mirrors scripts/backfill_regime.py:102-122 exactly: a FRESH LiveStrategyRunner
-    per day (clean 250-bar warmup, matching the scheduler cold-start), signal +
-    treasury symbols loaded from market_data, calculate_signals invoked.
+    Mirrors the scheduler's information set: bars strictly before day D
+    (load_bars uses ``(timestamp)::date <= :d``, so passing ``day - timedelta(1)``
+    excludes day D's real EOD bar and resolves naturally to the prior trading
+    session for weekends and holidays). This matches what the live scheduler sees
+    ~15 min after the open on day D: completed sessions ≤ D-1 only. The
+    scheduler's intraday synthetic bar for D was never persisted and is NOT
+    emulated here — any residual categorical difference driven by that quote is a
+    "timing" artifact (see claudedocs/audit/2026-07-06/logic_mismatch_rootcause.md).
 
-    The returned callable does not compute replay equity (positions-level equity
-    replay is out of scope for Phase 1); pnl_divergence therefore reports the
-    stored live equity endpoints and leaves replay equity None unless a caller
-    supplies it. This is intentional and documented in the report.
+    A FRESH LiveStrategyRunner per day (clean 250-bar warmup) matches the
+    scheduler cold-start. The returned callable does not compute replay equity
+    (positions-level equity replay is out of scope for Phase 1).
     """
     import importlib
 
@@ -233,7 +309,7 @@ def make_replay_day(engine, strategy_id: str, lookback: int = 250):
                                     config_path=spec.config_path)
         md = {}
         for sym in (runner.get_signal_symbol(), runner.get_treasury_symbol()):
-            bars = load_bars(engine, sym, day, lookback)
+            bars = load_bars(engine, sym, day - timedelta(days=1), lookback)
             if bars.empty:
                 return None
             md[sym] = bars
