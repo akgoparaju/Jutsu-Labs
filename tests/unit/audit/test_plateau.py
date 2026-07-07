@@ -722,3 +722,75 @@ class TestRunCampaign:
                     continue
                 row = json.loads(line)  # raises on torn JSON
                 assert "hash" in row
+
+
+from jutsu_engine.audit.plateau import summarize_campaign
+
+
+class TestSummarizeCampaign:
+    def test_builds_report_summary_from_rows(self):
+        """summarize_campaign turns a CampaignResult + golden metrics into the report summary dict."""
+        golden = {"sma_fast": 40, "leverage_scalar": 1.0}
+        rows = [
+            _oat_row("sma_fast", 32, 0.8), _oat_row("sma_fast", 48, 0.6),
+            _oat_row("sma_fast", 36, 0.5), _oat_row("sma_fast", 44, 0.9),
+            {"hash": "j1", "kind": "joint", "param": None, "overrides": {},
+             "sharpe": 0.4, "max_drawdown": -0.5, "annualized_return": 0.1,
+             "total_return": 1.0},
+        ]
+        res = CampaignResult("v3_5b", 42, samples=rows, rows=rows,
+                             campaign_file="x.jsonl", golden=golden)
+        summary = summarize_campaign(res, golden_sharpe=1.0,
+                                     golden_metrics={"sharpe_ratio": 1.0,
+                                                     "max_drawdown": -0.5,
+                                                     "annualized_return": 0.2,
+                                                     "total_return": 5.0})
+        assert summary["strategy_id"] == "v3_5b"
+        assert summary["seed"] == 42
+        assert summary["oat_count"] == 4 and summary["joint_count"] == 1
+        # sma_fast x0.9 (36) retains 0.5 -> >30% loss -> cliff
+        assert "sma_fast" in summary["cliffs"]
+        assert "sma_fast" in summary["plateau_scores"]
+        assert not summary["degradation_table"].empty
+        assert summary["joint_stats"]["count"] == 1
+        # plateau_scores values are dicts (not plain floats)
+        assert isinstance(summary["plateau_scores"]["sma_fast"], dict)
+        assert "mean_retained" in summary["plateau_scores"]["sma_fast"]
+        assert "worst_retained" in summary["plateau_scores"]["sma_fast"]
+        # joint_stats carries errored key
+        assert "errored" in summary["joint_stats"]
+
+    def test_oat_and_joint_counts_are_correct(self):
+        """oat_count = len(oat rows), joint_count = len(joint rows)."""
+        golden = {"sma_fast": 40}
+        oat = [_oat_row("sma_fast", 32, 0.8), _oat_row("sma_fast", 48, 0.9)]
+        joint = [{"hash": f"j{i}", "kind": "joint", "param": None,
+                  "overrides": {}, "sharpe": 0.5 + i * 0.1,
+                  "max_drawdown": -0.2, "annualized_return": 0.1, "total_return": 1.0}
+                 for i in range(3)]
+        rows = oat + joint
+        res = CampaignResult("v3_5b", 0, samples=rows, rows=rows,
+                             campaign_file="x.jsonl", golden=golden)
+        summary = summarize_campaign(res, golden_sharpe=1.0,
+                                     golden_metrics={"sharpe_ratio": 1.0,
+                                                     "max_drawdown": -0.5,
+                                                     "annualized_return": 0.2,
+                                                     "total_return": 5.0})
+        assert summary["oat_count"] == 2
+        assert summary["joint_count"] == 3
+
+    def test_empty_campaign_no_crash(self):
+        """An empty campaign (no rows) produces an empty summary without crashing."""
+        golden = {"sma_fast": 40}
+        res = CampaignResult("v3_5b", 0, samples=[], rows=[],
+                             campaign_file="x.jsonl", golden=golden)
+        summary = summarize_campaign(res, golden_sharpe=1.0,
+                                     golden_metrics={"sharpe_ratio": 1.0,
+                                                     "max_drawdown": -0.5,
+                                                     "annualized_return": 0.2,
+                                                     "total_return": 5.0})
+        assert summary["oat_count"] == 0
+        assert summary["joint_count"] == 0
+        assert summary["cliffs"] == []
+        assert summary["degradation_table"].empty
+        assert summary["joint_stats"]["count"] == 0

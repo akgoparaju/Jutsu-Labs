@@ -274,7 +274,10 @@ def degradation_table(rows: list[dict], golden: dict,
             "max_drawdown": r["max_drawdown"],
             "annualized_return": r["annualized_return"],
         })
-    return pd.DataFrame(recs).sort_values(["param", "override_value"]).reset_index(drop=True)
+    df = pd.DataFrame(recs)
+    if df.empty:
+        return df
+    return df.sort_values(["param", "override_value"]).reset_index(drop=True)
 
 
 def cliff_list(rows: list[dict], golden: dict, golden_sharpe: float) -> list[str]:
@@ -664,6 +667,101 @@ def run_campaign(strategy_id: str, golden: dict, campaign_file: Path,
     return CampaignResult(strategy_id=strategy_id, seed=seed, samples=samples,
                           rows=rows, campaign_file=str(campaign_file),
                           golden=golden)
+
+
+def summarize_campaign(result: CampaignResult, golden_sharpe: float,
+                       golden_metrics: dict) -> dict:
+    """Compute the report summary dict from a CampaignResult + golden metrics.
+
+    ``plateau_scores`` values are dicts (``mean_retained``, ``worst_retained``,
+    ``n_rows``) — not plain floats — because ``plateau_score()`` now returns a dict
+    so the report can show both columns and sort by the conservative ``worst_retained``
+    gate.  ``joint_stats`` carries an ``errored`` key from Task 8's adaptation.
+    """
+    rows = result.rows
+    oat_rows = [r for r in rows if r.get("param") is not None]
+    joint_rows = [r for r in rows if r.get("kind") == "joint"]
+    per = perturbable_params(result.golden)
+    scores = {name: plateau_score(rows, result.golden, golden_sharpe, name)
+              for name in per}
+    return {
+        "strategy_id": result.strategy_id,
+        "seed": result.seed,
+        "oat_count": len(oat_rows),
+        "joint_count": len(joint_rows),
+        "golden_metrics": golden_metrics,
+        "plateau_scores": scores,
+        "degradation_table": degradation_table(rows, result.golden, golden_sharpe),
+        "cliffs": cliff_list(rows, result.golden, golden_sharpe),
+        "joint_stats": joint_stats(rows, golden_sharpe),
+    }
+
+
+def run_golden_baseline(strategy_id: str, symbols: list[str],
+                        start: date, end: date,
+                        initial_capital: str = "10000") -> dict:
+    """Run the unperturbed golden config once; return its headline metrics.
+
+    Uses run_one_sample with empty overrides so the reference Sharpe comes from
+    the identical code path the campaign uses.
+
+    Raises RuntimeError if the baseline backtest itself errors (sharpe is None) —
+    there is no reference Sharpe without a working baseline, so no retained
+    fractions can be computed and the plateau analysis is meaningless.
+    """
+    row = run_one_sample(
+        strategy_id,
+        {"hash": "golden", "kind": "golden", "param": None, "overrides": {}},
+        symbols, start, end, initial_capital)
+    if row.get("sharpe") is None:
+        err = row.get("error", "unknown error")
+        raise RuntimeError(
+            f"[{strategy_id}] golden baseline backtest failed — no reference Sharpe "
+            f"available; retained fractions cannot be computed. "
+            f"Fix the golden config before running the plateau campaign. "
+            f"Backtest error: {err}"
+        )
+    return {
+        "sharpe_ratio": row["sharpe"],
+        "max_drawdown": row["max_drawdown"],
+        "annualized_return": row["annualized_return"],
+        "total_return": row["total_return"],
+    }
+
+
+def run_plateau(strategy_id: str, run_dir: Path,
+                joint_n: int = DEFAULT_JOINT_SAMPLES, seed: int = 0,
+                workers: int = 1, oat_only: bool = False,
+                params: list[str] | None = None,
+                progress=lambda msg: None) -> dict:
+    """End-to-end Module 2 for one strategy: baseline -> campaign -> analysis summary.
+
+    Returns the report summary dict (render it with report.render_plateau_section).
+    Writes the campaign JSONL under run_dir/<strategy>/campaign_<strategy>.jsonl so
+    reruns resume. No per-run CSVs are written to run_dir (each backtest uses a
+    throwaway tempdir).
+
+    Raises RuntimeError if the golden baseline backtest itself fails — no baseline
+    means no retained fractions means no analysis (see run_golden_baseline).
+    """
+    from jutsu_engine.audit.attribution import _all_symbols
+
+    run_dir = Path(run_dir)
+    start, end = ATTRIBUTION_START, date.today()
+    symbols = _all_symbols(strategy_id)
+    golden = load_golden_params(strategy_id)
+
+    progress(f"[{strategy_id}] golden baseline backtest...")
+    golden_metrics = run_golden_baseline(strategy_id, symbols, start, end)
+    golden_sharpe = golden_metrics.get("sharpe_ratio") or 0.0
+
+    campaign_file = run_dir / strategy_id / f"campaign_{strategy_id}.jsonl"
+    result = run_campaign(
+        strategy_id, golden, campaign_file, joint_n=joint_n, seed=seed,
+        workers=workers, oat_only=oat_only, params=params,
+        symbols=symbols, start=start, end=end, progress=progress)
+
+    return summarize_campaign(result, golden_sharpe, golden_metrics)
 
 
 def _run_parallel(strategy_id: str, todo: list[dict], campaign_file: Path,
