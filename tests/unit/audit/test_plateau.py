@@ -344,9 +344,19 @@ class TestBuildOverriddenStrategy:
 
 class TestDecimalParamsDriftGuard:
     def test_matches_live_strategy_runner_set(self):
-        """DECIMAL_PARAMS stays in sync with LiveStrategyRunner's decimal_params."""
+        """DECIMAL_PARAMS is bidirectionally in sync with LiveStrategyRunner._convert_decimal_params.
+
+        Checks both directions:
+        - every name in DECIMAL_PARAMS appears in the live runner (no stale entries)
+        - every name in the live runner appears in DECIMAL_PARAMS (no silently under-converted params)
+        """
         import inspect
+        import re
         from jutsu_engine.live import strategy_runner
         src = inspect.getsource(strategy_runner.LiveStrategyRunner._convert_decimal_params)
-        for name in DECIMAL_PARAMS:
-            assert f"'{name}'" in src, f"{name} missing from live decimal set"
+        live_names = set(re.findall(r"'([a-zA-Z_][a-zA-Z0-9_]*)'", src))
+        assert live_names == DECIMAL_PARAMS, (
+            f"DECIMAL_PARAMS out of sync with live runner:\n"
+            f"  in live, missing from DECIMAL_PARAMS: {live_names - DECIMAL_PARAMS}\n"
+            f"  in DECIMAL_PARAMS, missing from live: {DECIMAL_PARAMS - live_names}"
+        )
