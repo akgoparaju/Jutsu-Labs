@@ -236,3 +236,125 @@ def run_one_combo(strategy_id: str, combo: dict, symbols: list[str],
         "sharpe": results.get("sharpe_ratio") if error is None else None,
         "error": error,
     }
+
+
+# ─── Task 8: Returns-campaign runner (resume, circuit breaker, workers) ───────
+
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from dataclasses import dataclass
+
+from jutsu_engine.audit.config import ATTRIBUTION_START
+
+# Consecutive errored-row limit before abort (mirrors plateau/wfo). A DB outage
+# errors every combo; without the breaker a run would checkpoint all 243 as errors.
+DEFAULT_MAX_CONSECUTIVE_ERRORS: int = 10
+
+_BREAKER_MSG = (
+    "aborting: {n} consecutive errored runs — systemic failure (DB down?). "
+    "Errored rows are checkpointed and NOT retried on resume; investigate and "
+    "delete them (or rerun with --retry-errors) before rerunning."
+)
+
+
+@dataclass
+class ReturnsCampaignResult:
+    """Everything the DSR/PBO layers need from a completed/resumed returns campaign."""
+    strategy_id: str
+    rows: list          # last-wins reloaded returns rows (one per combo)
+    campaign_file: str
+
+
+def _run_serial_returns(strategy_id, todo, campaign_file, run_fn, symbols,
+                        start, end, initial_capital, max_consecutive_errors,
+                        progress) -> None:
+    """Serial campaign: parent is the SINGLE WRITER; breaker on consecutive errors."""
+    consecutive = 0
+    total = len(todo)
+    for i, combo in enumerate(todo, 1):
+        row = run_fn(strategy_id, combo, symbols, start, end, initial_capital)
+        append_returns_row(campaign_file, row)      # SINGLE WRITER (parent)
+        consecutive = consecutive + 1 if is_error_row(row) else 0
+        progress(f"[{i}/{total}] combo {combo['combo_id']} "
+                 f"sharpe={row.get('sharpe')}")
+        if consecutive >= max_consecutive_errors:
+            raise RuntimeError(_BREAKER_MSG.format(n=max_consecutive_errors))
+
+
+def _run_parallel_returns(strategy_id, todo, campaign_file, run_fn, symbols,
+                          start, end, initial_capital, workers,
+                          max_consecutive_errors, progress) -> None:
+    """Parallel campaign: parent-only writes; wait(FIRST_COMPLETED) drain-then-abort.
+
+    Mirrors plateau._run_parallel: on breaker trip we drain the finished batch
+    (checkpointing every completed row) before cancelling not-yet-started futures
+    and raising. run_fn must be picklable (macOS spawn); running futures at abort
+    cannot be cancelled and their results are discarded (re-run on resume).
+    """
+    consecutive = 0
+    done_count = 0
+    total = len(todo)
+    with ProcessPoolExecutor(max_workers=workers) as ex:
+        pending = {
+            ex.submit(run_fn, strategy_id, c, symbols, start, end, initial_capital)
+            for c in todo
+        }
+        aborted = False
+        while pending and not aborted:
+            finished, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for fut in finished:
+                row = fut.result()
+                append_returns_row(campaign_file, row)   # SINGLE WRITER (parent)
+                done_count += 1
+                if is_error_row(row):
+                    consecutive += 1
+                    if consecutive >= max_consecutive_errors:
+                        aborted = True   # keep draining `finished` first
+                else:
+                    consecutive = 0
+                progress(f"[{done_count}/{total}] sharpe={row.get('sharpe')}")
+        if aborted:
+            for fut in pending:
+                fut.cancel()
+            raise RuntimeError(_BREAKER_MSG.format(n=max_consecutive_errors))
+
+
+def run_returns_campaign(strategy_id: str, combos: list[dict], campaign_file: Path,
+                         run_fn=run_one_combo, symbols: list[str] | None = None,
+                         start: date | None = None, end: date | None = None,
+                         initial_capital: str = "10000", workers: int = 1,
+                         max_consecutive_errors: int = DEFAULT_MAX_CONSECUTIVE_ERRORS,
+                         retry_errors: bool = False,
+                         progress=lambda m: None) -> ReturnsCampaignResult:
+    """Run (or resume) the per-combo returns campaign, checkpointing each to JSONL.
+
+    Resume: combos already present (by hash) are skipped before any work is
+    submitted (both paths). Single-writer invariant: ALL append_returns_row calls
+    happen here in the parent; run_fn only computes and RETURNS a row. run_fn is
+    injectable for DB-free unit tests; the default run_one_combo is picklable.
+
+    Midnight/multi-day: `end` defaults to date.today() and is not part of combo
+    hashes; a campaign spanning midnight extends later backtests by 1 day
+    (negligible over a 16-year window; documented and accepted, matches plateau/wfo).
+    """
+    campaign_file = Path(campaign_file)
+    start = start or ATTRIBUTION_START
+    end = end or date.today()
+    symbols = symbols if symbols is not None else []
+
+    done = load_completed_combo_hashes(campaign_file, retry_errors=retry_errors)
+    todo = [c for c in combos if c["hash"] not in done]
+    progress(f"{len(combos)} combos, {len(done)} done, {len(todo)} to run")
+
+    if todo:
+        if workers <= 1:
+            _run_serial_returns(strategy_id, todo, campaign_file, run_fn, symbols,
+                                start, end, initial_capital,
+                                max_consecutive_errors, progress)
+        else:
+            _run_parallel_returns(strategy_id, todo, campaign_file, run_fn, symbols,
+                                  start, end, initial_capital, workers,
+                                  max_consecutive_errors, progress)
+
+    rows = reload_returns_rows(campaign_file)
+    return ReturnsCampaignResult(strategy_id=strategy_id, rows=rows,
+                                 campaign_file=str(campaign_file))

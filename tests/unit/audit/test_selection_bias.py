@@ -110,3 +110,67 @@ class TestReturnsPersistence:
         assert is_error_row({"error": "x", "returns": None})
         assert is_error_row({"error": None, "returns": None})
         assert not is_error_row({"error": None, "returns": [0.01]})
+
+
+from datetime import date
+
+from jutsu_engine.audit.selection_bias import (
+    run_returns_campaign, ReturnsCampaignResult, DEFAULT_MAX_CONSECUTIVE_ERRORS,
+)
+
+
+def _fake_run_fn(strategy_id, combo, symbols, start, end, initial_capital="10000"):
+    """Deterministic fake worker: returns a 2-day series keyed by combo_id."""
+    return {"combo_id": combo["combo_id"], "hash": combo["hash"],
+            "overrides": combo["overrides"],
+            "dates": ["2010-02-01", "2010-02-02"],
+            "returns": [0.001 * combo["combo_id"], -0.001 * combo["combo_id"]],
+            "sharpe": 0.1 * combo["combo_id"], "error": None}
+
+
+def _error_run_fn(strategy_id, combo, symbols, start, end, initial_capital="10000"):
+    """Fake worker that always errors (to trip the circuit breaker)."""
+    return {"combo_id": combo["combo_id"], "hash": combo["hash"],
+            "overrides": combo["overrides"], "dates": None, "returns": None,
+            "sharpe": None, "error": "boom"}
+
+
+class TestReturnsCampaign:
+    def _combos(self, n):
+        from jutsu_engine.audit.selection_bias import combo_hash
+        return [{"combo_id": i, "overrides": {"sma_fast": 40 + i},
+                 "hash": combo_hash({"sma_fast": 40 + i})} for i in range(n)]
+
+    def test_serial_runs_every_combo(self, tmp_path):
+        """Serial campaign writes one row per combo."""
+        p = tmp_path / "c.jsonl"
+        res = run_returns_campaign(
+            "v3_5b", self._combos(3), p, run_fn=_fake_run_fn, symbols=[],
+            start=date(2010, 2, 1), end=date(2026, 7, 1), workers=1)
+        assert len(res.rows) == 3
+        assert isinstance(res, ReturnsCampaignResult)
+
+    def test_resume_skips_completed(self, tmp_path):
+        """A second run with all combos present runs zero new backtests."""
+        p = tmp_path / "c.jsonl"
+        combos = self._combos(3)
+        run_returns_campaign("v3_5b", combos, p, run_fn=_fake_run_fn, symbols=[],
+                             start=date(2010, 2, 1), end=date(2026, 7, 1), workers=1)
+        calls = []
+
+        def counting(strategy_id, combo, symbols, start, end, initial_capital="10000"):
+            calls.append(combo["combo_id"])
+            return _fake_run_fn(strategy_id, combo, symbols, start, end)
+
+        run_returns_campaign("v3_5b", combos, p, run_fn=counting, symbols=[],
+                             start=date(2010, 2, 1), end=date(2026, 7, 1), workers=1)
+        assert calls == []   # nothing re-run
+
+    def test_circuit_breaker_aborts_on_systemic_failure(self, tmp_path):
+        """N consecutive errored combos abort the campaign with a clear message."""
+        p = tmp_path / "c.jsonl"
+        combos = self._combos(DEFAULT_MAX_CONSECUTIVE_ERRORS + 5)
+        with pytest.raises(RuntimeError, match="consecutive errored"):
+            run_returns_campaign("v3_5b", combos, p, run_fn=_error_run_fn,
+                                 symbols=[], start=date(2010, 2, 1),
+                                 end=date(2026, 7, 1), workers=1)
