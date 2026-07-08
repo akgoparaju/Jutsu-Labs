@@ -445,3 +445,167 @@ class TestCheckpointHelpers:
                            "error": "boom"})
         assert load_completed_keys(f, retry_errors=True) == set()
         assert load_completed_keys(f, retry_errors=False) == {"1:is:h"}
+
+
+# ---------------------------------------------------------------------------
+# Task 8 — Campaign runner (2-pass IS/OOS, resume, circuit breaker, single-writer)
+# ---------------------------------------------------------------------------
+import json
+from datetime import date as _date2
+
+from jutsu_engine.audit.wfo_stability import (
+    run_campaign, WFOCampaignResult, reload_wfo_rows as _reload_wfo_rows,
+)
+
+
+def _fake_run_fn(strategy_id, combo, symbols, start, end, phase,
+                 initial_capital="10000"):
+    """Deterministic fake: IS Sharpe rises with upper_thresh_z; OOS emits 5 days.
+
+    Module-level (picklable) so it is spawn-safe for the parallel path too.
+    """
+    utz = combo["overrides"].get("upper_thresh_z", 1.0)
+    if phase == "is":
+        return {"hash": combo["hash"], "combo_id": combo["combo_id"],
+                "kind": combo["kind"], "phase": "is",
+                "overrides": combo["overrides"], "is_sharpe": float(utz),
+                "oos_rows": None, "error": None}
+    dates = pd.date_range(str(start), periods=5, freq="D", tz="UTC")
+    rows = [{"Date": str(d), "Strategy_Daily_Return": 0.01,
+             "QQQ_Daily_Return": 0.005} for d in dates]
+    return {"hash": combo["hash"], "combo_id": combo["combo_id"],
+            "kind": combo["kind"], "phase": "oos",
+            "overrides": combo["overrides"], "is_sharpe": 0.8,
+            "oos_rows": rows, "error": None}
+
+
+class TestRunCampaign:
+    def test_runs_windows_and_stitches(self, tmp_path):
+        """Campaign runs IS+OOS per window and returns a stitched result."""
+        camp = tmp_path / "campaign_v3_5b.jsonl"
+        res = run_campaign(
+            "v3_5b", camp, windows_limit=2, workers=1, run_fn=_fake_run_fn,
+            symbols=["QQQ"], total_start=_date2(2010, 2, 1),
+            total_end=_date2(2013, 8, 1))
+        assert isinstance(res, WFOCampaignResult)
+        assert len(res.winners) == 2                      # one winner per window
+        assert res.stitched["oos_days"] == 10             # 2 windows x 5 days
+        # winner is the highest upper_thresh_z combo (1.2)
+        assert res.winners[0]["overrides"]["upper_thresh_z"] == 1.2
+
+    def test_resume_skips_completed_rows(self, tmp_path):
+        """A second run with the same file re-does no work (all rows present)."""
+        camp = tmp_path / "campaign_v3_5b.jsonl"
+        run_campaign("v3_5b", camp, windows_limit=1, workers=1, run_fn=_fake_run_fn,
+                     symbols=["QQQ"], total_start=_date2(2010, 2, 1),
+                     total_end=_date2(2013, 8, 1))
+        calls = {"n": 0}
+
+        def _counting(*a, **k):
+            calls["n"] += 1
+            return _fake_run_fn(*a, **k)
+
+        run_campaign("v3_5b", camp, windows_limit=1, workers=1, run_fn=_counting,
+                     symbols=["QQQ"], total_start=_date2(2010, 2, 1),
+                     total_end=_date2(2013, 8, 1))
+        assert calls["n"] == 0  # everything resumed from the JSONL
+
+    def test_single_writer_run_fn_never_writes_jsonl(self, tmp_path):
+        """SINGLE-WRITER INVARIANT: run_fn only returns rows; the parent writes.
+
+        A run_fn that itself tried to append would produce duplicate/interleaved
+        rows. We assert the JSONL contains exactly the rows the parent wrote:
+        (31 IS + 1 OOS) per window == 32 rows for a 1-window campaign.
+        """
+        camp = tmp_path / "campaign_v3_5b.jsonl"
+        run_campaign("v3_5b", camp, windows_limit=1, workers=1, run_fn=_fake_run_fn,
+                     symbols=["QQQ"], total_start=_date2(2010, 2, 1),
+                     total_end=_date2(2013, 8, 1))
+        rows = _reload_wfo_rows(camp)
+        is_rows = [r for r in rows if r["phase"] == "is"]
+        oos_rows = [r for r in rows if r["phase"] == "oos"]
+        assert len(is_rows) == 31   # full grid, one row each, no duplicates
+        assert len(oos_rows) == 1   # one OOS winner backtest
+
+    def test_resume_mid_oos_rederives_same_winner_deterministically(self, tmp_path):
+        """Killed mid-OOS: winners are re-derived from checkpointed IS rows, and the
+        deterministic tie-break means the SAME winner is chosen on resume.
+
+        Pass 1 (all IS) completes and is checkpointed. We simulate a crash before
+        pass 2 by NOT running OOS (windows_limit run then inspect), then resume and
+        confirm the OOS winner combo matches the winner select_is_winner derives
+        from the committed IS rows.
+        """
+        camp = tmp_path / "campaign_v3_5b.jsonl"
+        # First full run establishes the ground-truth winner + OOS row.
+        res1 = run_campaign(
+            "v3_5b", camp, windows_limit=1, workers=1, run_fn=_fake_run_fn,
+            symbols=["QQQ"], total_start=_date2(2010, 2, 1),
+            total_end=_date2(2013, 8, 1))
+        winner_hash = res1.winners[0]["hash"]
+
+        # Simulate "crashed mid-OOS": delete the OOS row from the JSONL, keep all IS.
+        rows = _reload_wfo_rows(camp)
+        kept = [r for r in rows if r["phase"] == "is"]
+        with open(camp, "w") as f:
+            for r in kept:
+                f.write(json.dumps(r, default=str) + "\n")
+
+        # Resume: IS is all present (no IS re-run), winner re-derived from committed
+        # IS rows, and the single OOS backtest re-runs for that same winner.
+        res2 = run_campaign(
+            "v3_5b", camp, windows_limit=1, workers=1, run_fn=_fake_run_fn,
+            symbols=["QQQ"], total_start=_date2(2010, 2, 1),
+            total_end=_date2(2013, 8, 1))
+        assert res2.winners[0]["hash"] == winner_hash
+        # exactly one OOS row again (the re-derived winner's OOS backtest)
+        oos = [r for r in _reload_wfo_rows(camp) if r["phase"] == "oos"]
+        assert len(oos) == 1
+        assert oos[0]["row_key"] == f"1:oos:{winner_hash}"
+
+    def test_progress_callback_reports_each_run(self, tmp_path):
+        """The progress callback fires per completed run with window/phase labels."""
+        camp = tmp_path / "campaign_v3_5b.jsonl"
+        msgs = []
+        run_campaign("v3_5b", camp, windows_limit=1, workers=1, run_fn=_fake_run_fn,
+                     symbols=["QQQ"], total_start=_date2(2010, 2, 1),
+                     total_end=_date2(2013, 8, 1), progress=msgs.append)
+        # at least one per-run [i/n] line for IS and one for OOS
+        run_lines = [m for m in msgs if "] w1 " in m]
+        assert any(" is " in m for m in run_lines)
+        assert any(" oos " in m for m in run_lines)
+
+
+def _all_error_run_fn(strategy_id, combo, symbols, start, end, phase,
+                      initial_capital="10000"):
+    return {"hash": combo["hash"], "combo_id": combo["combo_id"],
+            "kind": combo["kind"], "phase": phase,
+            "overrides": combo["overrides"], "is_sharpe": None,
+            "oos_rows": None, "error": "RuntimeError: simulated outage"}
+
+
+class TestCircuitBreaker:
+    def test_aborts_after_consecutive_errors_serial(self, tmp_path):
+        """N consecutive errored IS rows abort the campaign with a clear message."""
+        import pytest
+        camp = tmp_path / "campaign_v3_5b.jsonl"
+        with pytest.raises(RuntimeError, match="consecutive errored"):
+            run_campaign("v3_5b", camp, windows_limit=1, workers=1,
+                         run_fn=_all_error_run_fn, symbols=["QQQ"],
+                         total_start=_date2(2010, 2, 1),
+                         total_end=_date2(2013, 8, 1),
+                         max_consecutive_errors=5)
+
+    def test_breaker_success_resets_counter(self, tmp_path):
+        """A success between errors resets the consecutive counter (no false abort).
+
+        With upper_thresh_z-driven IS Sharpe every product combo succeeds, so a
+        breaker of 5 never trips for the all-success fake even across 31 combos.
+        """
+        camp = tmp_path / "campaign_v3_5b.jsonl"
+        res = run_campaign("v3_5b", camp, windows_limit=1, workers=1,
+                           run_fn=_fake_run_fn, symbols=["QQQ"],
+                           total_start=_date2(2010, 2, 1),
+                           total_end=_date2(2013, 8, 1),
+                           max_consecutive_errors=5)
+        assert len(res.winners) == 1

@@ -618,3 +618,275 @@ def reload_wfo_rows(path: Path) -> list[dict]:
                 order.append(k)
             by_key[k] = row   # last-wins
     return [by_key[k] for k in order]
+
+
+# ---------------------------------------------------------------------------
+# Task 8 — Campaign runner (2-pass IS/OOS, resume, circuit breaker, single-writer)
+# ---------------------------------------------------------------------------
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from dataclasses import dataclass as _dataclass
+
+from jutsu_engine.audit.config import ATTRIBUTION_START
+
+DEFAULT_MAX_CONSECUTIVE_ERRORS = 10
+
+# One operator-actionable message, shared by the serial and parallel paths.
+_BREAKER_MSG = (
+    "aborting: {n} consecutive errored runs — systemic failure (DB down?). "
+    "Errored rows are checkpointed and NOT retried on resume; investigate and "
+    "delete them (or rerun with --retry-errors) before rerunning."
+)
+
+
+@_dataclass
+class WFOCampaignResult:
+    """Everything the report needs from a completed/resumed WFO campaign.
+
+    winners: per-window IS-winner rows (each augmented with window_id), in window
+        order, for the drift table and winning-value distribution.
+    window_is_rows: per-window list of ALL IS rows (for the golden top-decile
+        share verdict; parallel to `windows`, includes windows whose combos all
+        errored as empty/short lists).
+    stitched: stitch_oos_metrics over every committed OOS window.
+    """
+    strategy_id: str
+    winners: list
+    window_is_rows: list
+    stitched: dict
+    drift: "pd.DataFrame"
+    value_distribution: dict
+    campaign_file: str
+
+
+def _span_for(win: WFOWindow, phase: str) -> tuple[date, date]:
+    """[start, end] for a work unit: the IS span for 'is', the OOS span for 'oos'."""
+    if phase == "is":
+        return win.is_start, win.is_end
+    return win.oos_start, win.oos_end
+
+
+def _stamp_row(row: dict, win: WFOWindow, combo: dict, phase: str) -> dict:
+    """Stamp a run_fn result with its window/phase/row_key identity (parent-side).
+
+    run_fn returns a raw result row; the PARENT (never the worker) stamps the
+    resume-identity keys so the single-writer append is authoritative even if a
+    worker returns a row missing these fields.
+    """
+    row["window_id"] = win.window_id
+    row["phase"] = phase
+    row["row_key"] = row_key(win.window_id, phase, combo["hash"])
+    return row
+
+
+def _run_serial(strategy_id, units, campaign_file, run_fn, symbols,
+                initial_capital, max_consecutive_errors, progress) -> None:
+    """Run work units serially, checkpointing each; circuit-breaker on errors.
+
+    A unit is (window, combo, phase). Rows are appended by the SINGLE WRITER here
+    (the parent); run_fn only computes and returns a row. A success resets the
+    consecutive-error counter; `max_consecutive_errors` in a row aborts.
+    """
+    consecutive = 0
+    total = len(units)
+    for i, (win, combo, phase) in enumerate(units, 1):
+        start, end = _span_for(win, phase)
+        row = run_fn(strategy_id, combo, symbols, start, end, phase,
+                     initial_capital)
+        _stamp_row(row, win, combo, phase)
+        append_wfo_row(campaign_file, row)   # SINGLE WRITER (parent)
+        consecutive = consecutive + 1 if is_error_row(row) else 0
+        progress(f"[{i}/{total}] w{win.window_id} {phase} {combo['kind']} "
+                 f"is_sharpe={row.get('is_sharpe')}")
+        if consecutive >= max_consecutive_errors:
+            raise RuntimeError(_BREAKER_MSG.format(n=max_consecutive_errors))
+
+
+def _run_parallel(strategy_id, units, campaign_file, run_fn, symbols,
+                  initial_capital, workers, max_consecutive_errors,
+                  progress) -> None:
+    """Parallel unit execution with resume + breaker (parent-only writes).
+
+    Mirrors plateau._run_parallel: an explicit wait(FIRST_COMPLETED) loop so a
+    tripped breaker can stop and cancel not-yet-started futures. When the breaker
+    trips mid-batch we DRAIN the entire finished batch first — every already
+    completed row is appended by the parent before the RuntimeError propagates —
+    so no completed work is silently discarded (single-writer invariant preserved).
+
+    run_fn must be a picklable module-level callable (macOS spawn). Still-RUNNING
+    futures at abort cannot be cancelled; their results are discarded and those
+    units re-run on resume (their rows were never checkpointed). "Consecutive" is
+    counted in COMPLETION order here (submission order in the serial path); under
+    systemic failure every run errors so the distinction vanishes.
+    """
+    consecutive = 0
+    done_count = 0
+    total = len(units)
+    with ProcessPoolExecutor(max_workers=workers) as ex:
+        # Submit each unit; map its future to (window, combo, phase) so the parent
+        # can stamp the returned row. run_fn is submitted directly (picklable,
+        # plain-dict args); append_wfo_row is NEVER submitted — parent is sole writer.
+        fut_meta = {}
+        for win, combo, phase in units:
+            start, end = _span_for(win, phase)
+            fut = ex.submit(run_fn, strategy_id, combo, symbols, start, end,
+                            phase, initial_capital)
+            fut_meta[fut] = (win, combo, phase)
+        pending = set(fut_meta)
+        aborted = False
+        while pending and not aborted:
+            finished, pending = wait(pending, return_when=FIRST_COMPLETED)
+            # Drain the ENTIRE finished batch before honouring `aborted` so every
+            # completed row is checkpointed even when the breaker trips mid-batch.
+            for fut in finished:
+                win, combo, phase = fut_meta[fut]
+                row = fut.result()
+                _stamp_row(row, win, combo, phase)
+                append_wfo_row(campaign_file, row)   # SINGLE WRITER (parent)
+                done_count += 1
+                if is_error_row(row):
+                    consecutive += 1
+                    if consecutive >= max_consecutive_errors:
+                        aborted = True
+                        # Do NOT break: keep draining `finished` to checkpoint the rest.
+                else:
+                    consecutive = 0
+                progress(f"[{done_count}/{total}] w{win.window_id} {phase} "
+                         f"{combo['kind']} is_sharpe={row.get('is_sharpe')}")
+        if aborted:
+            for fut in pending:
+                fut.cancel()   # not-yet-started only; running futures finish + discard
+            raise RuntimeError(_BREAKER_MSG.format(n=max_consecutive_errors))
+
+
+def _dispatch(strategy_id, units, campaign_file, run_fn, symbols,
+              initial_capital, workers, max_consecutive_errors, progress) -> None:
+    """Route a work-unit batch to the serial or parallel executor by `workers`."""
+    if not units:
+        return
+    if workers <= 1:
+        _run_serial(strategy_id, units, campaign_file, run_fn, symbols,
+                    initial_capital, max_consecutive_errors, progress)
+    else:
+        _run_parallel(strategy_id, units, campaign_file, run_fn, symbols,
+                      initial_capital, workers, max_consecutive_errors, progress)
+
+
+def _select_winners(windows, campaign_file, progress):
+    """Re-derive per-window winners + IS-row lists from the committed JSONL.
+
+    Deterministic across resume: winners come ONLY from checkpointed IS rows via
+    reload_wfo_rows + select_is_winner (whose documented tie-break resolves to the
+    highest finite IS Sharpe, first occurrence on ties). A campaign killed mid-OOS
+    re-derives the IDENTICAL winner it would have picked before the crash — the
+    winner is never recomputed differently on resume.
+
+    Returns (winners, window_is_rows) parallel to `windows`. Windows whose combos
+    all errored yield no winner (skipped, logged) but still contribute their (empty)
+    IS-row list so the top-decile denominator stays correct.
+    """
+    all_rows = reload_wfo_rows(campaign_file)
+    is_by_window: dict[int, list] = {}
+    for r in all_rows:
+        if r.get("phase") == "is":
+            is_by_window.setdefault(r["window_id"], []).append(r)
+    winners: list[dict] = []
+    window_is_rows: list[list[dict]] = []
+    for w in windows:
+        rows = is_by_window.get(w.window_id, [])
+        window_is_rows.append(rows)
+        win = select_is_winner(rows)
+        if win is None:
+            progress(f"w{w.window_id}: all IS combos errored — window skipped")
+            continue
+        winners.append({**win, "window_id": w.window_id})
+    return winners, window_is_rows
+
+
+def run_campaign(strategy_id: str, campaign_file: Path,
+                 windows_limit: int | None = None, workers: int = 1,
+                 run_fn=run_one_backtest, symbols: list[str] | None = None,
+                 total_start: date | None = None, total_end: date | None = None,
+                 initial_capital: str = "10000",
+                 max_consecutive_errors: int = DEFAULT_MAX_CONSECUTIVE_ERRORS,
+                 retry_errors: bool = False,
+                 progress=lambda m: None) -> WFOCampaignResult:
+    """Run (or resume) the 2-pass WFO campaign; return winners, stitched OOS, drift.
+
+    Two-pass dependency handling (OOS for window N needs window N's IS winner):
+
+      Pass 1 — run EVERY IS combo for EVERY window (embarrassingly parallel: 31x
+        work keeps the pool busy). Each row checkpoints immediately.
+      Winner selection — re-derive each window's winner from the committed IS rows
+        (reload_wfo_rows + select_is_winner). This is done from the JSONL, NOT from
+        in-memory pass-1 results, so a resume produces the SAME winners.
+      Pass 2 — run the ONE OOS backtest per winner (with kind='oos_winner').
+
+    Resume works ACROSS passes: a crash mid-IS resumes IS (uncommitted IS combos
+    re-run); a crash mid-OOS finds all IS rows present (no IS re-run), re-derives
+    the identical winners deterministically, and re-runs only the missing OOS
+    backtests. Resume is applied BEFORE submitting either pass via
+    load_completed_keys.
+
+    SINGLE-WRITER INVARIANT: every append_wfo_row happens in THIS parent process
+    (in _run_serial / _run_parallel); run_fn — including across the process-pool
+    boundary — only computes and RETURNS a row. A single writer is what makes the
+    concurrent parallel appends safe (no interleaved partial lines).
+
+    Circuit breaker: `max_consecutive_errors` consecutive errored rows abort with
+    an operator-actionable RuntimeError; a single success resets the counter. The
+    breaker applies to BOTH passes and both execution paths.
+
+    Midnight / multi-day note: `total_end` defaults to date.today() at call time and
+    is NOT embedded in row keys. A resume after midnight extends the last window's
+    OOS by 1 day (negligible for multi-year windows; documented and accepted).
+    """
+    from jutsu_engine.audit.attribution import _all_symbols
+
+    campaign_file = Path(campaign_file)
+    total_start = total_start or ATTRIBUTION_START
+    total_end = total_end or date.today()
+    symbols = symbols if symbols is not None else _all_symbols(strategy_id)
+    windows = generate_windows(total_start, total_end, windows_limit=windows_limit)
+    combos = expand_grid()
+
+    # ---- Pass 1: all IS combos for all windows (resume-before-submit) ----
+    done = load_completed_keys(campaign_file, retry_errors=retry_errors)
+    is_units = [(w, c, "is") for w in windows for c in combos
+                if row_key(w.window_id, "is", c["hash"]) not in done]
+    progress(f"pass 1 (IS): {len(is_units)} of {len(windows) * len(combos)} "
+             "units to run")
+    _dispatch(strategy_id, is_units, campaign_file, run_fn, symbols,
+              initial_capital, workers, max_consecutive_errors, progress)
+
+    # ---- Winner selection from committed IS rows (deterministic on resume) ----
+    winners, window_is_rows = _select_winners(windows, campaign_file, progress)
+    win_by_id = {w["window_id"]: w for w in winners}
+
+    # ---- Pass 2: one OOS backtest per winner (resume-before-submit) ----
+    done = load_completed_keys(campaign_file, retry_errors=retry_errors)
+    oos_units = []
+    for w in windows:
+        win = win_by_id.get(w.window_id)
+        if win is None:
+            continue
+        combo = {"hash": win["hash"], "combo_id": win.get("combo_id", -1),
+                 "kind": "oos_winner", "overrides": win["overrides"]}
+        if row_key(w.window_id, "oos", combo["hash"]) in done:
+            continue
+        oos_units.append((w, combo, "oos"))
+    progress(f"pass 2 (OOS): {len(oos_units)} winner backtests to run")
+    _dispatch(strategy_id, oos_units, campaign_file, run_fn, symbols,
+              initial_capital, workers, max_consecutive_errors, progress)
+
+    # ---- Stitch OOS + build drift table from committed rows ----
+    all_rows = reload_wfo_rows(campaign_file)
+    oos_frames = [pd.DataFrame(r["oos_rows"]) for r in all_rows
+                  if r.get("phase") == "oos" and r.get("oos_rows")]
+    stitched = stitch_oos_metrics(oos_frames)
+    drift = drift_table(winners)
+    vdist = param_value_distribution(winners)
+
+    return WFOCampaignResult(
+        strategy_id=strategy_id, winners=winners, window_is_rows=window_is_rows,
+        stitched=stitched, drift=drift, value_distribution=vdist,
+        campaign_file=str(campaign_file))
