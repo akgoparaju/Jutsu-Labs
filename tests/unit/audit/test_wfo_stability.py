@@ -357,3 +357,54 @@ class TestGoldenAxisWinnerShare:
         assert stability_verdict(0.85) == "stable"
         assert stability_verdict(0.40) == "unstable"
         assert stability_verdict(0.65) == "inconclusive"
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — Single-backtest driver (IS combo / OOS window)
+# ---------------------------------------------------------------------------
+import glob
+import tempfile
+from datetime import date as _date
+
+import jutsu_engine.audit.wfo_stability as wfo_mod
+
+
+class TestRunOneBacktest:
+    def test_backtest_failure_records_loud_error_row(self, monkeypatch):
+        """A raising backtest yields a row with is_sharpe=None and an error string,
+        never crashing the campaign."""
+        import jutsu_engine.application.backtest_runner as br_mod
+
+        class _BoomRunner:
+            def __init__(self, config): pass
+            def run(self, strategy, output_dir=None):
+                raise RuntimeError("no database")
+
+        monkeypatch.setattr(br_mod, "BacktestRunner", _BoomRunner)
+        monkeypatch.setattr(wfo_mod, "build_overridden_strategy",
+                            lambda sid, ov: object())
+
+        row = wfo_mod.run_one_backtest(
+            "v3_5b", {"hash": "h1", "combo_id": 0, "kind": "product",
+                      "overrides": {"upper_thresh_z": 1.0}},
+            ["QQQ"], _date(2010, 2, 1), _date(2012, 8, 1), phase="is")
+        assert row["is_sharpe"] is None
+        assert "no database" in row["error"]
+
+    def test_error_row_leaves_no_tempdir(self, monkeypatch):
+        """A failed backtest cleans up its throwaway tempdir (no plateau/wfo leak)."""
+        import jutsu_engine.application.backtest_runner as br_mod
+
+        class _BoomRunner:
+            def __init__(self, config): pass
+            def run(self, strategy, output_dir=None):
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(br_mod, "BacktestRunner", _BoomRunner)
+        monkeypatch.setattr(wfo_mod, "build_overridden_strategy",
+                            lambda sid, ov: object())
+        before = set(glob.glob(tempfile.gettempdir() + "/wfo_*"))
+        wfo_mod.run_one_backtest(
+            "v3_5b", {"hash": "h", "combo_id": 0, "kind": "product", "overrides": {}},
+            ["QQQ"], _date(2010, 2, 1), _date(2012, 8, 1), phase="is")
+        assert set(glob.glob(tempfile.gettempdir() + "/wfo_*")) == before

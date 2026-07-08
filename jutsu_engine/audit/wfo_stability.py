@@ -384,3 +384,87 @@ def stability_verdict(share: float) -> str:
     if share < UNSTABLE_THRESHOLD:
         return "unstable"
     return "inconclusive"
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — Single-backtest driver (IS combo / OOS window)
+# ---------------------------------------------------------------------------
+import shutil
+import tempfile
+from datetime import datetime, timezone
+from decimal import Decimal
+from pathlib import Path
+
+# The live-config override bridge (float->Decimal parity with LiveStrategyRunner).
+# Imported at module level so monkeypatch can intercept it via wfo_mod attribute.
+from jutsu_engine.audit.plateau import build_overridden_strategy
+
+
+def run_one_backtest(strategy_id: str, combo: dict, symbols: list[str],
+                     start: date, end: date, phase: str,
+                     initial_capital: str = "10000") -> dict:
+    """Run ONE backtest for a combo over [start, end]; return a result row.
+
+    Picklable (plain args — no closures, no captured state) so it runs inside a
+    ProcessPoolExecutor worker on macOS spawn. All BacktestRunner CSVs write to a
+    throwaway tempdir (prefix wfo_) that is cleaned in a finally block — no output
+    lands in the report dir and no tempdirs leak on error.
+
+    For IS phase: only is_sharpe is consumed. For OOS phase: the regime-timeseries
+    CSV (Date / Strategy_Daily_Return / QQQ_Daily_Return columns — regime_analyzer.py
+    lines 200-216) is loaded; its rows are stored as oos_rows for stitching. Column
+    names come directly from the CSV and match the required columns exactly.
+
+    A raising backtest returns a LOUD error row (is_sharpe=None, oos_rows=None,
+    error=<exception string>) rather than propagating the exception, so a single
+    failed run never aborts the campaign.
+
+    `is_sharpe` stores the per-window Sharpe for both phases: for IS it is the
+    selection metric; for OOS it is diagnostic-only (the headline metrics come from
+    stitch_oos_metrics over the full oos_rows set, not from per-window Sharpes).
+    """
+    from jutsu_engine.application.backtest_runner import BacktestRunner
+
+    config = {
+        "symbols": symbols,
+        "timeframe": "1D",
+        "start_date": datetime(start.year, start.month, start.day, tzinfo=timezone.utc),
+        "end_date": datetime(end.year, end.month, end.day, tzinfo=timezone.utc),
+        "initial_capital": Decimal(str(initial_capital)),
+    }
+    tmpdir = tempfile.mkdtemp(prefix="wfo_")
+    error = None
+    results: dict = {}
+    ts_rows = None
+    try:
+        strategy = build_overridden_strategy(strategy_id, combo["overrides"])
+        runner = BacktestRunner(config)
+        results = runner.run(strategy, output_dir=tmpdir)
+        if phase == "oos":
+            ts_csv = results.get("regime_timeseries_csv")
+            if ts_csv and Path(ts_csv).exists():
+                df = pd.read_csv(ts_csv)
+                # Columns from regime_analyzer.py generate_timeseries():
+                #   Date, Regime, Trend, Vol, QQQ_Close, QQQ_Daily_Return,
+                #   Portfolio_Value, Strategy_Daily_Return
+                # stitch_oos_metrics requires exactly:
+                #   Date, Strategy_Daily_Return, QQQ_Daily_Return  — all present.
+                ts_rows = df[["Date", "Strategy_Daily_Return",
+                              "QQQ_Daily_Return"]].to_dict("records")
+            else:
+                error = "OOS backtest emitted no regime timeseries CSV"
+    except Exception as exc:  # noqa: BLE001 — loud row, never crash the campaign
+        error = f"{type(exc).__name__}: {exc}"
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    return {
+        "hash": combo["hash"],
+        "combo_id": combo["combo_id"],
+        "kind": combo["kind"],
+        "phase": phase,
+        "overrides": combo["overrides"],
+        "is_sharpe": results.get("sharpe_ratio") if error is None else None,
+        "oos_rows": ts_rows,    # list[dict] for OOS success; None otherwise
+        "error": error,
+    }
