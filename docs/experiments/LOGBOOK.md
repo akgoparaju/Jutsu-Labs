@@ -26,7 +26,7 @@ in-sample numbers optimistic by construction.
 | EXP-001 | 2026-07-06 | What are the honest baseline numbers, and does live match backtest? | Full-period Sharpe ~0.8 (not 2.8); initial 8.6% fidelity alarm raised |
 | EXP-002 | 2026-07-06 | Are the 8 logic-mismatch days a production bug? | No — audit artifact (information-set mismatch); true divergence 1.1% |
 | EXP-003 | 2026-07-07 | How robust is the golden config to small parameter perturbations (plateau vs cliff)? | Plateau, no cliffs (both strategies); golden at 48th/57.5th pct of own neighborhood; vol-regime channel most sensitive |
-| EXP-004 | 2026-07-07 | Are the golden parameters stable across WFO time windows (does adaptive tuning have anything to chase)? | _(pending campaign run)_ |
+| EXP-004 | 2026-07-07 | Are the golden parameters stable across WFO time windows (does adaptive tuning have anything to chase)? | Adaptive tuning CLOSED: winners are noise (golden top-decile 3.7%, below chance); chasing them OOS earns Sharpe 0.46 / CAGR 5.4% vs ~0.8 / ~23% fixed; all 4 quarantined candidates killed |
 
 ---
 
@@ -374,24 +374,69 @@ live/scheduler changes.
   then `--strategy v3_5d`. Smoke: `jutsu audit wfo --strategy v3_5b --windows-limit 2
   --workers 4` (~4 min, proves pipeline end-to-end).
 
-**Results.** _(pending — fill stitched OOS Sharpe/CAGR/MaxDD/alpha-vs-QQQ for both
-strategies; combo-level top-decile share and overall verdict; whether any
-quarantined candidate survived OOS; per-window winner-value distribution.)_
+**Results (both campaigns complete 2026-07-07, 864/864 rows each, 0 errors,
+~1h/strategy at workers=4).**
 
-**Verdict / decisions.** _(pending — the adaptive-parameters go/no-go per spec §10.)_
+*Stitched OOS equity curve (3,737 OOS trading days ≈ 14.8y, 2012-08 → 2026-07) —
+this is what an adaptive re-optimizing agent (re-tune every 6 months on trailing
+2.5y, trade the winner) would actually have earned:*
 
-Interpretation contract (fill after campaign):
-- ≥80% windows: golden combo in top decile → **STABLE; adaptive tuning UNNECESSARY**.
-- <50% windows → **UNSTABLE; parameters fragile across time; config needs structural
-  work before any adaptive tuning is considered**.
-- 50–80%: INCONCLUSIVE — widen study window or grid.
-- Quarantined candidates: adopted only if they WIN windows AND their stitched OOS
-  contribution holds; otherwise killed.
+| | OOS Sharpe | OOS CAGR | OOS MaxDD | total return | QQQ total | alpha |
+|---|---|---|---|---|---|---|
+| v3_5b | **0.455** | **5.4%** | −29.5% | +119% | +992% | **−873pp** |
+| v3_5d | **0.464** | **5.4%** | −33.9% | +117% | +979% | **−862pp** |
+
+- **Golden combo top-decile share: 3.7% (1/27 windows) — both strategies.**
+  Formally "unstable" per the spec §10 gate. But note what 3.7% means on a flat
+  surface: with 31 near-equivalent combos racing, golden would land top-4 ~13% of
+  the time by pure chance; 3.7% is *below* chance — per-window winners are noise
+  draws, not signal.
+- **Winner values are noise, not drift**: golden values remain the MODES of the
+  winner distribution on every axis (upper_thresh_z 1.0 wins 20/27; realized_vol_window
+  21 wins 12-13/27; sma_slow 140 wins 12/27) with no temporal trend — winners
+  bounce between adjacent values window to window.
+- **All four quarantined candidates KILLED.** They won only scattered windows
+  (v3_5b: vol_crush_threshold −0.12 ×4, osc_smoothness 12 ×4, bond_sma_fast 24 ×1,
+  bond_sma_slow 66 ×1 — same pattern v3_5d) with no persistence, and the stitched
+  OOS curve containing their wins is poor. The in-sample improvements from EXP-003
+  did not transfer; do not adopt any of them.
+
+**Verdict / decisions.**
+1. **The adaptive-parameter-tuning idea is now CLOSED, empirically.** This is the
+   experiment the whole audit was scoped to reach. The two-sided proof: (a) the
+   spec gate says parameters are "unstable" — but EXP-003 showed the surface is
+   flat, so the instability is *noise* instability; (b) the stitched OOS curve
+   directly measures what chasing per-window winners earns: **Sharpe 0.46 / CAGR
+   5.4%**, versus ~0.8 / ~23% for simply holding the fixed golden config over the
+   same era, and +992% for QQQ buy-hold. An adaptive agent re-optimizing these
+   parameters would have destroyed roughly three-quarters of the strategy's
+   return. Selection on 2.5y in-sample Sharpe does not transfer 6 months forward.
+2. Read together, EXP-003 + EXP-004 say: the golden config's parameter choices
+   are fine (modal, central, plateau) — **the config's weakness is structural,
+   not parametric**. Fourth consecutive experiment pointing improvement effort at
+   the regime classifier (crash exit/re-entry), now with the parametric
+   alternative affirmatively eliminated rather than merely disfavored.
+3. Spec-§10 label caveat: the report prints "JUSTIFIED-INVESTIGATE (unstable)"
+   per the pre-committed threshold contract; the investigation is this study
+   itself — the adaptive route was investigated and empirically fails. No
+   follow-up adaptive experiment is warranted.
+4. Method note for future WFO reads: each OOS window trades cold-start (fresh
+   warmup, no position carryover), and this tested ONE adaptive protocol
+   (6-month re-opt, 2.5y lookback, Sharpe selection). Alternate protocols would
+   likely fare similarly given the noise diagnosis, but the claim is strictly
+   about this class.
 
 **Artifacts.** Reports `claudedocs/audit/2026-07-07/report_wfo_v3_5{b,d}.md`;
-campaign JSONLs `claudedocs/audit/2026-07-07/v3_5{b,d}/campaign_wfo_v3_5{b,d}.jsonl`;
-code on branch `feature/audit-phase3-wfo-exec`, merged to main after campaign.
-Serena memory: _(write after campaign completes)_.
+campaign JSONLs `claudedocs/audit/2026-07-07/v3_5{b,d}/campaign_wfo_v3_5{b,d}.jsonl`
+(864 fsync'd rows each); code merged to main @ `223a1c8` (199 unit tests).
+Serena: `wfo_phase3_shipped_campaign_running_2026-07-07` (+ results memory).
+
+**Follow-ups spawned.** Module 3 (DSR/PBO) — the last unmeasured piece: trial-count
+correction for the family's search history (EXP-003's 48th-percentile finding
+lowered the parameter-overfit prior; DSR/PBO quantifies it). The stitched WFO OOS
+curve is now the honest benchmark for the Kronos program's Gate-2 overlays
+(XREF-001). Regime-classifier upgrade program (vol channel) is next after
+Module 3, with the full gauntlet (plateau + WFO + DSR) as its fitness function.
 
 **Follow-ups spawned.** Module 3 DSR/PBO (spec §14) — the trial-count correction for
 the v2.x→v3.5b search history is still unmeasured. If WFO says unstable, the
