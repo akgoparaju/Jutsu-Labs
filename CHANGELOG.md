@@ -1,3 +1,42 @@
+#### **Fix: Audit Module 3 — compute v3_5b DSR on the TRUE live golden returns (dedicated 244th combo)** (2026-07-07)
+
+Blocking integrity defect from final pre-merge review: the v3_5b DSR headline (SR_obs,
+moments, all brackets) was silently anchored to the nearest in-grid combo
+(`sma_slow=200`) via `_golden_anchor_hash`'s `combos[0]` fallback, because the LIVE
+golden (`sma_slow=140`) lies outside the historical grid axis `[180,200,220]` — the most
+sensitive axis. Meanwhile the report claimed "DSR uses the LIVE golden campaign returns
+regardless". Code, docstring, and report were mutually consistent and collectively wrong.
+
+- **`jutsu_engine/audit/selection_bias.py`:**
+  - New `golden_live_combo()` (empty overrides == exact live YAML config, same seam as
+    v3_5d), `enumerate_golden_grid_with_live()` wrapper (243 grid + appended golden_live
+    = 244), and constants `GRID_KIND`/`GOLDEN_LIVE_KIND`/`GOLDEN_LIVE_HASH`
+    (`combo_hash({})`, provably disjoint from all 243 grid hashes)/`GOLDEN_LIVE_COMBO_ID`.
+    Grid combos now carry `kind="grid"`; `kind` persisted in returns rows.
+  - `summarize_selection_bias` sources DSR/moments from the golden combo's OWN returns
+    and builds the PBO/CSCV matrix + cross-trial V from GRID combos ONLY
+    (`is_golden_live_row` excludes golden_live). Missing/errored golden row → loud
+    `RuntimeError` (no silent fallback).
+  - `run_dsr` v3_5b path uses the wrapper and `golden_hash=GOLDEN_LIVE_HASH`; the
+    nearest-in-grid combo (`sma_slow=200`) survives ONLY as a reported diagnostic
+    (`nearest_in_grid_anchor_hash`), guarded so smoke `--combos-limit` runs set it to
+    `None` instead of crashing. `--combos-limit` always keeps golden_live.
+  - `_golden_anchor_hash` repurposed to the diagnostic anchor; raises `ValueError` when
+    absent (removed the `combos[0]` fallback). New `_golden_anchor_target_hash()`.
+- **`jutsu_engine/audit/report.py`:** golden-anchor caveat replaced with a truthful
+  golden-provenance note (DSR runs on the live golden's own returns as the 244th
+  `kind=golden_live` combo; the 243-grid feeds PBO/V only; nearest in-grid combo is a
+  provenance note, NOT a DSR input). Optional diagnostic anchor row rendered when present.
+- **Tests (`test_selection_bias.py`, `test_report.py`):** wrapper/golden_live enumeration
+  + disjoint-hash + PBO-exclusion flag; DSR sourced from golden_live (distinguishable
+  Sharpe X≠Y); golden_live excluded from matrix/V (`n_combos` == grid count); errored
+  golden_live → RuntimeError; `--combos-limit` keeps golden_live; anchor-absent →
+  ValueError; corrected report caveat text + diagnostic-row rendering.
+- Scoped suite (`tests/unit/audit/ tests/unit/cli/test_audit_command.py`): 289 passing
+  (278 → 289, +11). REPL-proven: golden_moments.sr_obs tracks golden_live's Sharpe (3.0
+  vs grid 0.5) and cross_trial_V (0.06 grid-only) excludes the golden_live outlier
+  (0.72 if included).
+
 #### **Feature: Baseline Audit Phase 4 — Module 3 DSR/PBO, Tasks 13–15: CLI + smoke mode + docs** (2026-07-07)
 
 Added `jutsu audit dsr` CLI subcommand, smoke-mode support, and final documentation.

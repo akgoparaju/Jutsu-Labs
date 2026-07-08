@@ -30,10 +30,12 @@ from jutsu_engine.audit.config import PROJECT_ROOT
 # header (lines 58-84): axes and values match exactly. Total = 3^5 = 243. ✓
 #
 # NOTE: the live golden config's sma_slow=140 is OUTSIDE this historical grid
-# [180,200,220]. The live value was tuned in a later phase. For DSR, the in-grid
-# anchor uses sma_slow=200 (closest center value). This mismatch is documented in
-# _golden_anchor_hash() (defined in this module, see below) and in the DSR report
-# (report.py:render_dsr_section, written by write_dsr_report).
+# [180,200,220]. The live value was tuned in a later phase. The DSR is therefore
+# computed on the LIVE golden config's OWN returns, run as a dedicated 244th
+# campaign combo (kind="golden_live", empty overrides == exact live YAML config).
+# The 243 GRID combos feed PBO and cross-trial V only. The nearest in-grid combo
+# (sma_slow=200) survives ONLY as a reported diagnostic (_golden_anchor_hash) and
+# never feeds the DSR. See report.py:render_dsr_section (written by write_dsr_report).
 GOLDEN_GRID_AXES: dict[str, list] = {
     "upper_thresh_z": [0.8, 1.0, 1.2],
     "lower_thresh_z": [-0.2, 0.0, 0.2],
@@ -58,13 +60,31 @@ def combo_hash(overrides: dict) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
+# The kind tag distinguishing a HISTORICAL grid combo from the LIVE golden combo.
+# Grid combos carry kind="grid"; the appended live golden carries kind="golden_live".
+# summarize_selection_bias computes the matrix/V/PBO from grid combos ONLY and takes
+# the DSR/moments from the golden_live row.
+GRID_KIND: str = "grid"
+GOLDEN_LIVE_KIND: str = "golden_live"
+
+# The golden_live combo has EMPTY overrides == the exact live golden YAML config
+# (identical to v3_5d's combo_hash({}) path). Its hash is deterministic and provably
+# disjoint from every 243-grid combo (grid combos always have 5 non-empty overrides),
+# so it also serves as the authoritative discriminator when rows lack a persisted kind.
+GOLDEN_LIVE_HASH: str = combo_hash({})
+
+# The synthetic combo_id for the appended golden_live combo (one past the 243-grid
+# max index 242). Grid smoke truncation never reaches it; it is always appended last.
+GOLDEN_LIVE_COMBO_ID: int = 243
+
+
 def enumerate_golden_grid(limit: int | None = None) -> list[dict]:
     """Expand GOLDEN_GRID_AXES into 243 combos (or the first `limit` for smoke runs).
 
-    Each combo: {"combo_id": int, "overrides": {axis: value}, "hash": str}.
-    combo_id is the enumeration index 0..242 (deterministic: itertools.product over
-    the axes in GOLDEN_GRID_AXES insertion order). `limit` truncates to the first N
-    combos (smoke mode); None returns all 243.
+    Each combo: {"combo_id": int, "overrides": {axis: value}, "hash": str,
+    "kind": "grid"}. combo_id is the enumeration index 0..242 (deterministic:
+    itertools.product over the axes in GOLDEN_GRID_AXES insertion order). `limit`
+    truncates to the first N combos (smoke mode); None returns all 243.
     """
     names = list(GOLDEN_GRID_AXES.keys())
     value_lists = [GOLDEN_GRID_AXES[n] for n in names]
@@ -75,10 +95,38 @@ def enumerate_golden_grid(limit: int | None = None) -> list[dict]:
             "combo_id": cid,
             "overrides": overrides,
             "hash": combo_hash(overrides),
+            "kind": GRID_KIND,
         })
     if limit is not None:
         combos = combos[:limit]
     return combos
+
+
+def golden_live_combo() -> dict:
+    """The dedicated 244th combo carrying the TRUE live golden config for the DSR.
+
+    Empty overrides == the exact live golden YAML config (the same seam v3_5d uses:
+    combo_hash({})). Flagged kind="golden_live" so summarize_selection_bias EXCLUDES
+    it from the PBO/CSCV matrix and cross-trial V while sourcing the DSR/moments from
+    its returns. combo_id 243 sits one past the grid's 0..242 range.
+    """
+    return {
+        "combo_id": GOLDEN_LIVE_COMBO_ID,
+        "overrides": {},
+        "hash": GOLDEN_LIVE_HASH,
+        "kind": GOLDEN_LIVE_KIND,
+    }
+
+
+def enumerate_golden_grid_with_live(limit: int | None = None) -> list[dict]:
+    """The v3_5b campaign combos: the 243 grid + the appended golden_live combo (244).
+
+    The DSR headline is computed on the golden_live combo's OWN returns (the live
+    config); the 243 grid combos feed PBO and cross-trial V only. `limit` truncates
+    the GRID for smoke runs but ALWAYS keeps the golden_live combo appended last —
+    without it the DSR would have no returns to compute on.
+    """
+    return enumerate_golden_grid(limit=limit) + [golden_live_combo()]
 
 
 # ─── Task 7: Returns-campaign worker + JSONL persistence ──────────────────────
@@ -97,7 +145,7 @@ from jutsu_engine.audit.plateau import _ends_with_newline, build_overridden_stra
 # verbatim (crash-safety, single-writer, --retry-errors). Chosen over parquet
 # because pyarrow is not installed (no new dependency) and JSONL is the proven
 # campaign format.
-_RETURNS_RESULT_KEYS = ("combo_id", "hash", "overrides",
+_RETURNS_RESULT_KEYS = ("combo_id", "hash", "overrides", "kind",
                         "dates", "returns", "sharpe", "error")
 
 
@@ -235,6 +283,7 @@ def run_one_combo(strategy_id: str, combo: dict, symbols: list[str],
         "combo_id": combo["combo_id"],
         "hash": combo["hash"],
         "overrides": combo["overrides"],
+        "kind": combo.get("kind", GRID_KIND),
         "dates": dates,
         "returns": returns,
         "sharpe": results.get("sharpe_ratio") if error is None else None,
@@ -494,6 +543,20 @@ def golden_combo_returns(rows: list[dict], golden_hash: str) -> np.ndarray:
     )
 
 
+def is_golden_live_row(row: dict) -> bool:
+    """True when a campaign row is the dedicated live-golden combo (not a grid combo).
+
+    Authoritative discriminator: the golden_live combo has EMPTY overrides, so its
+    hash equals GOLDEN_LIVE_HASH == combo_hash({}) — provably disjoint from every
+    243-grid combo (grid combos always carry 5 non-empty overrides). We also honour a
+    persisted kind flag when present, but never rely on it alone (older/partial
+    checkpoints may predate the kind field).
+    """
+    if row.get("kind") == GOLDEN_LIVE_KIND:
+        return True
+    return row.get("hash") == GOLDEN_LIVE_HASH
+
+
 # ─── Task 11: run_dsr orchestrator + selection-bias summary dict ──────────────
 
 from datetime import date as _date
@@ -518,9 +581,17 @@ def summarize_selection_bias(strategy_id: str, rows: list[dict], golden_hash: st
                              family_N=DEFAULT_N_BRACKETS) -> dict:
     """Assemble the DSR + PBO report summary from campaign rows (pure over rows).
 
+    The DSR headline (SR_obs, moments, all brackets) is computed on the GOLDEN combo's
+    OWN returns (the row whose hash == golden_hash). For v3_5b that hash is the
+    golden_live combo (empty overrides == the exact live golden YAML config); the
+    historical 243-grid combos feed PBO and cross-trial V ONLY and are EXCLUDED from
+    the DSR. For v3_5d the single combo IS the golden. If the golden row is absent or
+    errored we raise loudly (no silent fallback to an in-grid combo).
+
     Args:
       rows: returns-campaign rows (from run_returns_campaign).
-      golden_hash: hash of the golden combo whose daily series drives the DSR.
+      golden_hash: hash of the golden combo whose daily series drives the DSR
+        (GOLDEN_LIVE_HASH for v3_5b; combo_hash({}) for v3_5d — same value).
       trial_inventory: trial_count_records() rows (read-only DB inventory).
       compute_pbo_block: True for v3_5b (full grid → CSCV); False for v3_5d (DSR-only).
       S: CSCV blocks (16 per spec).
@@ -528,12 +599,27 @@ def summarize_selection_bias(strategy_id: str, rows: list[dict], golden_hash: st
         family-level estimate, e.g. 1000/5000 — no grid of its own).
 
     Returns a dict consumed by render_dsr_section:
-      strategy_id, n_combos, cross_trial_V, dsr_brackets (list per N),
-      golden_moments (sr_obs/skew/kurt/T), pbo (block or None), trial_inventory,
-      golden_hash.
+      strategy_id, n_combos (GRID combos only, golden_live excluded), cross_trial_V,
+      dsr_brackets (list per N, from golden_live returns), golden_moments
+      (sr_obs/skew/kurt/T, from golden_live returns), pbo (block or None,
+      grid-only matrix), trial_inventory, golden_hash.
     """
-    golden_series = golden_combo_returns(rows, golden_hash)
-    matrix, col_hashes, _dates, n_filled = build_returns_matrix(rows)
+    # The DSR/moments come from the golden combo's OWN returns; loud on absence.
+    try:
+        golden_series = golden_combo_returns(rows, golden_hash)
+    except KeyError as exc:
+        raise RuntimeError(
+            f"DSR golden combo {golden_hash!r} for strategy {strategy_id!r} is "
+            f"absent or errored in the campaign rows — cannot compute the DSR "
+            f"headline. Re-run its backtest (e.g. --retry-errors); no silent "
+            f"fallback to an in-grid combo."
+        ) from exc
+
+    # The PBO/CSCV matrix and cross-trial V are built from the historical GRID combos
+    # ONLY: the golden_live combo (empty-overrides live config) is EXCLUDED so it does
+    # not contaminate the cross-trial variance or the CSCV partitioning.
+    grid_rows = [r for r in rows if not is_golden_live_row(r)]
+    matrix, col_hashes, _dates, n_filled = build_returns_matrix(grid_rows)
     V = cross_trial_variance(matrix) if matrix.size else 0.0
 
     # V is keyword-required in deflated_sharpe_brackets (prevents silent V=0 bug).
@@ -591,10 +677,12 @@ def run_dsr(strategy_id: str, run_dir: _Path, workers: int = 1,
             progress=lambda m: None) -> dict:
     """End-to-end Module 3 for one strategy: campaign → matrix → DSR + PBO summary.
 
-    v3_5b (primary): enumerate the 243-combo golden grid (or `combos_limit` for a
-    smoke run), run the returns campaign (resumable JSONL under
-    run_dir/<sid>/campaign_dsr_<sid>.jsonl), build the matrix, compute DSR brackets
-    on the golden combo + PBO/CSCV over the full matrix.
+    v3_5b (primary): enumerate the 243-combo golden grid PLUS the appended
+    golden_live combo (244 backtests total; or `combos_limit` truncates the GRID for
+    a smoke run while ALWAYS keeping golden_live). Run the resumable returns campaign
+    (JSONL under run_dir/<sid>/campaign_dsr_<sid>.jsonl), build the PBO/CSCV matrix +
+    cross-trial V from the 243 GRID combos only, and compute the DSR brackets on the
+    golden_live combo's OWN returns (the true live config).
 
     v3_5d: DSR-ONLY. Its distinguishing grid was ~10 combos (too few for CSCV), so
     we run a SINGLE golden backtest (as one combo) and report DSR at a family-level
@@ -603,7 +691,8 @@ def run_dsr(strategy_id: str, run_dir: _Path, workers: int = 1,
     skip_campaign: if the campaign JSONL already has every combo, skip re-running
     (matrix rebuilt from the existing rows). Errors if rows are missing.
 
-    combos_limit: truncate the grid for smoke runs (e.g. 4 combos).
+    combos_limit: truncate the GRID for smoke runs (e.g. 4 combos); golden_live is
+      always additionally included (otherwise the DSR would have no returns).
     cscv_blocks: CSCV block count S (default 16 per spec; 2 for smoke runs).
     """
     run_dir = _Path(run_dir)
@@ -611,13 +700,15 @@ def run_dsr(strategy_id: str, run_dir: _Path, workers: int = 1,
     campaign_file = run_dir / strategy_id / f"campaign_dsr_{strategy_id}.jsonl"
 
     if strategy_id == "v3_5b":
-        combos = enumerate_golden_grid(limit=combos_limit)
-        golden_hash = _golden_anchor_hash(combos)
+        # 243 grid combos (kind="grid") + the appended golden_live combo (244th).
+        combos = enumerate_golden_grid_with_live(limit=combos_limit)
+        golden_hash = GOLDEN_LIVE_HASH   # DSR uses the TRUE live golden's own returns
         compute_pbo_block = True
         family_N = DEFAULT_N_BRACKETS
     else:
-        # v3_5d: single golden combo (no overrides = live golden config).
-        combos = [{"combo_id": 0, "overrides": {}, "hash": combo_hash({})}]
+        # v3_5d: single golden combo (no overrides = live golden config), flagged
+        # golden_live so is_golden_live_row recognises it consistently.
+        combos = [golden_live_combo()]
         golden_hash = combos[0]["hash"]
         compute_pbo_block = False
         family_N = (1000, 5000)   # family-level estimate; documented in report
@@ -632,32 +723,58 @@ def run_dsr(strategy_id: str, run_dir: _Path, workers: int = 1,
         raise RuntimeError(
             f"no campaign rows at {campaign_file}; run without --skip-campaign first")
 
-    return summarize_selection_bias(
+    summary = summarize_selection_bias(
         strategy_id=strategy_id, rows=rows, golden_hash=golden_hash,
         trial_inventory=trial_inventory or [], compute_pbo_block=compute_pbo_block,
         S=cscv_blocks, family_N=family_N)
 
+    # DIAGNOSTIC-ONLY: the nearest in-grid combo (sma_slow=200) is reported as a
+    # provenance note about the search history. It never feeds the DSR. On smoke
+    # runs (--combos-limit) the truncated grid may not contain the anchor, so guard
+    # gracefully rather than crash.
+    if strategy_id == "v3_5b":
+        grid_hashes = {c["hash"] for c in combos if c.get("kind") != GOLDEN_LIVE_KIND}
+        if _golden_anchor_target_hash() in grid_hashes:
+            summary["nearest_in_grid_anchor_hash"] = _golden_anchor_hash(combos)
+        else:
+            summary["nearest_in_grid_anchor_hash"] = None
+
+    return summary
+
+
+# Live golden values for the four SHARED axes (sma_slow=140 is OUTSIDE the historical
+# grid [180,200,220], so the nearest in-grid representative uses the CENTER 200).
+_ANCHOR_OVERRIDES = {"upper_thresh_z": 1.0, "lower_thresh_z": 0.2,
+                     "vol_crush_threshold": -0.15, "sma_fast": 40, "sma_slow": 200}
+
+
+def _golden_anchor_target_hash() -> str:
+    """Hash of the nearest in-grid combo (sma_slow=200) — the DIAGNOSTIC anchor."""
+    return combo_hash(_ANCHOR_OVERRIDES)
+
 
 def _golden_anchor_hash(combos: list[dict]) -> str:
-    """Hash of the combo whose axis values equal the live golden config's.
+    """Hash of the nearest in-grid combo (sma_slow=200) — a REPORTED DIAGNOSTIC ONLY.
 
-    The live golden values for the four SHARED axes are upper_thresh_z=1.0,
-    lower_thresh_z=0.2, vol_crush_threshold=-0.15, sma_fast=40. The historical grid's
-    sma_slow axis is [180,200,220] and does NOT include the live golden 140 — so the
-    anchor uses the historical grid's CENTER sma_slow (200) as the closest in-grid
-    representative. This mismatch is real (the live config's sma_slow was tuned in a
-    LATER phase) and is stated in the DSR report (render_dsr_section); the DSR uses
-    the golden combo's actual daily returns from the campaign regardless.
+    This is NOT a DSR input. The DSR is computed on the golden_live combo's own
+    returns (empty overrides == the exact live golden config); this anchor is a
+    provenance note about the historical search: the live golden's four SHARED axes
+    (upper_thresh_z=1.0, lower_thresh_z=0.2, vol_crush_threshold=-0.15, sma_fast=40)
+    match this in-grid combo, but the live sma_slow=140 lies OUTSIDE the historical
+    grid axis [180,200,220], so the nearest in-grid representative uses the CENTER
+    sma_slow=200.
 
-    Golden anchor caveat for the report: live sma_slow=140 is OUTSIDE the historical
-    grid [180,200,220]; the in-grid anchor is sma_slow=200; DSR uses the LIVE golden
-    returns (which differ from any in-grid combo). This is honest and reproducible.
+    Raises ValueError if the anchor is absent from `combos` (no silent combos[0]
+    fallback). Callers that pass a truncated smoke grid must guard by checking
+    _golden_anchor_target_hash() membership before calling.
     """
-    anchor = {"upper_thresh_z": 1.0, "lower_thresh_z": 0.2,
-              "vol_crush_threshold": -0.15, "sma_fast": 40, "sma_slow": 200}
-    target = combo_hash(anchor)
+    target = _golden_anchor_target_hash()
     for c in combos:
         if c["hash"] == target:
             return target
-    # Fallback: first combo (deterministic) if the anchor is somehow absent.
-    return combos[0]["hash"]
+    raise ValueError(
+        f"nearest-in-grid diagnostic anchor {target!r} (sma_slow=200) absent from "
+        f"the {len(combos)} supplied combos — the grid may be smoke-truncated. This "
+        f"is a DIAGNOSTIC only and never feeds the DSR; guard with "
+        f"_golden_anchor_target_hash() membership before calling."
+    )

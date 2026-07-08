@@ -558,9 +558,11 @@ def render_dsr_section(summary: dict) -> str:
                  logit_histogram} OR None for the v3_5d DSR-only path).
 
     Renders: trial inventory table, DSR-across-N table with conservatism note and
-    golden-anchor caveat, the spec §10 gate (DSR < 95% → edge statistically unproven
-    → prioritize live record), PBO block with IS-vs-OOS plain-language verdict, and
-    the spec §7 plain-language verdict sentence.
+    golden-provenance note (DSR runs on the live golden's own returns; the 243-grid
+    feeds PBO/V only; the nearest in-grid combo is a diagnostic, not a DSR input),
+    the spec §10 gate (DSR < 95% → edge statistically unproven → prioritize live
+    record), PBO block with IS-vs-OOS plain-language verdict, and the spec §7
+    plain-language verdict sentence.
 
     Conventions: _fmt() for every number; captions OUTSIDE GFM tables;
     standalone file report_dsr_<strategy>.md (write_dsr_report).
@@ -615,12 +617,23 @@ def render_dsr_section(summary: dict) -> str:
         "DOWN. The result is conservative — it will not over-claim the edge. "
         "Do **not** re-inflate DSR to compensate.",
         "",
-        "**Golden-anchor caveat:** The live golden config's `sma_slow=140` is "
-        "OUTSIDE the historical grid axis `[180, 200, 220]` (the live value was tuned "
-        "in a later phase). The in-grid anchor uses `sma_slow=200` (closest center "
-        "value) as the representative combo. DSR uses the LIVE golden campaign returns "
-        "regardless — the anchor only identifies which row the golden combo's returns "
-        "come from.",
+        "**Golden-provenance note:** The DSR is computed on the live golden config's "
+        "OWN returns (run as a dedicated 244th campaign combo, `kind=golden_live`, "
+        "empty overrides == the exact live YAML config). The historical grid (243 "
+        "combos) feeds PBO and cross-trial V ONLY and is excluded from the DSR. The "
+        "live golden's `sma_slow=140` lies OUTSIDE the historical grid axis "
+        "`[180, 200, 220]` (that value was tuned in a later phase); the nearest "
+        "in-grid combo (`sma_slow=200`) is reported below only as a provenance note "
+        "about the search history — it is NOT a DSR input.",
+    ]
+    anchor_hash = summary.get("nearest_in_grid_anchor_hash")
+    if anchor_hash:
+        lines += [
+            "",
+            f"- Nearest in-grid combo (DIAGNOSTIC, `sma_slow=200`): `{anchor_hash}` "
+            "— provenance only, not used for the DSR.",
+        ]
+    lines += [
         "",
         "| N (trials) | SR_obs (daily) | SR\\* (expected max) | DSR (confidence) |",
         "| --- | --- | --- | --- |",

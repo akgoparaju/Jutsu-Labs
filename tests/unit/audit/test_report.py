@@ -499,11 +499,33 @@ class TestRenderDSR:
         md = render_dsr_section(_dsr_summary())
         assert "conservative" in md.lower() or "deflat" in md.lower()
 
-    def test_golden_anchor_caveat_present(self):
-        """Report notes that live sma_slow=140 is outside the historical grid."""
+    def test_golden_provenance_note_says_dsr_uses_live_returns(self):
+        """The caveat must state the DSR runs on the live golden's OWN returns.
+
+        The grid feeds PBO/V only; the nearest in-grid combo is a diagnostic, not a
+        DSR input (the OLD text falsely claimed the anchor merely 'identifies the row').
+        """
         md = render_dsr_section(_dsr_summary())
-        # The report must mention the sma_slow mismatch or the anchor caveat.
-        assert "sma_slow" in md or "anchor" in md.lower() or "outside" in md.lower()
+        low = md.lower()
+        assert "golden_live" in low                       # dedicated 244th combo named
+        assert "not a dsr input" in low or "not used for the dsr" in low
+        assert "sma_slow=140" in md and "outside" in low  # provenance context retained
+        # The retired falsehood must be gone.
+        assert "anchor only identifies which row" not in low
+
+    def test_nearest_in_grid_anchor_row_rendered_when_present(self):
+        """When the summary carries a diagnostic anchor hash, it renders as DIAGNOSTIC only."""
+        s = _dsr_summary()
+        s["nearest_in_grid_anchor_hash"] = "deadbeefcafe0000"
+        md = render_dsr_section(s)
+        assert "deadbeefcafe0000" in md and "DIAGNOSTIC" in md
+
+    def test_nearest_in_grid_anchor_row_absent_when_none(self):
+        """A None/absent anchor hash renders no diagnostic row (smoke path)."""
+        s = _dsr_summary()
+        s["nearest_in_grid_anchor_hash"] = None
+        md = render_dsr_section(s)
+        assert "Nearest in-grid combo (DIAGNOSTIC" not in md
 
     def test_spec10_gate_line_present(self):
         """The spec §10 gate line (DSR conf <95% → prioritize live record) is present."""

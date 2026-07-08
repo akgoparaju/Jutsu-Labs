@@ -5,6 +5,8 @@ import pytest
 
 from jutsu_engine.audit.selection_bias import (
     GOLDEN_GRID_AXES, enumerate_golden_grid, combo_hash, AXES_YAML_PATH,
+    enumerate_golden_grid_with_live, golden_live_combo, GOLDEN_LIVE_HASH,
+    GOLDEN_LIVE_KIND, GOLDEN_LIVE_COMBO_ID, GRID_KIND,
 )
 
 
@@ -52,6 +54,33 @@ class TestEnumerateGrid:
         a = combo_hash({"sma_fast": 40, "sma_slow": 180})
         b = combo_hash({"sma_slow": 180, "sma_fast": 40})
         assert a == b and len(a) == 16
+
+    def test_grid_combos_flagged_kind_grid(self):
+        """Every historical grid combo is flagged kind='grid' (PBO/V includes it)."""
+        assert all(c["kind"] == GRID_KIND for c in enumerate_golden_grid())
+
+    def test_wrapper_appends_golden_live_with_empty_overrides(self):
+        """enumerate_golden_grid_with_live appends a 244th golden_live combo (empty overrides)."""
+        combos = enumerate_golden_grid_with_live()
+        assert len(combos) == 244
+        live = combos[-1]
+        assert live["kind"] == GOLDEN_LIVE_KIND
+        assert live["overrides"] == {}
+        assert live["hash"] == GOLDEN_LIVE_HASH == combo_hash({})
+        assert live["combo_id"] == GOLDEN_LIVE_COMBO_ID == 243
+
+    def test_golden_live_hash_disjoint_from_grid(self):
+        """The golden_live hash is provably distinct from every grid combo's hash."""
+        grid = {c["hash"] for c in enumerate_golden_grid()}
+        assert golden_live_combo()["hash"] not in grid
+
+    def test_wrapper_limit_truncates_grid_but_keeps_golden_live(self):
+        """A smoke limit truncates the GRID but always keeps the golden_live combo."""
+        combos = enumerate_golden_grid_with_live(limit=4)
+        grid = [c for c in combos if c["kind"] == GRID_KIND]
+        live = [c for c in combos if c["kind"] == GOLDEN_LIVE_KIND]
+        assert len(grid) == 4 and len(live) == 1
+        assert live[0]["hash"] == GOLDEN_LIVE_HASH
 
 
 import json
@@ -303,6 +332,7 @@ class TestReturnsMatrix:
 # ---------------------------------------------------------------------------
 from jutsu_engine.audit.selection_bias import (
     summarize_selection_bias, DEFAULT_N_BRACKETS,
+    _golden_anchor_hash, _golden_anchor_target_hash, is_golden_live_row,
 )
 
 
@@ -347,6 +377,76 @@ class TestSummarize:
         assert summary["pbo"] is None
         assert [r["N"] for r in summary["dsr_brackets"]] == [1000, 5000]
 
+    def _grid_plus_golden_live(self, T=400, sharpe_grid=0.5, sharpe_live=3.0, seed=1):
+        """Grid rows sharing one Sharpe (Y) + a golden_live row with a DIFFERENT Sharpe (X).
+
+        Deterministic: every grid combo is z-scored then scaled to daily Sharpe Y; the
+        golden_live combo is z-scored then scaled to daily Sharpe X != Y so the DSR
+        headline (sourced from golden_live) is distinguishable from the grid combos.
+        """
+        rng = np.random.default_rng(seed)
+        dates = [f"2010-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(T)]
+
+        def _series(sr, s):
+            z = rng.standard_normal(T)
+            z = (z - z.mean()) / z.std(ddof=1)          # mean 0, std 1
+            return (z * 0.01 + sr * 0.01).tolist()      # daily Sharpe == sr
+
+        rows = []
+        for j in range(8):                              # 8 grid combos, all Sharpe Y
+            rows.append({"combo_id": j, "hash": combo_hash({"sma_fast": 40 + j}),
+                         "overrides": {"sma_fast": 40 + j}, "kind": GRID_KIND,
+                         "dates": dates, "returns": _series(sharpe_grid, 100 + j),
+                         "sharpe": sharpe_grid, "error": None})
+        rows.append({"combo_id": GOLDEN_LIVE_COMBO_ID, "hash": GOLDEN_LIVE_HASH,
+                     "overrides": {}, "kind": GOLDEN_LIVE_KIND, "dates": dates,
+                     "returns": _series(sharpe_live, 999), "sharpe": sharpe_live,
+                     "error": None})
+        return rows
+
+    def test_dsr_sourced_from_golden_live_not_grid(self):
+        """DSR SR_obs comes from the golden_live returns (Sharpe X), not the grid (Y)."""
+        rows = self._grid_plus_golden_live(sharpe_grid=0.5, sharpe_live=3.0)
+        summary = summarize_selection_bias(
+            strategy_id="v3_5b", rows=rows, golden_hash=GOLDEN_LIVE_HASH,
+            trial_inventory=[], compute_pbo_block=True, S=8)
+        # golden_live daily Sharpe is 3.0; grid combos are 0.5 → SR_obs must track 3.0.
+        assert summary["golden_moments"]["sr_obs"] == pytest.approx(3.0, abs=0.05)
+        assert summary["dsr_brackets"][0]["sr_obs"] == pytest.approx(3.0, abs=0.05)
+
+    def test_golden_live_excluded_from_matrix_and_V(self):
+        """n_combos counts GRID combos only; golden_live never enters the CSCV matrix/V."""
+        rows = self._grid_plus_golden_live()
+        summary = summarize_selection_bias(
+            strategy_id="v3_5b", rows=rows, golden_hash=GOLDEN_LIVE_HASH,
+            trial_inventory=[], compute_pbo_block=True, S=8)
+        # 8 grid combos → matrix has 8 columns; the golden_live row is excluded.
+        assert summary["n_combos"] == 8
+
+    def test_golden_live_errored_raises_loud(self):
+        """A missing/errored golden_live row raises RuntimeError (no silent fallback)."""
+        rows = self._grid_plus_golden_live()
+        rows[-1]["error"] = "backtest blew up"         # golden_live errored
+        rows[-1]["returns"] = None
+        with pytest.raises(RuntimeError, match="golden combo"):
+            summarize_selection_bias(
+                strategy_id="v3_5b", rows=rows, golden_hash=GOLDEN_LIVE_HASH,
+                trial_inventory=[], compute_pbo_block=True, S=8)
+
+
+class TestGoldenAnchorDiagnostic:
+    def test_anchor_present_returns_hash(self):
+        """_golden_anchor_hash returns the sma_slow=200 in-grid combo hash when present."""
+        combos = enumerate_golden_grid_with_live()
+        assert _golden_anchor_hash(combos) == _golden_anchor_target_hash()
+
+    def test_anchor_absent_raises_value_error(self):
+        """A truncated grid lacking the anchor raises ValueError (no silent combo-0 fallback)."""
+        combos = enumerate_golden_grid_with_live(limit=2)   # anchor not in first 2
+        assert _golden_anchor_target_hash() not in {c["hash"] for c in combos}
+        with pytest.raises(ValueError, match="anchor"):
+            _golden_anchor_hash(combos)
+
 
 class TestSmoke:
     def test_combos_limit_truncates_grid(self):
@@ -356,7 +456,7 @@ class TestSmoke:
         assert len(enumerate_golden_grid()) == 243
 
     def test_run_dsr_threads_combos_limit(self, tmp_path, monkeypatch):
-        """run_dsr(combos_limit=N) runs only N combos in the campaign."""
+        """run_dsr(combos_limit=N) runs N GRID combos PLUS the golden_live combo (244th)."""
         import jutsu_engine.audit.selection_bias as sb
         monkeypatch.setattr(sb, "_all_symbols", lambda sid: [], raising=False)
         # inject the fake worker so no DB/backtest is touched
@@ -365,11 +465,12 @@ class TestSmoke:
         def fake_run_fn(strategy_id, combo, symbols, start, end, initial_capital="10000"):
             seen.append(combo["combo_id"])
             return {"combo_id": combo["combo_id"], "hash": combo["hash"],
-                    "overrides": combo["overrides"],
+                    "overrides": combo["overrides"], "kind": combo.get("kind"),
                     "dates": ["2010-02-01", "2010-02-02"],
                     "returns": [0.01, -0.02], "sharpe": 0.1, "error": None}
 
         monkeypatch.setattr(sb, "run_one_combo", fake_run_fn)
-        # smoke=4 combos; PBO needs >=2 combos and S<=T, so use S=2 via a tiny matrix.
+        # smoke=4 grid combos; the golden_live combo (id 243) is ALWAYS appended so
+        # the DSR has returns to compute on.
         sb.run_dsr("v3_5b", tmp_path, combos_limit=4, cscv_blocks=2)
-        assert sorted(seen) == [0, 1, 2, 3]
+        assert sorted(seen) == [0, 1, 2, 3, sb.GOLDEN_LIVE_COMBO_ID]
