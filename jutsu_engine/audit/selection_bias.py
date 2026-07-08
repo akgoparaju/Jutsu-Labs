@@ -358,3 +358,93 @@ def run_returns_campaign(strategy_id: str, combos: list[dict], campaign_file: Pa
     rows = reload_returns_rows(campaign_file)
     return ReturnsCampaignResult(strategy_id=strategy_id, rows=rows,
                                  campaign_file=str(campaign_file))
+
+
+# ─── Task 9: Returns-matrix assembly + cross-trial variance V ─────────────────
+
+import numpy as np
+import pandas as pd
+
+
+def build_returns_matrix(rows: list[dict]):
+    """Assemble a (T, N) returns matrix from campaign rows, aligned on date union.
+
+    Only non-error rows (returns present) contribute a column. Each combo's series
+    is reindexed onto the sorted union of all dates; missing dates are filled 0.0
+    (a combo produces no return on a day it has no bar — treated as flat, not NaN,
+    so every column shares one T for CSCV block splitting).
+
+    CONTRACT: the returned matrix contains NO NaN values. Error rows are dropped as
+    WHOLE COLUMNS before assembly. This satisfies compute_pbo's fail-fast contract
+    ("matrix contains NaN — drop errored combos before compute_pbo"). The number of
+    dropped combos is available from the caller via (len(rows) - len(good)).
+
+    Returns (matrix, col_hashes, dates):
+      matrix     — np.ndarray shape (T, N), float64, zero NaN
+      col_hashes — list[str] combo hashes, column order matching the matrix
+      dates      — list[str] the sorted union of dates (length T)
+    """
+    good = [r for r in rows if not is_error_row(r)]
+    n_dropped = len(rows) - len(good)
+    if n_dropped > 0:
+        print(f"[build_returns_matrix] DROPPED {n_dropped} errored/incomplete combo(s) "
+              f"from matrix ({len(good)} good combos remain)")
+    if not good:
+        return np.empty((0, 0), dtype=float), [], []
+    all_dates = sorted({d for r in good for d in r["dates"]})
+    date_index = pd.Index(all_dates)
+    cols = []
+    col_hashes = []
+    for r in good:
+        s = pd.Series(r["returns"], index=pd.Index([str(d) for d in r["dates"]]))
+        s = s[~s.index.duplicated(keep="first")]       # guard duplicate dates
+        aligned = s.reindex(date_index).fillna(0.0).to_numpy(dtype=float)
+        cols.append(aligned)
+        col_hashes.append(r["hash"])
+    matrix = np.column_stack(cols).astype(float)
+    # Invariant: no NaN in the assembled matrix (fillna(0.0) guarantees this).
+    assert not np.isnan(matrix).any(), (
+        "build_returns_matrix produced NaN — this is a bug; all missing dates "
+        "should be filled 0.0"
+    )
+    return matrix, col_hashes, all_dates
+
+
+def cross_trial_variance(matrix: np.ndarray) -> float:
+    """Cross-trial Sharpe variance V: the sample variance of per-combo Sharpes.
+
+    Per-period (daily) Sharpe per column (ddof=1), then Var (ddof=1) across columns.
+    This is the V fed to expected_max_sharpe: how much the grid's Sharpes spread,
+    which drives how high a Sharpe you'd expect as the best of N by luck.
+
+    Statistical caveat (conservative): this is the sample variance of ESTIMATED
+    per-combo Sharpes, not true Sharpes. Each per-combo Sharpe has estimation noise
+    of order 1/T, so V is inflated by that noise. This inflates SR* → deflates DSR
+    further, making the DSR conservative (will not over-claim the edge). This matches
+    the documented caveat in dsr.py's module docstring, item (b).
+
+    Zero-variance columns (constant series) are dropped before computing V. Returns
+    0.0 if fewer than 2 valid Sharpes remain.
+    """
+    if matrix.size == 0 or matrix.shape[1] < 2:
+        return 0.0
+    mu = matrix.mean(axis=0)
+    sd = matrix.std(axis=0, ddof=1)
+    mask = sd > 0
+    sr = mu[mask] / sd[mask]
+    if sr.size < 2:
+        return 0.0
+    return float(np.var(sr, ddof=1))
+
+
+def golden_combo_returns(rows: list[dict], golden_hash: str) -> np.ndarray:
+    """Return the daily-return array of the combo whose hash == golden_hash.
+
+    Raises KeyError if the golden combo is absent or errored (no series to DSR).
+    """
+    for r in rows:
+        if r.get("hash") == golden_hash and not is_error_row(r):
+            return np.asarray(r["returns"], dtype=float)
+    raise KeyError(
+        f"golden combo {golden_hash!r} not found (or errored) in campaign rows"
+    )

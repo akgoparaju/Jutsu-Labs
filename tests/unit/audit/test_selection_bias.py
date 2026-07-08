@@ -174,3 +174,64 @@ class TestReturnsCampaign:
             run_returns_campaign("v3_5b", combos, p, run_fn=_error_run_fn,
                                  symbols=[], start=date(2010, 2, 1),
                                  end=date(2026, 7, 1), workers=1)
+
+
+import numpy as np
+
+from jutsu_engine.audit.selection_bias import (
+    build_returns_matrix, cross_trial_variance, golden_combo_returns,
+)
+
+
+class TestReturnsMatrix:
+    def test_aligns_on_union_of_dates(self):
+        """Combos with different date coverage align on the union (NaN-filled → 0)."""
+        rows = [
+            {"combo_id": 0, "hash": "a", "overrides": {}, "error": None,
+             "dates": ["2010-02-01", "2010-02-02"], "returns": [0.01, 0.02]},
+            {"combo_id": 1, "hash": "b", "overrides": {}, "error": None,
+             "dates": ["2010-02-02", "2010-02-03"], "returns": [0.03, 0.04]},
+        ]
+        mat, cols, dates = build_returns_matrix(rows)
+        assert mat.shape == (3, 2)           # union of 3 dates, 2 combos
+        assert dates == ["2010-02-01", "2010-02-02", "2010-02-03"]
+        # combo 0 has no 2010-02-03 → filled 0.0; combo 1 has no 2010-02-01 → 0.0
+        assert mat[2, 0] == 0.0 and mat[0, 1] == 0.0
+
+    def test_excludes_error_rows(self):
+        """Error rows (returns None) are dropped from the matrix."""
+        rows = [
+            {"combo_id": 0, "hash": "a", "overrides": {}, "error": None,
+             "dates": ["d1"], "returns": [0.01]},
+            {"combo_id": 1, "hash": "b", "overrides": {}, "error": "boom",
+             "dates": None, "returns": None},
+        ]
+        mat, cols, dates = build_returns_matrix(rows)
+        assert mat.shape[1] == 1              # only the good combo
+        assert cols == ["a"]
+
+    def test_cross_trial_variance_from_sharpes(self):
+        """V is the variance of per-combo per-period Sharpes across the matrix columns."""
+        # 3 combos with distinct constant-ish returns → distinct Sharpes → V > 0.
+        rng = np.random.default_rng(0)
+        mat = np.column_stack([
+            0.01 + 0.001 * rng.standard_normal(500),
+            0.02 + 0.001 * rng.standard_normal(500),
+            -0.005 + 0.001 * rng.standard_normal(500),
+        ])
+        V = cross_trial_variance(mat)
+        assert V > 0.0
+        # sanity: matches numpy variance of the per-column Sharpes
+        sr = mat.mean(axis=0) / mat.std(axis=0, ddof=1)
+        assert V == pytest.approx(float(np.var(sr, ddof=1)), rel=1e-9)
+
+    def test_golden_combo_returns_selects_by_hash(self):
+        """golden_combo_returns pulls one combo's series by hash."""
+        rows = [
+            {"combo_id": 0, "hash": "g", "overrides": {}, "error": None,
+             "dates": ["d1", "d2"], "returns": [0.01, 0.02]},
+            {"combo_id": 1, "hash": "x", "overrides": {}, "error": None,
+             "dates": ["d1", "d2"], "returns": [0.0, 0.0]},
+        ]
+        r = golden_combo_returns(rows, "g")
+        assert list(r) == [0.01, 0.02]
