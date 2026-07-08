@@ -419,37 +419,93 @@ import numpy as np
 import pandas as pd
 
 
-# Threshold: a combo with more than 0.1% of its cells zero-filled (i.e., its date
-# coverage has gaps vs the union) is dropped. A typical combo missing 4 of 4,100
-# dates = 0.098% (under threshold). Combos with material gaps (e.g., a crash mid-run
-# whose CSV was truncated) are dropped with a LOUD warning.
+# Threshold: a combo with more than 0.1% of its cells zero-filled is dropped. After
+# the warmup-trim + intersection alignment (below) NO combo should fill any cell, so
+# this guard is a BACKSTOP only — it fires only if a combo's CSV was genuinely
+# truncated mid-run (a hole inside the shared analysis span). It must not fire on the
+# warmup-window mismatch that this module now trims away before alignment.
 _MAX_FILLED_FRACTION = 0.001   # 0.1%
 
+# Intersection-vs-max coverage floor: after trimming to the analysis span, all combos
+# should share the SAME dates (the engine emits one bar per market day within the
+# span). If the intersection covers less than this fraction of the longest per-combo
+# trimmed series, a combo has an internal gap and we warn loudly (then still align on
+# the intersection so no combo is zero-padded).
+_MIN_INTERSECTION_FRACTION = 0.999   # 99.9%
 
-def build_returns_matrix(rows: list[dict]):
-    """Assemble a (T, N) returns matrix from campaign rows, aligned on date union.
 
-    Only non-error rows (returns present) contribute a column. Each combo's series
-    is reindexed onto the sorted union of all dates; missing dates are filled 0.0
-    (a combo produces no return on a day it has no bar — treated as flat, not NaN,
-    so every column shares one T for CSCV block splitting).
+def _trim_row_to_start(dates: list, returns: list, start: date | None):
+    """Trim a combo's (dates, returns) to the entries dated >= `start` (the span head).
 
-    CONTRACT: the returned matrix contains NO NaN values. Error rows are dropped as
-    WHOLE COLUMNS before assembly. This satisfies compute_pbo's fail-fast contract
-    ("matrix contains NaN — drop errored combos before compute_pbo"). The number of
-    dropped combos is available from the caller via (len(rows) - len(good)).
+    The regime-timeseries CSV that BacktestRunner emits INCLUDES warmup-era rows dated
+    BEFORE start_date (the engine fetches extra history to warm SMAs/vol windows; those
+    rows carry Strategy_Daily_Return == 0.0). The warmup length varies with the strategy
+    parameters (a longer sma_slow fetches more history → an earlier head date), so
+    different combos have DIFFERENT numbers of leading zero rows. Left in, those zeros
+    (a) zero-dilute every Sharpe/moment and (b) make combos disagree on their head dates,
+    which forces the union alignment to zero-pad the shorter combos.
 
-    Fill-cell tracking (Task 9 follow-up):
-      The union alignment may fill dates absent from a combo's own series with 0.0.
-      We count those filled cells per combo, print a LOUD warning when any exist, and
-      DROP any combo whose filled fraction > _MAX_FILLED_FRACTION (0.1%). This guards
-      against silently including combos whose backtest CSV was truncated.
+    Trimming each combo to dates >= the campaign start removes both problems at the
+    source: the returned series starts exactly at the analysis span and (post-trim)
+    every combo shares the same span, so the intersection == each combo's own dates.
+
+    `start` is a datetime.date; combo dates are ISO strings (possibly with a time /
+    tz suffix, e.g. "2010-02-01 06:00:00-08:00"), so we compare on the leading
+    "YYYY-MM-DD" prefix. `start=None` returns the series unchanged (no trim).
+    """
+    if start is None:
+        return list(dates), list(returns)
+    start_key = start.isoformat()
+    kept_dates = []
+    kept_returns = []
+    for d, ret in zip(dates, returns):
+        if str(d)[:10] >= start_key:
+            kept_dates.append(d)
+            kept_returns.append(ret)
+    return kept_dates, kept_returns
+
+
+def build_returns_matrix(rows: list[dict], attribution_start: date | None = None):
+    """Assemble a (T, N) returns matrix from campaign rows, aligned on the date INTERSECTION.
+
+    Two-stage alignment (both stages exist because BacktestRunner emits warmup rows):
+
+      1. TRIM each combo's (dates, returns) to dates >= `attribution_start` (the
+         analysis span head). The engine prepends warmup-era rows dated BEFORE the
+         backtest start (zero Strategy_Daily_Return); their COUNT varies with the
+         combo's parameters (longer sma_slow → earlier head), so they both zero-dilute
+         Sharpes and make combos disagree on their head dates. `attribution_start=None`
+         skips the trim (used only by legacy callers / tests that pass pre-trimmed rows).
+
+      2. Align the trimmed columns on the INTERSECTION of their dates (NOT the union).
+         Post-trim every combo covers the identical span, so the intersection equals
+         each combo's own dates and NO cell is zero-padded. We replaced the old
+         union-fill because differing warmup fetch windows must never zero-pad a
+         combo: union-fill would inject spurious 0.0 returns at the head of every
+         shorter combo, re-introducing exactly the dilution the trim removes.
+
+    Only non-error rows (returns present) contribute a column. Error rows are dropped
+    as WHOLE COLUMNS before assembly.
+
+    CONTRACT: the returned matrix contains NO NaN values (the intersection guarantees
+    every cell is a real return). This satisfies compute_pbo's fail-fast contract
+    ("matrix contains NaN — drop errored combos before compute_pbo").
+
+    Coverage checks (loud, non-silent):
+      - If the intersection covers < _MIN_INTERSECTION_FRACTION (99.9%) of the LONGEST
+        per-combo trimmed series, a combo has an internal gap: we WARN loudly (a
+        healthy trimmed campaign has intersection == max == every combo's length).
+      - The fill-fraction guard survives as a BACKSTOP: because we align on the
+        intersection, a combo can only be dropped by it if it is missing intersection
+        dates it should contain — which cannot happen by construction, but the guard
+        (and its loud drop) stays so a future regression can't silently pass.
 
     Returns (matrix, col_hashes, dates, n_filled_cells):
       matrix         — np.ndarray shape (T, N), float64, zero NaN
       col_hashes     — list[str] combo hashes, column order matching the matrix
-      dates          — list[str] the sorted union of dates (length T)
-      n_filled_cells — int total zero-filled cells across all accepted combos
+      dates          — list[str] the sorted intersection of trimmed dates (length T)
+      n_filled_cells — int total zero-filled cells (0 after a clean trim; non-zero
+                       only signals an internal gap the backstop then handles)
     """
     good = [r for r in rows if not is_error_row(r)]
     n_dropped_err = len(rows) - len(good)
@@ -458,23 +514,52 @@ def build_returns_matrix(rows: list[dict]):
               f"from matrix ({len(good)} good combos remain)")
     if not good:
         return np.empty((0, 0), dtype=float), [], [], 0
-    all_dates = sorted({d for r in good for d in r["dates"]})
-    date_index = pd.Index(all_dates)
-    T = len(all_dates)
+
+    # Stage 1: trim each combo to the analysis span (drop warmup-era leading rows).
+    trimmed: list[dict] = []
+    for r in good:
+        t_dates, t_returns = _trim_row_to_start(
+            r["dates"], r["returns"], attribution_start)
+        trimmed.append({"hash": r.get("hash"), "dates": t_dates, "returns": t_returns})
+
+    # Stage 2: align on the INTERSECTION of trimmed dates (never zero-pad a combo).
+    date_str_sets = [
+        {str(d) for d in r["dates"]} for r in trimmed
+    ]
+    intersection = set.intersection(*date_str_sets) if date_str_sets else set()
+    max_len = max((len(r["dates"]) for r in trimmed), default=0)
+    inter_dates = sorted(intersection)
+    T = len(inter_dates)
+
+    inter_frac = (T / max_len) if max_len > 0 else 0.0
+    if max_len > 0 and inter_frac < _MIN_INTERSECTION_FRACTION:
+        print(
+            f"[build_returns_matrix] WARNING: date intersection covers only "
+            f"{T}/{max_len} rows ({inter_frac:.4%}) of the longest trimmed combo — "
+            f"a combo has an internal gap inside the analysis span. Aligning on the "
+            f"intersection anyway (no combo is zero-padded); investigate the short combo(s)."
+        )
+    if T == 0:
+        return np.empty((0, 0), dtype=float), [], [], 0
+
+    date_index = pd.Index(inter_dates)
     cols = []
     col_hashes = []
     total_filled = 0
     n_dropped_fill = 0
-    for r in good:
+    for r in trimmed:
         s = pd.Series(r["returns"], index=pd.Index([str(d) for d in r["dates"]]))
         s = s[~s.index.duplicated(keep="first")]       # guard duplicate dates
         aligned_series = s.reindex(date_index)
         n_filled = int(aligned_series.isna().sum())    # count NaN before fill
         filled_frac = n_filled / T if T > 0 else 0.0
+        # Post-trim intersection alignment should NEVER fill a cell; a non-zero count
+        # here means a combo is missing an intersection date it should carry.
         if n_filled > 0:
             print(
-                f"[build_returns_matrix] WARNING: combo {r.get('hash', '?')!r} has "
-                f"{n_filled}/{T} zero-filled cells ({filled_frac:.4%}) in date union."
+                f"[build_returns_matrix] WARNING: combo {r.get('hash', '?')!r} is "
+                f"missing {n_filled}/{T} intersection date(s) ({filled_frac:.4%}) — "
+                f"unexpected after trim+intersection; treating as an internal gap."
             )
         if filled_frac > _MAX_FILLED_FRACTION:
             print(
@@ -495,12 +580,12 @@ def build_returns_matrix(rows: list[dict]):
     if not cols:
         return np.empty((0, 0), dtype=float), [], [], 0
     matrix = np.column_stack(cols).astype(float)
-    # Invariant: no NaN in the assembled matrix (fillna(0.0) guarantees this).
+    # Invariant: no NaN in the assembled matrix (intersection alignment guarantees this).
     assert not np.isnan(matrix).any(), (
-        "build_returns_matrix produced NaN — this is a bug; all missing dates "
-        "should be filled 0.0"
+        "build_returns_matrix produced NaN — this is a bug; the intersection "
+        "alignment should leave no missing cell"
     )
-    return matrix, col_hashes, all_dates, total_filled
+    return matrix, col_hashes, inter_dates, total_filled
 
 
 def cross_trial_variance(matrix: np.ndarray) -> float:
@@ -530,14 +615,24 @@ def cross_trial_variance(matrix: np.ndarray) -> float:
     return float(np.var(sr, ddof=1))
 
 
-def golden_combo_returns(rows: list[dict], golden_hash: str) -> np.ndarray:
+def golden_combo_returns(rows: list[dict], golden_hash: str,
+                         attribution_start: date | None = None) -> np.ndarray:
     """Return the daily-return array of the combo whose hash == golden_hash.
+
+    Trims the series to dates >= `attribution_start` FIRST (identically to
+    build_returns_matrix) so the DSR headline is computed on the SAME warmup-free
+    analysis span as the PBO/CSCV matrix — otherwise the golden combo's leading
+    warmup zeros (Strategy_Daily_Return == 0.0, count varying with the strategy's
+    sma_slow) would zero-dilute SR_obs and every moment. `attribution_start=None`
+    returns the raw series (legacy callers / tests that pass pre-trimmed rows).
 
     Raises KeyError if the golden combo is absent or errored (no series to DSR).
     """
     for r in rows:
         if r.get("hash") == golden_hash and not is_error_row(r):
-            return np.asarray(r["returns"], dtype=float)
+            _dates, t_returns = _trim_row_to_start(
+                r["dates"], r["returns"], attribution_start)
+            return np.asarray(t_returns, dtype=float)
     raise KeyError(
         f"golden combo {golden_hash!r} not found (or errored) in campaign rows"
     )
@@ -578,7 +673,8 @@ def summarize_selection_bias(strategy_id: str, rows: list[dict], golden_hash: st
                              trial_inventory: list[dict],
                              compute_pbo_block: bool = True,
                              S: int = CSCV_BLOCKS,
-                             family_N=DEFAULT_N_BRACKETS) -> dict:
+                             family_N=DEFAULT_N_BRACKETS,
+                             attribution_start: date | None = ATTRIBUTION_START) -> dict:
     """Assemble the DSR + PBO report summary from campaign rows (pure over rows).
 
     The DSR headline (SR_obs, moments, all brackets) is computed on the GOLDEN combo's
@@ -587,6 +683,13 @@ def summarize_selection_bias(strategy_id: str, rows: list[dict], golden_hash: st
     historical 243-grid combos feed PBO and cross-trial V ONLY and are EXCLUDED from
     the DSR. For v3_5d the single combo IS the golden. If the golden row is absent or
     errored we raise loudly (no silent fallback to an in-grid combo).
+
+    WARMUP TRIM: both the golden series (DSR) and the grid matrix (PBO/V) are trimmed
+    to dates >= `attribution_start` before any statistic is computed. BacktestRunner
+    emits leading warmup rows dated before the backtest start (zero-return, count
+    varying with each combo's sma_slow); left in, they zero-dilute every Sharpe/moment
+    and force union-fill to zero-pad shorter combos. Trimming to the shared analysis
+    span removes both defects at the source (see build_returns_matrix / golden_combo_returns).
 
     Args:
       rows: returns-campaign rows (from run_returns_campaign).
@@ -597,6 +700,9 @@ def summarize_selection_bias(strategy_id: str, rows: list[dict], golden_hash: st
       S: CSCV blocks (16 per spec).
       family_N: the N brackets to report DSR at (v3_5b: 243/1000/5000; v3_5d: a
         family-level estimate, e.g. 1000/5000 — no grid of its own).
+      attribution_start: the analysis-span head (default ATTRIBUTION_START == the
+        campaign start). Rows dated before it are warmup and are trimmed. Pass None to
+        disable trimming (only for pre-trimmed synthetic rows in tests).
 
     Returns a dict consumed by render_dsr_section:
       strategy_id, n_combos (GRID combos only, golden_live excluded), cross_trial_V,
@@ -604,9 +710,11 @@ def summarize_selection_bias(strategy_id: str, rows: list[dict], golden_hash: st
       (sr_obs/skew/kurt/T, from golden_live returns), pbo (block or None,
       grid-only matrix), trial_inventory, golden_hash.
     """
-    # The DSR/moments come from the golden combo's OWN returns; loud on absence.
+    # The DSR/moments come from the golden combo's OWN returns (trimmed to the span);
+    # loud on absence.
     try:
-        golden_series = golden_combo_returns(rows, golden_hash)
+        golden_series = golden_combo_returns(rows, golden_hash,
+                                             attribution_start=attribution_start)
     except KeyError as exc:
         raise RuntimeError(
             f"DSR golden combo {golden_hash!r} for strategy {strategy_id!r} is "
@@ -617,9 +725,11 @@ def summarize_selection_bias(strategy_id: str, rows: list[dict], golden_hash: st
 
     # The PBO/CSCV matrix and cross-trial V are built from the historical GRID combos
     # ONLY: the golden_live combo (empty-overrides live config) is EXCLUDED so it does
-    # not contaminate the cross-trial variance or the CSCV partitioning.
+    # not contaminate the cross-trial variance or the CSCV partitioning. Each grid
+    # combo is trimmed to the analysis span before intersection alignment.
     grid_rows = [r for r in rows if not is_golden_live_row(r)]
-    matrix, col_hashes, _dates, n_filled = build_returns_matrix(grid_rows)
+    matrix, col_hashes, _dates, n_filled = build_returns_matrix(
+        grid_rows, attribution_start=attribution_start)
     V = cross_trial_variance(matrix) if matrix.size else 0.0
 
     # V is keyword-required in deflated_sharpe_brackets (prevents silent V=0 bug).
@@ -674,7 +784,7 @@ def run_dsr(strategy_id: str, run_dir: _Path, workers: int = 1,
             retry_errors: bool = False, skip_campaign: bool = False,
             trial_inventory: list[dict] | None = None,
             combos_limit: int | None = None, cscv_blocks: int = CSCV_BLOCKS,
-            progress=lambda m: None) -> dict:
+            start: _date | None = None, progress=lambda m: None) -> dict:
     """End-to-end Module 3 for one strategy: campaign → matrix → DSR + PBO summary.
 
     v3_5b (primary): enumerate the 243-combo golden grid PLUS the appended
@@ -694,10 +804,15 @@ def run_dsr(strategy_id: str, run_dir: _Path, workers: int = 1,
     combos_limit: truncate the GRID for smoke runs (e.g. 4 combos); golden_live is
       always additionally included (otherwise the DSR would have no returns).
     cscv_blocks: CSCV block count S (default 16 per spec; 2 for smoke runs).
+    start: the campaign/analysis-span start (default ATTRIBUTION_START). Threaded to
+      BOTH the returns campaign (as its backtest start) AND summarize_selection_bias
+      (as the warmup-trim boundary), so the DSR/PBO are computed on exactly the span
+      the campaign requested — never the warmup rows the engine prepends before it.
     """
     run_dir = _Path(run_dir)
     symbols = _all_symbols(strategy_id)
     campaign_file = run_dir / strategy_id / f"campaign_dsr_{strategy_id}.jsonl"
+    start = start or ATTRIBUTION_START
 
     if strategy_id == "v3_5b":
         # 243 grid combos (kind="grid") + the appended golden_live combo (244th).
@@ -716,7 +831,7 @@ def run_dsr(strategy_id: str, run_dir: _Path, workers: int = 1,
     if not skip_campaign:
         run_returns_campaign(strategy_id, combos, campaign_file,
                              run_fn=run_one_combo,
-                             symbols=symbols, workers=workers,
+                             symbols=symbols, start=start, workers=workers,
                              retry_errors=retry_errors, progress=progress)
     rows = reload_returns_rows(campaign_file)
     if not rows:
@@ -726,7 +841,7 @@ def run_dsr(strategy_id: str, run_dir: _Path, workers: int = 1,
     summary = summarize_selection_bias(
         strategy_id=strategy_id, rows=rows, golden_hash=golden_hash,
         trial_inventory=trial_inventory or [], compute_pbo_block=compute_pbo_block,
-        S=cscv_blocks, family_N=family_N)
+        S=cscv_blocks, family_N=family_N, attribution_start=start)
 
     # DIAGNOSTIC-ONLY: the nearest in-grid combo (sma_slow=200) is reported as a
     # provenance note about the search history. It never feeds the DSR. On smoke

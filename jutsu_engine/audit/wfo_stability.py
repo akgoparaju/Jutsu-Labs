@@ -194,6 +194,38 @@ from jutsu_engine.audit.attribution import _sharpe, _max_drawdown, _total_return
 _STITCH_REQUIRED_COLUMNS = ("Date", "Strategy_Daily_Return", "QQQ_Daily_Return")
 
 
+def filter_oos_frame_to_span(frame: pd.DataFrame, oos_start: date,
+                             oos_end: date) -> pd.DataFrame:
+    """Keep only the rows of one OOS frame that fall in [oos_start, oos_end).
+
+    BacktestRunner emits the regime-timeseries CSV with WARMUP-era rows dated BEFORE
+    the requested backtest start (it fetches extra history to warm SMAs/vol windows;
+    those rows carry Strategy_Daily_Return == 0.0). For an OOS window the backtest is
+    run over [oos_start, oos_end], so the emitted CSV begins ~1.5–2y before oos_start
+    (the warmup fetch window). Left in, window 1's warmup zeros survive the stitch
+    dedup (their dates precede every other window's span) and PAD the stitched OOS
+    series head with hundreds of zero-return days — diluting the stitched Sharpe/CAGR
+    and inflating oos_days by the warmup length.
+
+    Filtering each frame to its window's own OOS span at CONSUMPTION heals existing
+    checkpoints (no backtest re-run needed): the daily-return values are already
+    correct inside the span; only the pre-span warmup rows must be dropped. The span
+    is half-open [oos_start, oos_end) so consecutive windows (oos_end(N) ==
+    oos_start(N+1)) do not double-count the shared boundary bar — the dedup in
+    stitch_oos_metrics remains the second line of defence.
+
+    The frame's Date column may be ISO strings with a time/tz suffix (e.g.
+    "2012-08-01 06:00:00-08:00"); we compare on the leading "YYYY-MM-DD" prefix.
+    A frame missing the Date column is returned unchanged (stitch_oos_metrics then
+    raises its own clear error on the missing required column).
+    """
+    if frame is None or frame.empty or "Date" not in frame.columns:
+        return frame
+    day = frame["Date"].astype(str).str[:10]
+    mask = (day >= oos_start.isoformat()) & (day < oos_end.isoformat())
+    return frame[mask]
+
+
 def stitch_oos_metrics(oos_frames: list[pd.DataFrame]) -> dict:
     """Concatenate per-window OOS daily returns and compute headline metrics.
 
@@ -449,6 +481,12 @@ def run_one_backtest(strategy_id: str, combo: dict, symbols: list[str],
                 #   Portfolio_Value, Strategy_Daily_Return
                 # stitch_oos_metrics requires exactly:
                 #   Date, Strategy_Daily_Return, QQQ_Daily_Return  — all present.
+                # Belt-and-braces: BacktestRunner prepends warmup rows dated BEFORE
+                # `start` (== oos_start for the OOS phase); drop them here so freshly
+                # captured rows carry only the window's own [start, end) span. The
+                # consumption-side filter in run_campaign heals existing checkpoints;
+                # this keeps NEW checkpoints clean at the source.
+                df = filter_oos_frame_to_span(df, start, end)
                 ts_rows = df[["Date", "Strategy_Daily_Return",
                               "QQQ_Daily_Return"]].to_dict("records")
             else:
@@ -839,6 +877,25 @@ def run_campaign(strategy_id: str, campaign_file: Path,
     Midnight / multi-day note: `total_end` defaults to date.today() at call time and
     is NOT embedded in row keys. A resume after midnight extends the last window's
     OOS by 1 day (negligible for multi-year windows; documented and accepted).
+
+    WARMUP-ZERO NOTE (OOS healed here; IS NOT recomputable — documented, not fixed):
+      BacktestRunner prepends warmup rows dated before each backtest's start (zero
+      Strategy_Daily_Return, count varying with sma_slow). For OOS we heal this at
+      consumption by filtering each frame to its window's [oos_start, oos_end) span
+      (see filter_oos_frame_to_span), so the stitched OOS curve is warmup-free even
+      for pre-existing checkpoints.
+
+      The IS Sharpes stored in existing checkpoints, however, were computed by
+      BacktestRunner AT RUN TIME on the warmup-polluted daily series (they are scalar
+      `sharpe_ratio` values, not a recomputable return series), so they cannot be
+      corrected without re-running the IS backtests. The dilution is ~uniform within
+      a window (the same warmup length applies to every combo of that window), so it
+      shifts every combo's IS Sharpe by roughly the same factor (<=~3% relative) and
+      does NOT change the WITHIN-window RANKING that drives winner selection or the
+      top-decile verdict. It does not overturn EXP-004's noise verdict. A logbook
+      correction note (handled by the orchestrator) records this; future re-runs get
+      clean IS Sharpes because run_one_backtest now trims OOS at the source and the
+      warmup rows never entered IS selection's ranking in the first place.
     """
     from jutsu_engine.audit.attribution import _all_symbols
 
@@ -879,9 +936,22 @@ def run_campaign(strategy_id: str, campaign_file: Path,
               initial_capital, workers, max_consecutive_errors, progress)
 
     # ---- Stitch OOS + build drift table from committed rows ----
+    # Each OOS row's CSV includes warmup rows dated BEFORE the window's oos_start
+    # (BacktestRunner prepends warmup history). Filter every frame to its window's own
+    # [oos_start, oos_end) span at CONSUMPTION so existing checkpoints are healed
+    # without re-running any backtest. Window bounds are re-derived from the same
+    # `windows` list; rows carry window_id.
+    win_by_id = {w.window_id: w for w in windows}
     all_rows = reload_wfo_rows(campaign_file)
-    oos_frames = [pd.DataFrame(r["oos_rows"]) for r in all_rows
-                  if r.get("phase") == "oos" and r.get("oos_rows")]
+    oos_frames = []
+    for r in all_rows:
+        if r.get("phase") != "oos" or not r.get("oos_rows"):
+            continue
+        frame = pd.DataFrame(r["oos_rows"])
+        win = win_by_id.get(r.get("window_id"))
+        if win is not None:
+            frame = filter_oos_frame_to_span(frame, win.oos_start, win.oos_end)
+        oos_frames.append(frame)
     stitched = stitch_oos_metrics(oos_frames)
     drift = drift_table(winners)
     vdist = param_value_distribution(winners)

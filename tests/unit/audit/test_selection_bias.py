@@ -207,16 +207,40 @@ class TestReturnsCampaign:
 
 import numpy as np
 
+from datetime import date as _date_cls
+
 from jutsu_engine.audit.selection_bias import (
     build_returns_matrix, cross_trial_variance, golden_combo_returns,
+    _trim_row_to_start,
 )
+from jutsu_engine.audit.dsr import sample_moments
+
+
+def _seq_dates(n, start_month=2, start_day=1):
+    """`n` distinct ISO YYYY-MM-DD strings from 2010-{start_month}-{start_day} upward.
+
+    Uses 28-day months so every generated string is a valid, sortable date >=
+    2010-02-01 (the default warmup-trim boundary) — nothing is accidentally trimmed.
+    """
+    out = []
+    idx = (start_month - 1) * 28 + (start_day - 1)
+    for _ in range(n):
+        m = 1 + idx // 28
+        d = 1 + idx % 28
+        out.append(f"2010-{m:02d}-{d:02d}")
+        idx += 1
+    return out
 
 
 class TestReturnsMatrix:
-    def test_aligns_on_union_of_dates(self):
-        """Combos sharing most dates align on union; the missing cell is filled 0.0."""
-        # Use 1000-date series with one combo missing ONE date (0.1% fill ≤ threshold).
-        dates = [f"2010-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(1000)]
+    def test_aligns_on_intersection_of_dates(self):
+        """Combos are aligned on the INTERSECTION of their dates (no zero-padding).
+
+        The old behavior aligned on the UNION and zero-filled the missing head cell;
+        the fix aligns on the intersection so a combo whose head differs (a warmup
+        fetch-window difference) never injects a spurious 0.0 return.
+        """
+        dates = _seq_dates(1000)
         rows = [
             {"combo_id": 0, "hash": "a", "overrides": {}, "error": None,
              "dates": dates, "returns": [0.01] * 1000},
@@ -224,14 +248,15 @@ class TestReturnsMatrix:
              "dates": dates[1:], "returns": [0.02] * 999},  # missing first date
         ]
         mat, cols, out_dates, n_filled = build_returns_matrix(rows)
-        assert mat.shape == (1000, 2)          # union of 1000 dates, 2 combos
-        assert out_dates == dates
-        # combo 1 has no first date → filled 0.0
-        assert mat[0, 1] == 0.0
-        assert n_filled == 1                   # exactly one cell filled
+        # intersection = the 999 shared dates; combo 'a' loses its unique head date.
+        assert mat.shape == (999, 2)
+        assert out_dates == dates[1:]
+        assert n_filled == 0            # intersection alignment never fills a cell
+        # every cell is a real return (no injected 0.0 at any head)
+        assert not np.any(mat[:, 0] == 0.0) or set(mat[:, 0]) == {0.01}
 
-    def test_aligns_on_union_of_dates_no_gaps(self):
-        """Two combos sharing all dates: n_filled=0, both in matrix."""
+    def test_aligns_on_shared_dates_no_gaps(self):
+        """Two combos sharing all dates: n_filled=0, both in matrix, span preserved."""
         rows = [
             {"combo_id": 0, "hash": "a", "overrides": {}, "error": None,
              "dates": ["2010-02-01", "2010-02-02"], "returns": [0.01, 0.02]},
@@ -248,7 +273,7 @@ class TestReturnsMatrix:
         """Error rows (returns None) are dropped from the matrix."""
         rows = [
             {"combo_id": 0, "hash": "a", "overrides": {}, "error": None,
-             "dates": ["d1"], "returns": [0.01]},
+             "dates": ["2010-02-01"], "returns": [0.01]},
             {"combo_id": 1, "hash": "b", "overrides": {}, "error": "boom",
              "dates": None, "returns": None},
         ]
@@ -256,10 +281,9 @@ class TestReturnsMatrix:
         assert mat.shape[1] == 1              # only the good combo
         assert cols == ["a"]
 
-    def test_filled_cells_counted_and_returned(self):
-        """n_filled_cells counts cells zero-filled during union alignment."""
-        # Build 3 combos all sharing 1000 dates (no fills) — n_filled == 0.
-        dates = [f"2010-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(1000)]
+    def test_no_cells_filled_when_all_share_dates(self):
+        """n_filled_cells is 0 when every combo covers the identical span."""
+        dates = _seq_dates(1000)
         rows = [
             {"combo_id": j, "hash": chr(97 + j), "overrides": {}, "error": None,
              "dates": dates, "returns": [0.001 * j] * 1000}
@@ -269,36 +293,49 @@ class TestReturnsMatrix:
         assert n_filled == 0
         assert mat.shape == (1000, 3)
 
-    def test_high_fill_fraction_combo_dropped(self):
-        """A combo whose filled fraction > 0.1% is silently dropped from the matrix."""
-        # 1000-date union; one combo covers only 998 dates → 2/1000 = 0.2% > threshold.
-        dates = [f"2010-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(1000)]
-        rows = [
-            # combo 0: all 1000 dates — no fill
-            {"combo_id": 0, "hash": "full", "overrides": {}, "error": None,
-             "dates": dates, "returns": [0.001] * 1000},
-            # combo 1: only 998 dates — 2/1000 = 0.2% fill > 0.1% threshold → dropped
-            {"combo_id": 1, "hash": "short", "overrides": {}, "error": None,
-             "dates": dates[:998], "returns": [0.002] * 998},
-        ]
-        mat, cols, out_dates, n_filled = build_returns_matrix(rows)
-        assert "short" not in cols      # high-fill combo dropped
-        assert "full" in cols           # no-fill combo kept
-        assert mat.shape[1] == 1
+    def test_warmup_prefixed_combos_trimmed_all_retained(self):
+        """Combos with DIFFERING warmup heads are trimmed to the span; ALL retained.
 
-    def test_low_fill_fraction_combo_kept(self):
-        """A combo whose filled fraction <= 0.1% is kept (fill counted but not dropped)."""
-        # 1000-date union; one combo covers 999 dates → 1/1000 = 0.1% <= threshold.
-        dates = [f"2010-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(1000)]
+        Reproduces the campaign defect: two combos share the analysis span (>= the
+        trim boundary 2010-02-01) but carry DIFFERENT numbers of leading warmup rows
+        (dated before it, zero-return). After trim + intersection both combos are
+        kept, the matrix spans only the shared analysis dates, and NO combo is
+        zero-padded (the fill guard does not fire).
+        """
+        span = _seq_dates(500, start_month=2, start_day=1)   # all >= 2010-02-01
+        # combo A: 30 warmup days before the span; combo B: 44 warmup days (longer
+        # sma_slow → earlier head). Warmup dates are all in Jan (< 2010-02-01) and
+        # carry 0.0 returns, exactly like BacktestRunner's pre-start rows.
+        warm_a = [f"2010-01-{1 + i:02d}" for i in range(30)]   # differing head lengths
+        warm_b_extra = [f"2009-12-{1 + i:02d}" for i in range(14)]
+        rows = [
+            {"combo_id": 0, "hash": "A", "overrides": {}, "error": None,
+             "dates": warm_a + span, "returns": [0.0] * 30 + [0.01] * 500},
+            {"combo_id": 1, "hash": "B", "overrides": {}, "error": None,
+             "dates": warm_b_extra + warm_a + span,
+             "returns": [0.0] * 14 + [0.0] * 30 + [0.02] * 500},
+        ]
+        mat, cols, out_dates, n_filled = build_returns_matrix(
+            rows, attribution_start=_date_cls(2010, 2, 1))
+        assert set(cols) == {"A", "B"}          # BOTH combos retained
+        assert mat.shape == (500, 2)            # only the shared analysis span
+        assert out_dates == span                # warmup rows gone from the axis
+        assert n_filled == 0                    # nothing zero-padded
+
+    def test_internal_gap_below_threshold_kept(self):
+        """A combo missing 1 in-span date (<0.1%) is kept; intersection excludes that date."""
+        dates = _seq_dates(1000)
         rows = [
             {"combo_id": 0, "hash": "full", "overrides": {}, "error": None,
              "dates": dates, "returns": [0.001] * 1000},
             {"combo_id": 1, "hash": "one_short", "overrides": {}, "error": None,
-             "dates": dates[:999], "returns": [0.002] * 999},
+             "dates": dates[:999], "returns": [0.002] * 999},   # missing 1 tail date
         ]
         mat, cols, out_dates, n_filled = build_returns_matrix(rows)
-        assert "one_short" in cols      # at-threshold combo kept
-        assert n_filled == 1            # exactly 1 cell was filled
+        # Intersection drops the one non-shared date; both combos kept, no fill.
+        assert set(cols) == {"full", "one_short"}
+        assert mat.shape == (999, 2)
+        assert n_filled == 0
 
     def test_cross_trial_variance_from_sharpes(self):
         """V is the variance of per-combo per-period Sharpes across the matrix columns."""
@@ -316,7 +353,7 @@ class TestReturnsMatrix:
         assert V == pytest.approx(float(np.var(sr, ddof=1)), rel=1e-9)
 
     def test_golden_combo_returns_selects_by_hash(self):
-        """golden_combo_returns pulls one combo's series by hash."""
+        """golden_combo_returns pulls one combo's series by hash (no trim by default)."""
         rows = [
             {"combo_id": 0, "hash": "g", "overrides": {}, "error": None,
              "dates": ["d1", "d2"], "returns": [0.01, 0.02]},
@@ -325,6 +362,70 @@ class TestReturnsMatrix:
         ]
         r = golden_combo_returns(rows, "g")
         assert list(r) == [0.01, 0.02]
+
+    def test_golden_combo_returns_trims_warmup_prefix(self):
+        """golden_combo_returns drops warmup rows dated before attribution_start."""
+        warm = [f"2010-01-{1 + i:02d}" for i in range(20)]      # < 2010-02-01
+        span = _seq_dates(100, start_month=2, start_day=1)      # >= 2010-02-01
+        rows = [
+            {"combo_id": 0, "hash": "g", "overrides": {}, "error": None,
+             "dates": warm + span, "returns": [0.0] * 20 + [0.01] * 100},
+        ]
+        r = golden_combo_returns(rows, "g", attribution_start=_date_cls(2010, 2, 1))
+        assert len(r) == 100                # 20 warmup rows trimmed away
+        assert list(r) == [0.01] * 100      # only the analysis-span returns survive
+
+
+class TestWarmupTrim:
+    def test_trim_row_to_start_drops_pre_start_rows(self):
+        """_trim_row_to_start keeps only entries dated >= the start (date-prefix match)."""
+        dates = ["2009-12-31 05:00:00-07:00", "2010-01-15", "2010-02-01",
+                 "2010-02-02 06:00:00-08:00"]
+        returns = [0.0, 0.0, 0.01, -0.02]
+        d, r = _trim_row_to_start(dates, returns, _date_cls(2010, 2, 1))
+        assert d == ["2010-02-01", "2010-02-02 06:00:00-08:00"]
+        assert r == [0.01, -0.02]
+
+    def test_trim_row_to_start_none_is_identity(self):
+        """attribution_start=None returns the series unchanged."""
+        dates = ["2009-12-31", "2010-01-15"]
+        returns = [0.0, 0.5]
+        d, r = _trim_row_to_start(dates, returns, None)
+        assert d == dates and r == returns
+
+    def test_zero_dilution_removed_sr_obs_matches_clean_series(self):
+        """PROOF the fix removes zero-dilution: SR_obs of a warmup-prefixed series
+        (after trim) equals SR_obs of the clean series with no warmup rows.
+
+        This is the crux of the DSR correction: leading warmup zeros drag the mean
+        toward 0 and inflate the denominator, deflating SR_obs. Trimming them restores
+        the true per-period Sharpe of the analysis span.
+        """
+        rng = np.random.default_rng(3)
+        span_dates = _seq_dates(400, start_month=2, start_day=1)   # >= 2010-02-01
+        clean_returns = (0.001 + 0.01 * rng.standard_normal(400)).tolist()
+
+        # sr_obs computed on the CLEAN series (no warmup rows).
+        sr_clean = sample_moments(clean_returns)["sr_obs"]
+
+        # Same series but with 331 leading warmup-zero rows (dated before the span),
+        # exactly as the campaign CSV emits. Trim, then recompute sr_obs.
+        warm_dates = [f"2009-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(331)]
+        polluted_dates = warm_dates + span_dates
+        polluted_returns = [0.0] * 331 + clean_returns
+        rows = [{"combo_id": 0, "hash": "g", "overrides": {}, "error": None,
+                 "dates": polluted_dates, "returns": polluted_returns}]
+
+        trimmed = golden_combo_returns(rows, "g",
+                                       attribution_start=_date_cls(2010, 2, 1))
+        sr_trimmed = sample_moments(trimmed)["sr_obs"]
+
+        assert sr_trimmed == pytest.approx(sr_clean, rel=1e-12)
+
+        # And confirm the dilution WAS material: sr_obs on the polluted (untrimmed)
+        # series differs — so the trim is doing real work, not a no-op.
+        sr_polluted = sample_moments(polluted_returns)["sr_obs"]
+        assert abs(sr_polluted - sr_clean) > 1e-6
 
 
 # ---------------------------------------------------------------------------

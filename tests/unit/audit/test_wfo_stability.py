@@ -208,6 +208,78 @@ class TestStitchOOSMetrics:
 
 
 # ---------------------------------------------------------------------------
+# Fix 2 — OOS span-filter (strips BacktestRunner's pre-oos_start warmup rows)
+# ---------------------------------------------------------------------------
+from jutsu_engine.audit.wfo_stability import filter_oos_frame_to_span
+
+
+def _oos_frame_dates(date_strings, strat_returns, qqq_returns):
+    """OOS frame with explicit Date strings (to model warmup-prefixed CSV output)."""
+    return pd.DataFrame({
+        "Date": date_strings,
+        "Strategy_Daily_Return": strat_returns,
+        "QQQ_Daily_Return": qqq_returns,
+    })
+
+
+class TestFilterOOSFrameToSpan:
+    def test_drops_warmup_rows_before_oos_start(self):
+        """Rows dated before oos_start (warmup zeros) are removed; in-span rows kept."""
+        # 3 warmup rows (dated before the OOS window) + 2 in-span rows.
+        dates = ["2011-04-08", "2011-04-11", "2011-04-12",   # warmup (< oos_start)
+                 "2012-08-01", "2012-08-02"]                 # in-span
+        frame = _oos_frame_dates(dates, [0.0, 0.0, 0.0, 0.01, 0.02],
+                                 [0.0, 0.0, 0.0, 0.005, 0.006])
+        out = filter_oos_frame_to_span(frame, date(2012, 8, 1), date(2013, 2, 1))
+        assert list(out["Date"]) == ["2012-08-01", "2012-08-02"]
+        assert list(out["Strategy_Daily_Return"]) == [0.01, 0.02]
+
+    def test_span_is_half_open_excludes_oos_end(self):
+        """The span is [oos_start, oos_end): the oos_end boundary bar is excluded."""
+        dates = ["2012-08-01", "2013-02-01"]   # oos_start, oos_end
+        frame = _oos_frame_dates(dates, [0.01, 0.02], [0.0, 0.0])
+        out = filter_oos_frame_to_span(frame, date(2012, 8, 1), date(2013, 2, 1))
+        assert list(out["Date"]) == ["2012-08-01"]   # oos_end dropped (half-open)
+
+    def test_handles_tz_suffixed_date_strings(self):
+        """Date strings with a time/tz suffix compare on the YYYY-MM-DD prefix."""
+        dates = ["2011-04-08 05:00:00-07:00", "2012-08-01 06:00:00-08:00"]
+        frame = _oos_frame_dates(dates, [0.0, 0.01], [0.0, 0.0])
+        out = filter_oos_frame_to_span(frame, date(2012, 8, 1), date(2013, 2, 1))
+        assert list(out["Strategy_Daily_Return"]) == [0.01]
+
+
+def _warmup_polluted_oos_run_fn(strategy_id, combo, symbols, start, end, phase,
+                                initial_capital="10000"):
+    """Fake worker whose OOS CSV includes warmup-zero rows dated BEFORE `start`.
+
+    Models BacktestRunner: for the OOS phase it emits ~330 leading warmup rows
+    (Strategy_Daily_Return == 0.0, dated 2 years before oos_start) followed by the
+    in-span daily returns. IS rows are ranked by upper_thresh_z as in _fake_run_fn.
+    Module-level (picklable) for spawn safety.
+    """
+    utz = combo["overrides"].get("upper_thresh_z", 1.0)
+    if phase == "is":
+        return {"hash": combo["hash"], "combo_id": combo["combo_id"],
+                "kind": combo["kind"], "phase": "is",
+                "overrides": combo["overrides"], "is_sharpe": float(utz),
+                "oos_rows": None, "error": None}
+    # Warmup: 10 zero-return rows dated well before `start` (the oos_start), exactly
+    # as BacktestRunner prepends warmup history to the emitted CSV.
+    warm_dates = pd.date_range("2000-01-01", periods=10, freq="D", tz="UTC")
+    warm = [{"Date": str(d), "Strategy_Daily_Return": 0.0,
+             "QQQ_Daily_Return": 0.0} for d in warm_dates]
+    # In-span: 5 real return days starting at oos_start.
+    span_dates = pd.date_range(str(start), periods=5, freq="D", tz="UTC")
+    span = [{"Date": str(d), "Strategy_Daily_Return": 0.01,
+             "QQQ_Daily_Return": 0.005} for d in span_dates]
+    return {"hash": combo["hash"], "combo_id": combo["combo_id"],
+            "kind": combo["kind"], "phase": "oos",
+            "overrides": combo["overrides"], "is_sharpe": 0.8,
+            "oos_rows": warm + span, "error": None}
+
+
+# ---------------------------------------------------------------------------
 # Task 5 — Parameter-drift table + golden top-decile share (spec §5/§10)
 # ---------------------------------------------------------------------------
 from jutsu_engine.audit.wfo_stability import (
@@ -409,6 +481,39 @@ class TestRunOneBacktest:
             ["QQQ"], _date(2010, 2, 1), _date(2012, 8, 1), phase="is")
         assert set(glob.glob(tempfile.gettempdir() + "/wfo_*")) == before
 
+    def test_oos_extraction_trims_warmup_rows_at_source(self, monkeypatch, tmp_path):
+        """Belt-and-braces: run_one_backtest trims warmup rows from the OOS CSV so
+        freshly captured oos_rows carry only the window's [oos_start, oos_end) span."""
+        import jutsu_engine.application.backtest_runner as br_mod
+
+        # Emit a regime-timeseries CSV with 3 warmup rows (before oos_start) + 2 in-span.
+        csv_path = tmp_path / "regime_ts.csv"
+        pd.DataFrame({
+            "Date": ["2011-04-08 05:00:00-07:00", "2011-04-11 05:00:00-07:00",
+                     "2011-04-12 05:00:00-07:00",                       # warmup
+                     "2012-08-01 06:00:00-08:00", "2012-08-02 06:00:00-08:00"],  # in-span
+            "Strategy_Daily_Return": [0.0, 0.0, 0.0, 0.01, 0.02],
+            "QQQ_Daily_Return": [0.0, 0.0, 0.0, 0.005, 0.006],
+        }).to_csv(csv_path, index=False)
+
+        class _CSVRunner:
+            def __init__(self, config): pass
+            def run(self, strategy, output_dir=None):
+                return {"sharpe_ratio": 0.9,
+                        "regime_timeseries_csv": str(csv_path)}
+
+        monkeypatch.setattr(br_mod, "BacktestRunner", _CSVRunner)
+        monkeypatch.setattr(wfo_mod, "build_overridden_strategy",
+                            lambda sid, ov: object())
+
+        row = wfo_mod.run_one_backtest(
+            "v3_5b", {"hash": "h", "combo_id": 0, "kind": "oos_winner",
+                      "overrides": {}},
+            ["QQQ"], _date(2012, 8, 1), _date(2013, 2, 1), phase="oos")
+        assert row["error"] is None
+        dates = [r["Date"][:10] for r in row["oos_rows"]]
+        assert dates == ["2012-08-01", "2012-08-02"]   # warmup rows trimmed at source
+
 
 # ---------------------------------------------------------------------------
 # Task 7 — Checkpoint/resume helpers (WFO JSONL, row_key, fsync)
@@ -526,6 +631,26 @@ class TestRunCampaign:
         oos_rows = [r for r in rows if r["phase"] == "oos"]
         assert len(is_rows) == 31   # full grid, one row each, no duplicates
         assert len(oos_rows) == 1   # one OOS winner backtest
+
+    def test_stitched_oos_excludes_warmup_prefixed_rows(self, tmp_path):
+        """Warmup-zero OOS rows dated before oos_start are excluded from the stitch.
+
+        Each window's OOS CSV carries 10 leading zero-return warmup rows (dated 2000,
+        long before any window's oos_start) + 5 in-span days. The span filter must
+        drop the warmup rows so the stitched series contains ONLY in-span days:
+        oos_days == 2 windows x 5 in-span days == 10 (not 10 + warmup).
+        """
+        camp = tmp_path / "campaign_v3_5b.jsonl"
+        res = run_campaign(
+            "v3_5b", camp, windows_limit=2, workers=1,
+            run_fn=_warmup_polluted_oos_run_fn, symbols=["QQQ"],
+            total_start=_date2(2010, 2, 1), total_end=_date2(2013, 8, 1))
+        # 2 windows x 5 in-span days = 10; the 2 x 10 warmup-zero rows are excluded.
+        assert res.stitched["oos_days"] == 10
+        # With warmup zeros left in, total_return would be diluted toward 0; here every
+        # counted day is a real +1% return.
+        expected_total = (1.01 ** 10) - 1.0
+        assert abs(res.stitched["total_return"] - expected_total) < 1e-9
 
     def test_resume_mid_oos_rederives_same_winner_deterministically(self, tmp_path):
         """Killed mid-OOS: winners are re-derived from checkpointed IS rows, and the

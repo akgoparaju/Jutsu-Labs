@@ -1,3 +1,57 @@
+#### **Fix: Audit Modules 1 & 3 — trim warmup-era rows before analysis; intersection alignment** (2026-07-08)
+
+Cross-module data-quality defect surfaced by the Phase-4 fill-guard. The regime-timeseries
+CSV emitted by `BacktestRunner` INCLUDES warmup-era rows dated BEFORE `start_date` (the
+engine fetches extra history to warm SMAs/vol windows; those rows carry
+`Strategy_Daily_Return == 0.0`). Warmup length varies with `sma_slow` (a longer slow SMA
+fetches ~14 more days → an earlier head date), so different combos carry different numbers
+of leading zero rows. Verified against the v3_5b DSR checkpoint: combos split 4456 rows
+(`sma_slow` ∈ {180,200}, head 2008-10-07, 331 warmup rows) vs 4470 rows (`sma_slow=220`,
+head 2008-09-17, 345 warmup rows); ALL warmup returns are exactly `0.0`.
+
+Consequences (all now fixed): (a) Phase-4 union-fill alignment zero-padded the shorter
+combos, tripping the 0.1% fill guard and DROPPING **162/243** grid combos (only 81 fed
+PBO); (b) every Sharpe/moment was zero-diluted (golden T=4456 → 4125, SR_obs 0.05599 →
+0.05820); (c) Phase-3's stitched OOS series was head-padded AND — worse than diagnosed —
+the keep-first dedup silently sourced **2232/3391** in-span trading days from later windows'
+overlapping warmup frames, zeroing their real returns (stitched Sharpe 0.455 → 0.829,
+CAGR 0.054 → 0.199, MaxDD −0.29 → −0.54, oos_days 3737 → 3391).
+
+- **`jutsu_engine/audit/selection_bias.py` (Phase 4):**
+  - New `_trim_row_to_start(dates, returns, start)` helper (date-prefix compare, tolerant
+    of tz-suffixed ISO strings).
+  - `build_returns_matrix(rows, attribution_start=None)` now TRIMS each combo to dates
+    `>= attribution_start` then aligns on the date INTERSECTION (replacing union-fill), so
+    no combo is ever zero-padded. Warns loudly if the intersection covers < 99.9% of the
+    longest trimmed combo. The 0.1% fill guard survives as a backstop (no longer fires).
+  - `golden_combo_returns(..., attribution_start=None)` trims identically so the DSR is
+    computed on the same warmup-free span as the PBO matrix.
+  - `summarize_selection_bias(..., attribution_start=ATTRIBUTION_START)` and
+    `run_dsr(..., start=None)` thread the span head (defaults to the campaign start) into
+    both the trim and the returns campaign — not hardcoded downstream.
+- **`jutsu_engine/audit/wfo_stability.py` (Phase 3):**
+  - New `filter_oos_frame_to_span(frame, oos_start, oos_end)` (half-open span).
+  - `run_campaign` filters each reconstructed OOS frame to its window's `[oos_start,
+    oos_end)` at CONSUMPTION (windows re-derived from `generate_windows`, rows carry
+    `window_id`), healing existing checkpoints with no backtest re-run.
+  - `run_one_backtest` applies the same filter at OOS extraction (belt-and-braces for new
+    runs).
+  - Docstring NOTE documents (does NOT fix) that IS Sharpes in existing checkpoints were
+    computed on warmup-polluted series at run time (scalar, not recomputable); dilution is
+    ~uniform within a window (≤~3% relative), preserves within-window ranking, and does not
+    overturn EXP-004's noise verdict — a logbook correction note covers it.
+- **Tests (`test_selection_bias.py`, `test_wfo_stability.py`):** replaced the union-fill
+  tests with intersection-alignment tests; added warmup-trim retention (differing heads →
+  all combos kept, matrix spans intersection only), a zero-dilution proof (trimmed SR_obs ==
+  clean SR_obs), the `_trim_row_to_start`/`filter_oos_frame_to_span` helpers, span-filtered
+  stitching excludes pre-span rows (oos_days == true span), and the run_one_backtest source
+  trim. Suite: 292 → 301 (audit + cli/test_audit_command).
+- **Verify (pure math, no backtests):** `audit dsr --skip-campaign` reports n_combos=243 (0
+  dropped), DSR 0.9987/0.9982/0.9975 (N=243/1000/5000), PBO 0.8506. `audit wfo` for both
+  v3_5b/v3_5d resumes with 0 re-runs; corrected stitched OOS: v3_5b Sharpe 0.8294 / CAGR
+  0.1985 / MaxDD −0.5439 / oos_days 3391; v3_5d Sharpe 0.8061 / CAGR 0.1926 / MaxDD −0.5452
+  / oos_days 3391.
+
 #### **Fix: Audit Module 3 — compute v3_5b DSR on the TRUE live golden returns (dedicated 244th combo)** (2026-07-07)
 
 Blocking integrity defect from final pre-merge review: the v3_5b DSR headline (SR_obs,
