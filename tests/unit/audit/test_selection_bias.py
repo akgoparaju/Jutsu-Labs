@@ -296,3 +296,53 @@ class TestReturnsMatrix:
         ]
         r = golden_combo_returns(rows, "g")
         assert list(r) == [0.01, 0.02]
+
+
+# ---------------------------------------------------------------------------
+# Task 11 — run_dsr orchestrator + summarize_selection_bias
+# ---------------------------------------------------------------------------
+from jutsu_engine.audit.selection_bias import (
+    summarize_selection_bias, DEFAULT_N_BRACKETS,
+)
+
+
+class TestSummarize:
+    def _rows_with_spread(self, n=8, T=400, seed=0):
+        """N combos with distinct Sharpes over T days (deterministic)."""
+        from jutsu_engine.audit.selection_bias import combo_hash
+        rng = np.random.default_rng(seed)
+        dates = [f"2010-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(T)]
+        rows = []
+        for j in range(n):
+            base = rng.standard_normal(T)
+            base = (base - base.mean()) / base.std(ddof=1)
+            ret = (0.01 * base + 0.01 * (0.02 * j)).tolist()   # combo j Sharpe rises
+            h = combo_hash({"sma_fast": 40 + j})
+            rows.append({"combo_id": j, "hash": h, "overrides": {"sma_fast": 40 + j},
+                         "dates": dates, "returns": ret, "sharpe": 0.02 * j,
+                         "error": None})
+        return rows
+
+    def test_summary_has_dsr_brackets_and_pbo(self):
+        """summarize produces bracketed DSR rows + a PBO block for v3_5b."""
+        rows = self._rows_with_spread()
+        golden_hash = rows[3]["hash"]           # pick combo 3 as the golden anchor
+        summary = summarize_selection_bias(
+            strategy_id="v3_5b", rows=rows, golden_hash=golden_hash,
+            trial_inventory=[{"strategy_name": "v3_5b",
+                              "optimizer_type": "grid_search", "trials": 243}],
+            compute_pbo_block=True, S=8)
+        assert [r["N"] for r in summary["dsr_brackets"]] == list(DEFAULT_N_BRACKETS)
+        assert 0.0 <= summary["pbo"]["pbo"] <= 1.0
+        assert summary["n_combos"] == 8
+        assert summary["cross_trial_V"] > 0.0
+
+    def test_dsr_only_path_skips_pbo(self):
+        """v3_5d DSR-only summary carries DSR brackets but no PBO block."""
+        rows = self._rows_with_spread(n=2)
+        summary = summarize_selection_bias(
+            strategy_id="v3_5d", rows=rows, golden_hash=rows[0]["hash"],
+            trial_inventory=[], compute_pbo_block=False, S=8,
+            family_N=(1000, 5000))
+        assert summary["pbo"] is None
+        assert [r["N"] for r in summary["dsr_brackets"]] == [1000, 5000]
