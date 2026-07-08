@@ -20,6 +20,7 @@ from jutsu_engine.audit.report import (
     render_report, write_report,
     render_plateau_section, write_plateau_report,
     render_wfo_section, write_wfo_report,
+    render_dsr_section, write_dsr_report,
 )
 from jutsu_engine.utils.logging_config import setup_logger
 
@@ -336,4 +337,119 @@ def wfo_cmd(strategy, workers, windows_limit, retry_errors, run_date):
     except Exception as e:  # noqa: BLE001
         logger.error(f"WFO audit failed: {e}", exc_info=True)
         click.echo(click.style(f"✗ WFO audit failed: {e}", fg="red"), err=True)
+        raise click.Abort()
+
+
+def _resolve_run_dir_dsr(run_date_str: str | None, strategy_id: str) -> "Path":
+    """Midnight-safe run-dir resolution for DSR campaign files.
+
+    Mirrors _resolve_run_dir_wfo but scans campaign_dsr_<strategy>.jsonl so a DSR
+    resume never collides with a plateau or WFO campaign file. Resolution order:
+      (a) --run-date given → that dated directory unconditionally.
+      (b) Existing campaign_dsr_<strategy>.jsonl → resume newest date-dir.
+      (c) Fresh campaign → today's directory.
+    """
+    if run_date_str is not None:
+        try:
+            run_date = datetime.strptime(run_date_str, "%Y-%m-%d").date()
+        except ValueError:
+            raise click.BadParameter(
+                f"Invalid date format {run_date_str!r}; expected YYYY-MM-DD",
+                param_hint="--run-date",
+            )
+        return report_output_dir(run_date=run_date)
+
+    audit_base = report_output_dir().parent
+    campaign_pattern = f"campaign_dsr_{strategy_id}.jsonl"
+    candidates = sorted(
+        audit_base.glob(f"*/{strategy_id}/{campaign_pattern}"),
+        key=lambda p: p.parent.parent.name,
+        reverse=True,
+    )
+    if candidates:
+        newest = candidates[0]
+        run_dir = newest.parent.parent
+        click.echo(click.style(
+            f"  Resuming existing DSR campaign: {newest} "
+            f"(pass --run-date to override)", fg="yellow"))
+        return run_dir
+    return report_output_dir()
+
+
+def _load_trial_inventory(strategy_id: str) -> list:
+    """Read-only optimization_results inventory for a strategy (best-effort).
+
+    Returns [] (not an error) if the DB is unavailable — the DSR campaign runs on
+    the returns matrix regardless; only the inventory table is empty in that case.
+    """
+    from jutsu_engine.audit import db as audit_db
+    try:
+        engine = audit_db.get_engine()
+        return audit_db.load_trial_counts(engine, strategy_like=f"%{strategy_id}%")
+    except AuditDBUnavailable:
+        click.echo(click.style(
+            "  (optimization_results unavailable — inventory table will be empty)",
+            fg="yellow"))
+        return []
+
+
+@audit.command("dsr")
+@_STRATEGY_OPTION
+@click.option("--workers", type=int, default=1, show_default=True,
+              help="Parallel worker processes (1 = serial; each worker builds its "
+                   "own BacktestRunner). ~243 v3_5b backtests → 4 workers ≈ ~1.7h.")
+@click.option("--retry-errors", "retry_errors", is_flag=True, default=False,
+              help="Re-run previously errored checkpoint rows rather than treating "
+                   "them as completed. Use after a transient failure (DB blip).")
+@click.option("--run-date", "run_date", type=str, default=None, metavar="YYYY-MM-DD",
+              help="Use a specific dated run directory instead of auto-detecting an "
+                   "existing campaign (midnight-safe resume).")
+@click.option("--skip-campaign", "skip_campaign", is_flag=True, default=False,
+              help="Skip the returns campaign and compute DSR/PBO from an existing "
+                   "campaign JSONL (errors if rows are missing).")
+@click.option("--combos-limit", "combos_limit", type=int, default=None,
+              help="Cap the number of grid combos (smoke mode, e.g. 4).")
+def dsr_cmd(strategy, workers, retry_errors, run_date, skip_campaign, combos_limit):
+    """Module 3: selection-bias correction (DSR + PBO). v3_5b: full grid + PBO; \
+v3_5d: DSR-only (family-level N)."""
+    from jutsu_engine.audit import selection_bias as sb_mod
+
+    try:
+        for sid in _strategy_ids(strategy):
+            run_dir = _resolve_run_dir_dsr(run_date, sid)
+            campaign_file = run_dir / sid / f"campaign_dsr_{sid}.jsonl"
+            click.echo(
+                f"[{sid}] DSR/PBO "
+                f"(workers={workers}, retry_errors={retry_errors}, "
+                f"skip_campaign={skip_campaign})\n"
+                f"  campaign file: {campaign_file}"
+            )
+            inventory = _load_trial_inventory(sid)
+            summary = sb_mod.run_dsr(
+                sid, run_dir, workers=workers, retry_errors=retry_errors,
+                skip_campaign=skip_campaign, trial_inventory=inventory,
+                combos_limit=combos_limit,
+                progress=lambda msg: click.echo(click.style(f"  {msg}", fg="cyan")))
+            dsr0 = summary["dsr_brackets"][0]
+            click.echo(click.style(
+                f"  DSR(N={dsr0['N']})={dsr0['dsr']:.4f}  "
+                f"PBO={summary['pbo']['pbo']:.4f}" if summary["pbo"] is not None
+                else f"  DSR(N={dsr0['N']})={dsr0['dsr']:.4f}  (DSR-only)",
+                fg="cyan"))
+            md = render_dsr_section(summary)
+            out = write_dsr_report(run_dir, sid, md)
+            click.echo(click.style(f"  report: {out}", fg="green"))
+    except AuditDBUnavailable as e:
+        click.echo(click.style(f"✗ Database unavailable: {e}", fg="red"), err=True)
+        click.echo(click.style(
+            "  The audit is read-only and needs POSTGRES_* env vars (see .env). "
+            "Unit tests run without a DB; this command needs live data.",
+            fg="yellow"), err=True)
+        raise click.Abort()
+    except RuntimeError as e:
+        click.echo(click.style(f"✗ Campaign aborted: {e}", fg="red"), err=True)
+        raise click.Abort()
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"DSR audit failed: {e}", exc_info=True)
+        click.echo(click.style(f"✗ DSR audit failed: {e}", fg="red"), err=True)
         raise click.Abort()
