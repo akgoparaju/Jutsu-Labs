@@ -890,3 +890,86 @@ def run_campaign(strategy_id: str, campaign_file: Path,
         strategy_id=strategy_id, winners=winners, window_is_rows=window_is_rows,
         stitched=stitched, drift=drift, value_distribution=vdist,
         campaign_file=str(campaign_file))
+
+
+# ---------------------------------------------------------------------------
+# Task 9 — run_wfo orchestrator + report summary dict
+# ---------------------------------------------------------------------------
+
+
+def summarize_campaign(result: WFOCampaignResult) -> dict:
+    """Build the report summary dict from a WFOCampaignResult (spec §5/§10).
+
+    The spec §10 VERDICT is driven by the golden COMBO's top-decile rank across
+    the full 31-combo grid per window (golden_combo_top_decile_share), NOT by any
+    per-axis marginalisation. Feed the combo-level share to stability_verdict().
+
+    The per-axis golden_axis_winner_share values are included as a diagnostic table
+    (axis_diagnostics) for the report but do NOT feed the overall_verdict.
+
+    Keys returned:
+      strategy_id, n_windows, n_winners
+      stitched         — stitch_oos_metrics dict (includes nan_rows_dropped)
+      combo_top_decile_share  — float: golden COMBO's top-decile share across windows
+      combo_verdict    — "stable" / "unstable" / "inconclusive" (spec §10)
+      overall_verdict  — alias for combo_verdict (the CLI study-question answer)
+      axis_diagnostics — {param: {"golden_value": v, "share": f, "verdict": s}}
+                          three entries for the sensitive grid axes (diagnostic only)
+      drift_table      — DataFrame: per-window winner params (spec §5 output 2)
+      value_distribution — {param: {value: count}}
+      campaign_file    — str path to the JSONL
+    """
+    # --- Combo-level verdict (spec §10 primary) ---
+    golden_hash = expand_grid()[0]["hash"]   # combo 0 is always the golden anchor
+    combo_share = golden_combo_top_decile_share(result.window_is_rows, golden_hash)
+    combo_verd = stability_verdict(combo_share)
+
+    # --- Per-axis diagnostics (labeled clearly as diagnostic, not verdict) ---
+    axis_diag: dict = {}
+    for param, golden_val in GOLDEN_SENSITIVE.items():
+        share = golden_axis_winner_share(result.window_is_rows, param, golden_val)
+        axis_diag[param] = {
+            "golden_value": golden_val,
+            "share": share,
+            "verdict": stability_verdict(share),
+        }
+
+    return {
+        "strategy_id": result.strategy_id,
+        "n_windows": len(result.window_is_rows),
+        "n_winners": len(result.winners),
+        "stitched": result.stitched,                      # includes nan_rows_dropped
+        "combo_top_decile_share": combo_share,
+        "combo_verdict": combo_verd,
+        "overall_verdict": combo_verd,                    # study-question answer
+        "axis_diagnostics": axis_diag,
+        "drift_table": result.drift,
+        "value_distribution": {k: dict(v) for k, v in result.value_distribution.items()},
+        "campaign_file": result.campaign_file,
+    }
+
+
+def run_wfo(strategy_id: str, run_dir: Path,
+            windows_limit: int | None = None, workers: int = 1,
+            retry_errors: bool = False,
+            total_start: date | None = None, total_end: date | None = None,
+            progress=lambda m: None) -> dict:
+    """End-to-end Module 1 for one strategy: campaign → summarize → summary dict.
+
+    The campaign JSONL is written under run_dir/<strategy_id>/campaign_wfo_<strategy_id>.jsonl
+    so reruns resume from the last checkpointed row. Per-window backtests use a
+    throwaway tempdir (never landing in run_dir). The summary dict returned is the
+    exact shape render_wfo_section(summary) expects.
+
+    Midnight / multi-day: total_end defaults to date.today() at call time and is
+    NOT embedded in row keys; a resume after midnight extends the last window's OOS
+    by 1 day (negligible for multi-year windows; documented and accepted).
+    """
+    run_dir = Path(run_dir)
+    campaign_file = run_dir / strategy_id / f"campaign_wfo_{strategy_id}.jsonl"
+    result = run_campaign(
+        strategy_id, campaign_file,
+        windows_limit=windows_limit, workers=workers,
+        total_start=total_start, total_end=total_end,
+        retry_errors=retry_errors, progress=progress)
+    return summarize_campaign(result)

@@ -609,3 +609,99 @@ class TestCircuitBreaker:
                            total_end=_date2(2013, 8, 1),
                            max_consecutive_errors=5)
         assert len(res.winners) == 1
+
+    def test_aborts_after_consecutive_errors_parallel(self, tmp_path):
+        """Parallel path: RuntimeError raised AND at least max_consecutive_errors rows
+        are checkpointed before the abort (drain-before-abort proof).
+
+        workers=2, module-level picklable _all_error_run_fn (spawn-safe), small
+        max_consecutive_errors=3 so the breaker trips quickly. We assert:
+          - RuntimeError with the circuit-breaker message is raised.
+          - At least max_consecutive_errors rows exist in the JSONL (i.e., the
+            completed work that triggered the breaker was flushed before abort).
+        """
+        camp = tmp_path / "campaign_v3_5b.jsonl"
+        import pytest
+        with pytest.raises(RuntimeError, match="consecutive errored"):
+            run_campaign("v3_5b", camp, windows_limit=1, workers=2,
+                         run_fn=_all_error_run_fn, symbols=["QQQ"],
+                         total_start=_date2(2010, 2, 1),
+                         total_end=_date2(2013, 8, 1),
+                         max_consecutive_errors=3)
+        # Drain-before-abort: every row whose future finished before the breaker
+        # tripped must be in the JSONL (≥ max_consecutive_errors rows).
+        rows = _reload_wfo_rows(camp)
+        assert len(rows) >= 3, (
+            f"drain-before-abort violated: only {len(rows)} rows checkpointed; "
+            "expected >= 3 (max_consecutive_errors)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Task 9 — run_wfo orchestrator + summarize_campaign
+# ---------------------------------------------------------------------------
+from jutsu_engine.audit.wfo_stability import (
+    summarize_campaign, run_wfo,
+    golden_combo_top_decile_share, golden_axis_winner_share,
+)
+
+
+class TestSummarizeCampaign:
+    def test_summary_has_stitched_combo_verdict_and_axis_diagnostics(self, tmp_path):
+        """summarize_campaign builds the full report dict:
+        - stitched OOS metrics (spec §5 output 1)
+        - combo_top_decile_share: single combo-level verdict (spec §10)
+        - axis_diagnostics: per-axis golden_axis_winner_share values (diagnostic table)
+        - overall_verdict derived from combo-level share
+        """
+        camp = tmp_path / "campaign_v3_5b.jsonl"
+        res = run_campaign(
+            "v3_5b", camp, windows_limit=2, workers=1, run_fn=_fake_run_fn,
+            symbols=["QQQ"], total_start=_date2(2010, 2, 1),
+            total_end=_date2(2013, 8, 1))
+        summary = summarize_campaign(res)
+        assert summary["strategy_id"] == "v3_5b"
+        assert summary["stitched"]["oos_days"] == 10
+        # combo-level verdict
+        assert "combo_top_decile_share" in summary
+        assert "combo_verdict" in summary
+        assert summary["combo_verdict"] in ("stable", "unstable", "inconclusive")
+        # per-axis diagnostics (three sensitive axes)
+        assert "axis_diagnostics" in summary
+        for p in ("upper_thresh_z", "realized_vol_window", "sma_slow"):
+            assert p in summary["axis_diagnostics"]
+            assert "share" in summary["axis_diagnostics"][p]
+            assert "verdict" in summary["axis_diagnostics"][p]
+
+    def test_summary_overall_verdict_matches_combo_verdict(self, tmp_path):
+        """overall_verdict is the combo-level verdict (not per-axis min)."""
+        camp = tmp_path / "campaign_v3_5b.jsonl"
+        res = run_campaign(
+            "v3_5b", camp, windows_limit=2, workers=1, run_fn=_fake_run_fn,
+            symbols=["QQQ"], total_start=_date2(2010, 2, 1),
+            total_end=_date2(2013, 8, 1))
+        summary = summarize_campaign(res)
+        assert summary["overall_verdict"] == summary["combo_verdict"]
+
+    def test_summary_includes_nan_rows_dropped(self, tmp_path):
+        """summary always exposes nan_rows_dropped from stitch_oos_metrics."""
+        camp = tmp_path / "campaign_v3_5b.jsonl"
+        res = run_campaign(
+            "v3_5b", camp, windows_limit=2, workers=1, run_fn=_fake_run_fn,
+            symbols=["QQQ"], total_start=_date2(2010, 2, 1),
+            total_end=_date2(2013, 8, 1))
+        summary = summarize_campaign(res)
+        assert "nan_rows_dropped" in summary["stitched"]
+
+    def test_run_wfo_returns_summary_dict(self, tmp_path):
+        """run_wfo orchestrates campaign + summarize and returns the summary dict."""
+        from unittest import mock
+        with mock.patch("jutsu_engine.audit.wfo_stability.run_campaign") as m_camp, \
+             mock.patch("jutsu_engine.audit.wfo_stability.summarize_campaign") as m_sum:
+            # run_campaign returns a WFOCampaignResult-shaped mock; summarize returns a dict
+            m_camp.return_value = object()
+            m_sum.return_value = {"strategy_id": "v3_5b", "stitched": {}, "overall_verdict": "stable"}
+            result = run_wfo("v3_5b", tmp_path, windows_limit=2, workers=1)
+        assert m_camp.called
+        assert m_sum.called
+        assert result["strategy_id"] == "v3_5b"
