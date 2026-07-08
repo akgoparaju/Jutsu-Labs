@@ -164,3 +164,65 @@ class TestStitchOOSMetrics:
         """No OOS windows -> zeroed metrics, no crash."""
         m = stitch_oos_metrics([])
         assert m["oos_days"] == 0 and m["sharpe"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Task 5 — Parameter-drift table + golden top-decile share (spec §5/§10)
+# ---------------------------------------------------------------------------
+from jutsu_engine.audit.wfo_stability import (
+    drift_table, param_value_distribution, golden_top_decile_share,
+)
+from jutsu_engine.audit.wfo_stability import GOLDEN_SENSITIVE
+
+
+def _winner(window_id, overrides, is_sharpe):
+    return {"window_id": window_id, "overrides": overrides, "is_sharpe": is_sharpe}
+
+
+class TestDriftTable:
+    def test_one_row_per_window_with_winner_params(self):
+        """drift_table has one row per window carrying that window's winner params."""
+        winners = [
+            _winner(1, {"upper_thresh_z": 0.8, "realized_vol_window": 21, "sma_slow": 140}, 0.9),
+            _winner(2, {"upper_thresh_z": 1.0, "realized_vol_window": 16, "sma_slow": 160}, 0.7),
+        ]
+        df = drift_table(winners)
+        assert list(df["window_id"]) == [1, 2]
+        assert df.loc[df["window_id"] == 1, "upper_thresh_z"].iloc[0] == 0.8
+
+    def test_value_distribution_counts_winning_values_per_param(self):
+        """param_value_distribution counts how often each value wins, per param."""
+        winners = [
+            _winner(1, {"upper_thresh_z": 0.8}, 0.9),
+            _winner(2, {"upper_thresh_z": 1.0}, 0.7),
+            _winner(3, {"upper_thresh_z": 0.8}, 0.6),
+        ]
+        dist = param_value_distribution(winners)
+        assert dist["upper_thresh_z"][0.8] == 2
+        assert dist["upper_thresh_z"][1.0] == 1
+
+
+class TestGoldenTopDecileShare:
+    def test_share_of_windows_where_golden_is_top_decile(self):
+        """Golden top-decile share = fraction of windows where each golden axis value
+        ranks in the top decile of that window's IS-Sharpe distribution."""
+        # Two windows, 3-combo grid each (top decile of 3 combos = the #1 combo).
+        window_is_rows = [
+            # window 1: golden upper_thresh_z=1.0 is the best (top decile)
+            [{"overrides": {"upper_thresh_z": 0.8}, "is_sharpe": 0.5},
+             {"overrides": {"upper_thresh_z": 1.0}, "is_sharpe": 0.9},
+             {"overrides": {"upper_thresh_z": 1.2}, "is_sharpe": 0.7}],
+            # window 2: golden upper_thresh_z=1.0 is worst (NOT top decile)
+            [{"overrides": {"upper_thresh_z": 0.8}, "is_sharpe": 0.9},
+             {"overrides": {"upper_thresh_z": 1.0}, "is_sharpe": 0.3},
+             {"overrides": {"upper_thresh_z": 1.2}, "is_sharpe": 0.7}],
+        ]
+        share = golden_top_decile_share(window_is_rows, "upper_thresh_z", 1.0)
+        assert abs(share - 0.5) < 1e-9  # golden top-decile in 1 of 2 windows
+
+    def test_verdict_thresholds(self):
+        """>=80% -> 'stable'; <50% -> 'unstable'; between -> 'inconclusive' (spec §10)."""
+        from jutsu_engine.audit.wfo_stability import stability_verdict
+        assert stability_verdict(0.85) == "stable"
+        assert stability_verdict(0.40) == "unstable"
+        assert stability_verdict(0.65) == "inconclusive"

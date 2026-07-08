@@ -226,3 +226,85 @@ def stitch_oos_metrics(oos_frames: list[pd.DataFrame]) -> dict:
         "qqq_total_return": float(qqq_total),
         "alpha_vs_qqq": float(total - qqq_total),
     }
+
+
+# ---------------------------------------------------------------------------
+# Task 5 — Parameter-drift table + golden top-decile share (spec §5/§10)
+# ---------------------------------------------------------------------------
+from collections import Counter
+
+# Golden values of the sensitive grid axes (for top-decile-share scoring).
+GOLDEN_SENSITIVE: dict = {
+    "upper_thresh_z": 1.0, "realized_vol_window": 21, "sma_slow": 140,
+}
+
+# spec §10 decision thresholds for the golden top-decile share.
+STABLE_THRESHOLD = 0.80
+UNSTABLE_THRESHOLD = 0.50
+# Top decile: with a small per-axis grid, "top decile" = ceil(10% of distinct
+# values), min 1 (the single best value qualifies when the grid is small).
+TOP_DECILE_FRACTION = 0.10
+
+
+def drift_table(winners: list[dict]) -> pd.DataFrame:
+    """One row per window: window_id, is_sharpe, and each winning param value.
+
+    `winners` is the list of per-window IS winner dicts (from select_is_winner)
+    each augmented with window_id.
+    """
+    recs = []
+    for w in winners:
+        row = {"window_id": w["window_id"], "is_sharpe": w.get("is_sharpe")}
+        row.update(w["overrides"])
+        recs.append(row)
+    return pd.DataFrame(recs)
+
+
+def param_value_distribution(winners: list[dict]) -> dict[str, Counter]:
+    """Per param, a Counter of how often each value was the IS winner across windows."""
+    dist: dict[str, Counter] = {}
+    for w in winners:
+        for k, v in w["overrides"].items():
+            dist.setdefault(k, Counter())[v] += 1
+    return dist
+
+
+def golden_top_decile_share(window_is_rows: list[list[dict]], param: str,
+                            golden_value) -> float:
+    """Fraction of windows where `golden_value` for `param` ranks in the top decile
+    of that window's IS-Sharpe distribution for that param.
+
+    For each window: collect the best IS Sharpe achieved by each distinct value of
+    `param` (marginalising over the other axes), rank the values by their best IS
+    Sharpe, and check whether `golden_value` falls within the top ceil(10%)
+    (min 1). Windows where the param never appears are skipped.
+    """
+    hits = 0
+    counted = 0
+    for rows in window_is_rows:
+        # best IS Sharpe per distinct value of `param` in this window
+        best: dict = {}
+        for r in rows:
+            v = r["overrides"].get(param)
+            if v is None or not _is_finite_number(r.get("is_sharpe")):
+                continue
+            if v not in best or r["is_sharpe"] > best[v]:
+                best[v] = r["is_sharpe"]
+        if golden_value not in best:
+            continue
+        counted += 1
+        ranked = sorted(best.items(), key=lambda kv: kv[1], reverse=True)
+        cutoff = max(1, math.ceil(len(ranked) * TOP_DECILE_FRACTION))
+        top_values = {v for v, _ in ranked[:cutoff]}
+        if golden_value in top_values:
+            hits += 1
+    return (hits / counted) if counted else 0.0
+
+
+def stability_verdict(share: float) -> str:
+    """spec §10: >=80% -> stable; <50% -> unstable; otherwise inconclusive."""
+    if share >= STABLE_THRESHOLD:
+        return "stable"
+    if share < UNSTABLE_THRESHOLD:
+        return "unstable"
+    return "inconclusive"
