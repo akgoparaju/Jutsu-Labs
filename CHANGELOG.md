@@ -1,3 +1,36 @@
+#### **Feature: Baseline Audit Phase 3 — Module 1 WFO parameter-stability study** (2026-07-07)
+
+Added `jutsu audit wfo` (`jutsu_engine/audit/wfo_stability.py`): walk-forward
+parameter-stability study for v3_5b/v3_5d producing (a) a stitched OOS daily-return
+equity curve (Sharpe/CAGR/MaxDD/alpha-vs-QQQ computed on the concatenated series —
+never by averaging per-window Sharpes) and (b) a parameter-drift table with golden
+combo top-decile share and the spec §10 stable/unstable/inconclusive verdict. Grid is
+evidence-driven from EXP-003: 31 combos/window (3×3×3 sensitive-param product over
+`upper_thresh_z`, `realized_vol_window`, `sma_slow` + 4 single-swap quarantine combos
+for `vol_crush_threshold`, `bond_sma_fast`, `bond_sma_slow`, `osc_smoothness`); six
+EXP-003 inert knobs excluded (documented). Architecture: thin per-window IS grid
+search + OOS stitching built on the audit package's own infra — WFORunner rejected
+(stitches trades, no resume, cannot produce a stitched daily-return curve). 198 unit
+tests (audit + CLI scope), all DB-free.
+
+- New: `jutsu_engine/audit/wfo_stability.py`, `tests/unit/audit/test_wfo_stability.py`,
+  `tests/unit/audit/test_wfo_cli.py`.
+- Modified: `jutsu_engine/audit/report.py` (`render_wfo_section`, `write_wfo_report`),
+  `jutsu_engine/cli/commands/audit.py` (`wfo` subcommand),
+  `tests/unit/audit/test_report.py`.
+- Docs: `docs/experiments/LOGBOOK.md` (EXP-004 skeleton).
+- **Review-driven fixes included:**
+  - Boundary-day dedup in stitched OOS (last day of window N = first day of window N+1;
+    dropped to prevent double-counting).
+  - Spec-literal combo-level top-decile verdict with deterministic ties (ties at the
+    cutoff boundary broken consistently by sorted hash).
+  - Calendar-month window arithmetic (add_months helper; avoids timedelta drift on
+    year/month boundaries for IS/OOS/slide lengths).
+  - Loud NaN handling: OOS rows with NaN `Strategy_Daily_Return` are counted and
+    reported in the rendered section; warn count surfaced in `nan_rows_dropped`.
+  - Parallel circuit-breaker drain test: verifies that when the breaker fires, in-flight
+    parallel workers are allowed to complete before the campaign aborts.
+
 #### **Feature: Baseline audit Phase 2 — parameter plateau map (Module 2)** (2026-07-06)
 
 Added `jutsu_engine/audit/plateau.py` and the `jutsu audit plateau` CLI subcommand
