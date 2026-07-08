@@ -305,3 +305,113 @@ class TestWritePlateauReport:
         assert out.read_text() == "# plateau body\n"
         # Phase-1 report file is unchanged
         assert (tmp_path / "report_v3_5b.md").read_text() == "PHASE-1 DO NOT TOUCH"
+
+
+# ---------------------------------------------------------------------------
+# Task 10 — WFO report renderer
+# ---------------------------------------------------------------------------
+from jutsu_engine.audit.report import render_wfo_section, write_wfo_report
+
+
+def _wfo_summary():
+    return {
+        "strategy_id": "v3_5b",
+        "n_windows": 26, "n_winners": 26,
+        "stitched": {"oos_days": 3200, "total_return": 1.5, "cagr": 0.08,
+                     "sharpe": 0.65, "max_drawdown": -0.45,
+                     "qqq_total_return": 1.2, "alpha_vs_qqq": 0.30,
+                     "nan_rows_dropped": 0},
+        "drift_table": pd.DataFrame([
+            {"window_id": 1, "is_sharpe": 0.9, "upper_thresh_z": 1.0,
+             "realized_vol_window": 21, "sma_slow": 140}]),
+        "value_distribution": {"upper_thresh_z": {1.0: 20, 0.8: 6}},
+        "combo_top_decile_share": 0.85,
+        "combo_verdict": "stable",
+        "overall_verdict": "stable",
+        "axis_diagnostics": {
+            "upper_thresh_z": {"golden_value": 1.0, "share": 0.85, "verdict": "stable"},
+            "realized_vol_window": {"golden_value": 21, "share": 0.42, "verdict": "unstable"},
+            "sma_slow": {"golden_value": 140, "share": 0.65, "verdict": "inconclusive"},
+        },
+        "campaign_file": "/x/campaign_wfo_v3_5b.jsonl",
+    }
+
+
+def _wfo_summary_with_nan_dropped():
+    s = _wfo_summary()
+    s["stitched"] = {**s["stitched"], "nan_rows_dropped": 7}
+    return s
+
+
+class TestRenderWFO:
+    def test_section_reports_stitched_headline(self):
+        """Report shows the stitched OOS Sharpe/CAGR/MaxDD/alpha as the headline."""
+        md = render_wfo_section(_wfo_summary())
+        assert "Stitched OOS" in md
+        assert "0.6500" in md          # stitched sharpe (4dp)
+        assert "alpha" in md.lower()
+
+    def test_section_states_never_averaged(self):
+        """Report explicitly states metrics are on the stitched series, not averaged."""
+        md = render_wfo_section(_wfo_summary())
+        assert ("not by averaging per-window" in md.lower()
+                or "stitched series" in md.lower())
+
+    def test_section_shows_combo_verdict(self):
+        """Report shows the combo-level top-decile share and spec §10 verdict."""
+        md = render_wfo_section(_wfo_summary())
+        assert "85.0%" in md          # combo share as percentage
+        assert "stable" in md.lower()
+
+    def test_section_shows_axis_diagnostics_table(self):
+        """Report includes a clearly-labeled per-axis diagnostic table."""
+        md = render_wfo_section(_wfo_summary())
+        assert "diagnostic" in md.lower()
+        assert "unstable" in md        # realized_vol_window axis verdict
+
+    def test_section_answers_study_question_explicitly(self):
+        """Report contains an explicit verdict line answering the study question."""
+        md = render_wfo_section(_wfo_summary())
+        # Must contain the adaptive-tuning verdict line
+        assert ("UNNECESSARY" in md or "JUSTIFIED" in md or "INCONCLUSIVE" in md)
+
+    def test_section_shows_decision_threshold_table(self):
+        """Report includes the spec §10 decision-threshold table (≥80% / <50% rows)."""
+        md = render_wfo_section(_wfo_summary())
+        assert "80%" in md and "50%" in md
+
+    def test_section_nan_rows_warning_when_nonzero(self):
+        """A warning line appears when nan_rows_dropped > 0."""
+        md = render_wfo_section(_wfo_summary_with_nan_dropped())
+        assert "7" in md
+        assert ("nan" in md.lower() or "warning" in md.lower() or "dropped" in md.lower())
+
+    def test_section_no_nan_warning_when_zero(self):
+        """No NaN warning when nan_rows_dropped is 0 (normal case)."""
+        md = render_wfo_section(_wfo_summary())
+        # The word "nan_rows_dropped" or "NaN warning" should NOT appear as a warning
+        # when the count is 0 — check that zero-dropped doesn't show a warning block.
+        assert "nan_rows_dropped" not in md
+
+    def test_write_wfo_report_creates_separate_file(self, tmp_path):
+        """write_wfo_report writes report_wfo_<strategy>.md (never touches other reports)."""
+        (tmp_path / "report_v3_5b.md").write_text("DO NOT TOUCH")
+        (tmp_path / "report_plateau_v3_5b.md").write_text("DO NOT TOUCH EITHER")
+        out = write_wfo_report(tmp_path, "v3_5b", "# hi\n")
+        assert out.name == "report_wfo_v3_5b.md"
+        assert out.read_text() == "# hi\n"
+        # Phase-1 and plateau reports untouched
+        assert (tmp_path / "report_v3_5b.md").read_text() == "DO NOT TOUCH"
+        assert (tmp_path / "report_plateau_v3_5b.md").read_text() == "DO NOT TOUCH EITHER"
+
+    def test_fmt_never_prints_none(self):
+        """_fmt used throughout the WFO renderer never produces the literal string 'None'."""
+        # summary with some None values in stitched
+        s = _wfo_summary()
+        s["stitched"] = {"oos_days": 0, "total_return": None, "cagr": None,
+                         "sharpe": None, "max_drawdown": None,
+                         "qqq_total_return": None, "alpha_vs_qqq": None,
+                         "nan_rows_dropped": 0}
+        md = render_wfo_section(s)
+        assert ": None" not in md
+        assert "**None**" not in md

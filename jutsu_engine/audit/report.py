@@ -356,3 +356,183 @@ def write_plateau_report(run_dir: Path, strategy_id: str, markdown: str) -> Path
     out = run_dir / f"report_plateau_{strategy_id}.md"
     out.write_text(markdown)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Module 1 WFO — spec §5 / §10 report renderer
+# ---------------------------------------------------------------------------
+
+# spec §10 decision thresholds for Module 1 (WFO parameter stability).
+WFO_STABLE_SHARE_PCT = 80.0
+WFO_UNSTABLE_SHARE_PCT = 50.0
+
+
+def render_wfo_section(summary: dict) -> str:
+    """Render the WFO parameter-stability (Module 1) section as markdown.
+
+    ``summary`` is the dict returned by summarize_campaign() / run_wfo():
+      strategy_id, n_windows, n_winners
+      stitched           — stitch_oos_metrics dict (includes nan_rows_dropped)
+      combo_top_decile_share — float: spec §10 verdict input (golden COMBO in grid)
+      combo_verdict      — "stable" / "unstable" / "inconclusive"
+      overall_verdict    — alias for combo_verdict
+      axis_diagnostics   — {param: {golden_value, share, verdict}} (diagnostic only)
+      drift_table        — DataFrame: per-window winner params
+      value_distribution — {param: {value: count}}
+      campaign_file      — str
+
+    The report explicitly answers the study question:
+      "Adaptive parameter tuning: UNNECESSARY (stable) / JUSTIFIED-INVESTIGATE
+      (unstable) / INCONCLUSIVE" — driven by combo_verdict (spec §10).
+
+    The per-axis diagnostic table is clearly labeled "DIAGNOSTIC (not verdict input)"
+    so readers know the verdict comes from the combo-level share only.
+
+    Conventions from report.py:
+      - _fmt() for every number (never literal None)
+      - captions OUTSIDE GFM tables
+      - standalone file report_wfo_<strategy>.md (write_wfo_report)
+    """
+    st = summary["stitched"]
+    nan_dropped = st.get("nan_rows_dropped", 0) or 0
+    overall = summary.get("overall_verdict", summary.get("combo_verdict", "inconclusive"))
+    combo_share = summary.get("combo_top_decile_share", 0.0)
+
+    # Study-question verdict line (required explicit answer, spec §10)
+    _verdict_map = {
+        "stable": "UNNECESSARY (stable)",
+        "unstable": "JUSTIFIED-INVESTIGATE (unstable)",
+        "inconclusive": "INCONCLUSIVE",
+    }
+    adaptive_verdict = _verdict_map.get(overall, "INCONCLUSIVE")
+
+    # Overall consequence prose
+    _consequence_map = {
+        "stable": (
+            f"The golden combo ranks in the top decile of its grid in "
+            f"**{combo_share * 100:.1f}%** of windows "
+            f"(>= {WFO_STABLE_SHARE_PCT:.0f}% threshold). "
+            "Parameters are stable across walk-forward time windows; "
+            "adaptive tuning is unnecessary by construction (spec §10)."
+        ),
+        "unstable": (
+            f"The golden combo ranks in the top decile of its grid in only "
+            f"**{combo_share * 100:.1f}%** of windows "
+            f"(< {WFO_UNSTABLE_SHARE_PCT:.0f}% threshold). "
+            "Parameters are fragile across time; adaptive tuning would chase "
+            "noise — the config itself needs structural work (spec §10)."
+        ),
+        "inconclusive": (
+            f"The golden combo top-decile share is "
+            f"**{combo_share * 100:.1f}%** — between the "
+            f"{WFO_UNSTABLE_SHARE_PCT:.0f}% and {WFO_STABLE_SHARE_PCT:.0f}% "
+            "thresholds. Neither clearly stable nor clearly fragile; "
+            "widen the study window or grid before deciding (spec §10)."
+        ),
+    }
+    consequence = _consequence_map.get(overall, _consequence_map["inconclusive"])
+
+    lines = [
+        "## WFO parameter-stability study (Module 1)",
+        "",
+        f"- Strategy: **{summary['strategy_id']}**  |  "
+        f"Windows: **{summary['n_windows']}** (winners: {summary['n_winners']})  |  "
+        "scheme: 2.5y IS / 0.5y OOS / 0.5y slide",
+        f"- Grid: 31 combos/window (3×3×3 sensitive-param product + 4 quarantine swaps; "
+        "6 EXP-003 inert knobs excluded)",
+        f"- Campaign file: `{summary['campaign_file']}`",
+        "",
+        "### Stitched OOS equity curve (headline — spec §5 output 1)",
+        "_All metrics computed on the single concatenated OOS daily-return series "
+        "(the **stitched series**), **not by averaging per-window Sharpes** "
+        "(the legacy `walk_forward.py` flaw spec §5 rejects)._",
+        "",
+        f"- OOS trading days: **{st.get('oos_days', 0)}**",
+        f"- Stitched OOS Sharpe: **{_fmt(st.get('sharpe'), '.4f')}**  |  "
+        f"CAGR: **{_fmt(st.get('cagr'), '.4f')}**  |  "
+        f"MaxDD: **{_fmt(st.get('max_drawdown'), '.4f')}**",
+        f"- Stitched total return: **{_fmt(st.get('total_return'), '.4f')}**  |  "
+        f"QQQ total return: **{_fmt(st.get('qqq_total_return'), '.4f')}**  |  "
+        f"alpha vs QQQ: **{_fmt(st.get('alpha_vs_qqq'), '.4f')}**",
+    ]
+
+    # NaN-rows warning (surface when > 0; omit when 0 to keep the normal report clean)
+    if nan_dropped > 0:
+        lines.append(
+            f"\n> **Warning:** {nan_dropped} OOS row(s) with NaN "
+            "Strategy_Daily_Return were dropped before computing the stitched metrics. "
+            "All metrics share one denominator (the surviving rows). "
+            "Investigate the underlying backtests for regime-timeseries gaps."
+        )
+
+    lines += [
+        "",
+        "### Adaptive-parameters decision — study question answer (spec §10)",
+        "",
+        f"**Adaptive parameter tuning: {adaptive_verdict}**",
+        "",
+        f"_{consequence}_",
+        "",
+        "Decision thresholds (spec §10):",
+        "| Top-decile share (golden COMBO across windows) | Threshold | Verdict |",
+        "| --- | --- | --- |",
+        f"| >= {WFO_STABLE_SHARE_PCT:.0f}% | stable | Adaptive tuning unnecessary |",
+        f"| < {WFO_UNSTABLE_SHARE_PCT:.0f}% | unstable | Parameters fragile / config needs work |",
+        f"| between | inconclusive | Widen study before deciding |",
+        "",
+        "#### Combo-level top-decile share (spec §10 verdict input)",
+        f"- Golden combo hash: `{summary.get('campaign_file', '').split('/')[-1]}`  |  "
+        f"Top-decile share: **{combo_share * 100:.1f}%**  |  "
+        f"Verdict: **{overall}**",
+        "",
+    ]
+
+    # Per-axis diagnostic table (clearly labeled: NOT the verdict input)
+    axis = summary.get("axis_diagnostics", {})
+    if axis:
+        lines += [
+            "#### Per-axis golden winner share — DIAGNOSTIC (not verdict input)",
+            "_Each axis value is the fraction of windows where the golden axis value "
+            "is the outright per-axis winner (marginalised over other axes). "
+            "With only 3 values per axis, 'top decile' = single best — so this is a "
+            "strict outright-winner test, demoted to diagnostic. "
+            "The spec §10 verdict is driven by the COMBO-level share above._",
+            "",
+            "| param | golden value | axis winner share | axis verdict |",
+            "| --- | --- | --- | --- |",
+        ]
+        for param, info in axis.items():
+            lines.append(
+                f"| `{param}` | {info['golden_value']} | "
+                f"{info['share'] * 100:.1f}% | {info['verdict']} |"
+            )
+        lines.append("")
+
+    lines += [
+        "### Per-window winner drift table (spec §5 output 2)",
+        _df_to_md(summary.get("drift_table", pd.DataFrame())),
+        "### Winning-value distribution (per param, across windows)",
+    ]
+    vdist = summary.get("value_distribution", {})
+    if vdist:
+        for param, counts in vdist.items():
+            pairs = ", ".join(f"{v}×{n}" for v, n in sorted(counts.items()))
+            lines.append(f"- `{param}`: {pairs}")
+    else:
+        lines.append("_(no winner data)_")
+    lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
+def write_wfo_report(run_dir: Path, strategy_id: str, markdown: str) -> Path:
+    """Write report_wfo_<strategy>.md into run_dir (separate from Phase-1/2 reports).
+
+    Deliberately a SEPARATE file so the WFO run never touches report_<strategy>.md
+    (Phase-1 recon/attribution) or report_plateau_<strategy>.md (Module 2).
+    """
+    run_dir = Path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    out = run_dir / f"report_wfo_{strategy_id}.md"
+    out.write_text(markdown)
+    return out
