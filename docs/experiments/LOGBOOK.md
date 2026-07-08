@@ -26,6 +26,7 @@ in-sample numbers optimistic by construction.
 | EXP-001 | 2026-07-06 | What are the honest baseline numbers, and does live match backtest? | Full-period Sharpe ~0.8 (not 2.8); initial 8.6% fidelity alarm raised |
 | EXP-002 | 2026-07-06 | Are the 8 logic-mismatch days a production bug? | No — audit artifact (information-set mismatch); true divergence 1.1% |
 | EXP-003 | 2026-07-07 | How robust is the golden config to small parameter perturbations (plateau vs cliff)? | Plateau, no cliffs (both strategies); golden at 48th/57.5th pct of own neighborhood; vol-regime channel most sensitive |
+| EXP-004 | 2026-07-07 | Are the golden parameters stable across WFO time windows (does adaptive tuning have anything to chase)? | _(pending campaign run)_ |
 
 ---
 
@@ -317,3 +318,81 @@ via the vol channel.**
 **Shared backlog item:** persist the scheduler's decision-time synthetic bar —
 needed by our audit (3 residual unverifiable days) AND their Phase-2 live
 integration (T-1 information-set constraint).
+
+---
+
+## EXP-004 — Baseline audit Phase 3: WFO parameter-stability study (2026-07-07)
+
+**Question.** Are the golden parameters stable across walk-forward time windows,
+or do the winning values drift? EXP-003 showed the config is parameter-robust
+*today* (a plateau, 48th/57.5th percentile of its own neighborhood); this is the
+orthogonal test EXP-003 could not answer — parameters flat today may still drift
+*across time windows*. This settles the adaptive-parameters question with
+out-of-sample data (spec §5/§10).
+
+**Why.** EXP-001 pinned fragility to the *time* dimension (2022 failure, 2025
+negative alpha), not the parameter dimension. EXP-003 showed the parameter
+surface is flat in cross-section; WFO answers whether the golden config's winning
+parameter values are stable window-to-window and whether a stitched OOS curve
+confirms or degrades the EXP-001 full-period Sharpe ~0.8. Also WFO-validates the
+EXP-003 quarantined candidates (bond_sma_fast 24, bond_sma_slow 66,
+osc_smoothness 12, vol_crush_threshold −0.12) out-of-sample before anyone adopts
+them. Decision framework: spec `docs/superpowers/specs/2026-07-06-baseline-audit-design.md`
+§5/§10.
+
+**Method.** Built `jutsu_engine/audit/wfo_stability.py` + `jutsu audit wfo`.
+Architecture: thin per-window IS grid search + OOS stitching built on the audit
+package's own infra (`build_overridden_strategy` + `BacktestRunner` + plateau JSONL
+checkpoint/resume/circuit-breaker/single-writer patterns). WFORunner explicitly
+rejected: it stitches trades, has no checkpoint/resume, and cannot produce a
+stitched daily-return curve (spec §5 output 1). Strictly read-only vs the DB; no
+live/scheduler changes.
+
+- Windows: 2.5y IS / 0.5y OOS / 0.5y slide, 2010-02 → present (~26–27 windows).
+  Boundary-day dedup applied (last day of window N excluded from window N+1 OOS
+  concatenation to prevent double-counting).
+- Per-window grid (31 combos, evidence-driven from EXP-003): 3×3×3 product over
+  the sensitive vol-regime inputs `upper_thresh_z` [0.8, 1.0, 1.2] ×
+  `realized_vol_window` [16, 21, 26] × `sma_slow` [120, 140, 160], PLUS 4
+  single-swap quarantine combos (`vol_crush_threshold` −0.12, `bond_sma_fast` 24,
+  `bond_sma_slow` 66, `osc_smoothness` 12). Six EXP-003 inert knobs explicitly
+  excluded (documented in `WFO_INERT_EXCLUDED`).
+- Per window: run all 31 IS combos → pick winner by IS Sharpe → run ONE OOS
+  backtest with the winner → extract `Strategy_Daily_Return` from regime-timeseries
+  CSV. Quarantined candidates validated only if they WIN a window AND their OOS
+  daily-return contribution holds up in the stitched series.
+- **Stitched OOS curve**: concatenate all window OOS daily-return series; compute
+  Sharpe/CAGR/MaxDD/alpha-vs-QQQ on the single stitched series — NEVER by
+  averaging per-window Sharpes (the legacy `walk_forward.py` flaw spec §5 rejects).
+  NaN rows counted and surfaced loudly; nan_rows_dropped reported.
+- Spec §10 verdict driven by golden COMBO top-decile share across windows
+  (deterministic tie-breaking by sorted hash). Per-axis shares included as
+  diagnostic only, not verdict inputs.
+- Infra: `--retry-errors`, midnight-safe run-dir, parallel circuit-breaker drains
+  in-flight workers cleanly on abort.
+- Command (overnight, resumable): `jutsu audit wfo --strategy v3_5b --workers 4`
+  then `--strategy v3_5d`. Smoke: `jutsu audit wfo --strategy v3_5b --windows-limit 2
+  --workers 4` (~4 min, proves pipeline end-to-end).
+
+**Results.** _(pending — fill stitched OOS Sharpe/CAGR/MaxDD/alpha-vs-QQQ for both
+strategies; combo-level top-decile share and overall verdict; whether any
+quarantined candidate survived OOS; per-window winner-value distribution.)_
+
+**Verdict / decisions.** _(pending — the adaptive-parameters go/no-go per spec §10.)_
+
+Interpretation contract (fill after campaign):
+- ≥80% windows: golden combo in top decile → **STABLE; adaptive tuning UNNECESSARY**.
+- <50% windows → **UNSTABLE; parameters fragile across time; config needs structural
+  work before any adaptive tuning is considered**.
+- 50–80%: INCONCLUSIVE — widen study window or grid.
+- Quarantined candidates: adopted only if they WIN windows AND their stitched OOS
+  contribution holds; otherwise killed.
+
+**Artifacts.** Reports `claudedocs/audit/2026-07-07/report_wfo_v3_5{b,d}.md`;
+campaign JSONLs `claudedocs/audit/2026-07-07/v3_5{b,d}/campaign_wfo_v3_5{b,d}.jsonl`;
+code on branch `feature/audit-phase3-wfo-exec`, merged to main after campaign.
+Serena memory: _(write after campaign completes)_.
+
+**Follow-ups spawned.** Module 3 DSR/PBO (spec §14) — the trial-count correction for
+the v2.x→v3.5b search history is still unmeasured. If WFO says unstable, the
+adaptive-parameters idea is dead and R&D moves entirely to regime-transition quality.
