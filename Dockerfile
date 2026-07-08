@@ -23,7 +23,7 @@ RUN npm run build
 # ============================================================================
 # Stage 2: Python Backend + Nginx Production Image
 # ============================================================================
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 # Set metadata
 LABEL maintainer="Anil Goparaju <anil.goparaju@gmail.com>"
