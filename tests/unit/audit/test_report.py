@@ -328,6 +328,7 @@ def _wfo_summary():
         "combo_top_decile_share": 0.85,
         "combo_verdict": "stable",
         "overall_verdict": "stable",
+        "golden_combo_hash": "a1b2c3d4e5f6a1b2",  # 16 hex chars
         "axis_diagnostics": {
             "upper_thresh_z": {"golden_value": 1.0, "share": 0.85, "verdict": "stable"},
             "realized_vol_window": {"golden_value": 21, "share": 0.42, "verdict": "unstable"},
@@ -362,6 +363,19 @@ class TestRenderWFO:
         md = render_wfo_section(_wfo_summary())
         assert "85.0%" in md          # combo share as percentage
         assert "stable" in md.lower()
+
+    def test_section_renders_golden_combo_hash_not_filename(self):
+        """Golden combo hash line shows the 16-hex-char hash, never the campaign filename."""
+        import re
+        md = render_wfo_section(_wfo_summary())
+        # The 16-hex-char hash must appear in a backtick-quoted slot.
+        assert re.search(r"`[0-9a-f]{16}`", md), (
+            "Expected a 16-hex-char golden combo hash in backticks; got none"
+        )
+        # The campaign filename must NOT appear in that slot (regression guard).
+        assert "campaign_wfo_v3_5b.jsonl" not in md.split("Golden combo hash")[1].split("\n")[0], (
+            "Filename leaked into the golden combo hash slot"
+        )
 
     def test_section_shows_axis_diagnostics_table(self):
         """Report includes a clearly-labeled per-axis diagnostic table."""

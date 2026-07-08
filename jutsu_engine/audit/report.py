@@ -481,7 +481,7 @@ def render_wfo_section(summary: dict) -> str:
         f"| between | inconclusive | Widen study before deciding |",
         "",
         "#### Combo-level top-decile share (spec §10 verdict input)",
-        f"- Golden combo hash: `{summary.get('campaign_file', '').split('/')[-1]}`  |  "
+        f"- Golden combo hash: `{summary.get('golden_combo_hash', 'N/A')}`  |  "
         f"Top-decile share: **{combo_share * 100:.1f}%**  |  "
         f"Verdict: **{overall}**",
         "",

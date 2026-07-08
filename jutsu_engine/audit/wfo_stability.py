@@ -942,6 +942,7 @@ def summarize_campaign(result: WFOCampaignResult) -> dict:
         "combo_top_decile_share": combo_share,
         "combo_verdict": combo_verd,
         "overall_verdict": combo_verd,                    # study-question answer
+        "golden_combo_hash": golden_hash,                 # 16-char hex; rendered in report
         "axis_diagnostics": axis_diag,
         "drift_table": result.drift,
         "value_distribution": {k: dict(v) for k, v in result.value_distribution.items()},
