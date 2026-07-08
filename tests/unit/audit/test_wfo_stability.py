@@ -408,3 +408,40 @@ class TestRunOneBacktest:
             "v3_5b", {"hash": "h", "combo_id": 0, "kind": "product", "overrides": {}},
             ["QQQ"], _date(2010, 2, 1), _date(2012, 8, 1), phase="is")
         assert set(glob.glob(tempfile.gettempdir() + "/wfo_*")) == before
+
+
+# ---------------------------------------------------------------------------
+# Task 7 — Checkpoint/resume helpers (WFO JSONL, row_key, fsync)
+# ---------------------------------------------------------------------------
+from jutsu_engine.audit.wfo_stability import (
+    row_key, load_completed_keys, is_error_row, append_wfo_row,
+)
+
+
+class TestCheckpointHelpers:
+    def test_row_key_combines_window_phase_hash(self):
+        """row_key uniquely identifies a (window, phase, combo) unit of work."""
+        assert row_key(3, "is", "abc123") == "3:is:abc123"
+
+    def test_load_completed_keys_reads_written_rows(self, tmp_path):
+        """Completed rows are recognized on resume by their row_key."""
+        f = tmp_path / "wfo.jsonl"
+        append_wfo_row(f, {"hash": "h", "combo_id": 0, "kind": "product",
+                           "overrides": {}, "is_sharpe": 0.9, "oos_rows": None,
+                           "window_id": 1, "phase": "is", "row_key": "1:is:h",
+                           "error": None})
+        assert load_completed_keys(f) == {"1:is:h"}
+
+    def test_load_completed_keys_missing_file_is_empty(self, tmp_path):
+        """A missing campaign file yields no completed keys (fresh campaign)."""
+        assert load_completed_keys(tmp_path / "nope.jsonl") == set()
+
+    def test_retry_errors_excludes_errored_rows(self, tmp_path):
+        """With retry_errors=True, errored rows are NOT counted as completed."""
+        f = tmp_path / "wfo.jsonl"
+        append_wfo_row(f, {"hash": "h", "combo_id": 0, "kind": "product",
+                           "overrides": {}, "is_sharpe": None, "oos_rows": None,
+                           "window_id": 1, "phase": "is", "row_key": "1:is:h",
+                           "error": "boom"})
+        assert load_completed_keys(f, retry_errors=True) == set()
+        assert load_completed_keys(f, retry_errors=False) == {"1:is:h"}

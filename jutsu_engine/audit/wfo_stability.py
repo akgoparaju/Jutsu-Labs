@@ -468,3 +468,153 @@ def run_one_backtest(strategy_id: str, combo: dict, symbols: list[str],
         "oos_rows": ts_rows,    # list[dict] for OOS success; None otherwise
         "error": error,
     }
+
+
+# ---------------------------------------------------------------------------
+# Task 7 — Checkpoint / resume helpers (WFO JSONL, fsync, last-wins dedup)
+# ---------------------------------------------------------------------------
+import json
+import os
+
+# Reuse plateau's torn-line guard directly (no duplication).
+from jutsu_engine.audit.plateau import _ends_with_newline
+
+# Keys persisted per WFO campaign row. oos_rows is stored inline as a list of
+# dicts; for large windows this is acceptable (5 OOS rows × 3 columns × ~26
+# windows ≈ negligible JSONL size). Task 8 (campaign runner) will load and
+# reconstruct DataFrames from these records for stitching.
+_WFO_RESULT_KEYS = (
+    "row_key", "window_id", "phase",
+    "hash", "combo_id", "kind", "overrides",
+    "is_sharpe", "oos_rows", "error",
+)
+
+
+def row_key(window_id: int, phase: str, combo_hash_str: str) -> str:
+    """Stable resume key for one (window, phase, combo) unit of work.
+
+    Format: "<window_id>:<phase>:<hash>" — e.g. "3:is:abc123def456789a".
+    Uniquely identifies a (window, phase, combo) triplet across the campaign.
+    """
+    return f"{window_id}:{phase}:{combo_hash_str}"
+
+
+def is_error_row(row: dict) -> bool:
+    """True when a WFO row represents a failed backtest.
+
+    A row is an error when:
+    - it carries a non-None `error` string, OR
+    - its `is_sharpe` is not a finite number AND (for OOS rows) `oos_rows` is
+      absent/empty. OOS rows may legitimately carry is_sharpe=None when the
+      regime-timeseries CSV was not emitted — that is itself an error.
+
+    Mirrors plateau._is_error_row semantics so the circuit breaker counts the
+    same kinds of failures in both modules.
+    """
+    if row.get("error") is not None:
+        return True
+    # OOS rows: success requires oos_rows (the daily-return list for stitching).
+    if row.get("phase") == "oos":
+        return not row.get("oos_rows")
+    # IS rows: success requires a finite is_sharpe.
+    return not _is_finite_number(row.get("is_sharpe"))
+
+
+def append_wfo_row(path: Path, row: dict) -> None:
+    """Append one WFO result row as a fsynced JSONL line (crash-safe).
+
+    Mirrors plateau.append_result byte-for-byte except it uses _WFO_RESULT_KEYS
+    instead of _RESULT_KEYS, keeping plateau untouched (no regression risk to
+    Module 2). The single-writer invariant (only the parent process appends)
+    makes concurrent parallel writes safe.
+
+    Crash-safety: fsyncing per line means a completed backtest is durable the
+    moment its row is written, surviving process crashes and power loss.
+
+    Torn-line tolerance: if a prior process was killed mid-write and left a
+    partial line without a trailing newline, a leading newline is inserted before
+    the new row so the good row is never concatenated onto the dangling fragment.
+    The fragment itself is skipped on read by load_completed_keys.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {k: row.get(k) for k in _WFO_RESULT_KEYS}
+    prefix = "" if _ends_with_newline(path) else "\n"
+    with open(path, "a") as f:
+        f.write(prefix + json.dumps(record, default=str) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def load_completed_keys(path: Path, retry_errors: bool = False) -> set[str]:
+    """Set of row_keys already present in a WFO campaign JSONL (last-wins per key).
+
+    Tolerates a truncated trailing line (crash mid-write): a process killed
+    mid-write leaves a partial JSON fragment which is silently skipped so a crash
+    never poisons resume. Only well-formed rows carrying a `row_key` are counted.
+
+    Last-wins dedup (mirrors plateau.load_completed_hashes):
+        append_wfo_row only ever appends; after --retry-errors a retried row
+        produces two rows (old error + new success). load_completed_keys keeps
+        the LAST occurrence of each row_key, then applies retry_errors. This means:
+          - error then success → last row is success → always counts as done.
+          - success then error → last row is error → retry_errors=True: NOT done.
+
+    retry_errors:
+        False (default): ALL rows present are counted as done (standard resume).
+        True: errored rows are excluded so they re-run on the next pass.
+        Use --retry-errors at the CLI when a transient failure (DB blip) produced
+        error rows that should be retried without deleting the JSONL.
+    """
+    path = Path(path)
+    if not path.exists():
+        return set()
+    last: dict[str, dict] = {}
+    with open(path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+                k = row["row_key"]
+            except (json.JSONDecodeError, KeyError):
+                continue  # tolerate a partially-written trailing line
+            last[k] = row   # last-wins: overwrite prior row for this key
+    done: set[str] = set()
+    for k, row in last.items():
+        if retry_errors and is_error_row(row):
+            continue   # last occurrence is an error → treat as not-yet-done
+        done.add(k)
+    return done
+
+
+def reload_wfo_rows(path: Path) -> list[dict]:
+    """Load all WFO rows from a campaign JSONL (last-wins per row_key).
+
+    Tolerates a truncated final line (crash mid-write). Used by the campaign
+    runner to reconstruct IS rows for winner selection and OOS rows for stitching
+    after a resume. Ordering is insertion-order of FIRST occurrence (later rows
+    overwrite earlier but do not change position), matching plateau._reload_rows.
+    """
+    path = Path(path)
+    if not path.exists():
+        return []
+    by_key: dict[str, dict] = {}
+    order: list[str] = []
+    with open(path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            k = row.get("row_key")
+            if k is None:
+                continue
+            if k not in by_key:
+                order.append(k)
+            by_key[k] = row   # last-wins
+    return [by_key[k] for k in order]
