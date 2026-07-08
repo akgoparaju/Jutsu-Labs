@@ -191,6 +191,9 @@ import pandas as pd
 from jutsu_engine.audit.attribution import _sharpe, _max_drawdown, _total_return
 
 
+_STITCH_REQUIRED_COLUMNS = ("Date", "Strategy_Daily_Return", "QQQ_Daily_Return")
+
+
 def stitch_oos_metrics(oos_frames: list[pd.DataFrame]) -> dict:
     """Concatenate per-window OOS daily returns and compute headline metrics.
 
@@ -199,15 +202,44 @@ def stitch_oos_metrics(oos_frames: list[pd.DataFrame]) -> dict:
     Frames are concatenated in chronological order and ALL metrics are computed on
     the single stitched series — never by averaging per-window Sharpes (spec §5).
 
+    Consecutive OOS windows share their boundary bar (oos_end(N) == oos_start(N+1)
+    and the DB date bounds are inclusive), so that bar appears in BOTH frames. We
+    DROP the duplicate boundary day (keep first) so each calendar day is counted
+    exactly once — otherwise ~25 days over 26 windows are silently double-counted,
+    inflating every headline metric.
+
+    Contamination handling: rows whose Strategy_Daily_Return is NaN are dropped
+    entirely (loudly, via nan_rows_dropped) so every metric shares one denominator.
+
     Returns dict: oos_days, total_return, cagr, sharpe, max_drawdown,
-    qqq_total_return, alpha_vs_qqq.
+    qqq_total_return, alpha_vs_qqq, nan_rows_dropped.
     """
+    oos_frames = [f for f in oos_frames if f is not None and not f.empty]
     if not oos_frames:
         return {"oos_days": 0, "total_return": 0.0, "cagr": 0.0, "sharpe": 0.0,
-                "max_drawdown": 0.0, "qqq_total_return": 0.0, "alpha_vs_qqq": 0.0}
+                "max_drawdown": 0.0, "qqq_total_return": 0.0, "alpha_vs_qqq": 0.0,
+                "nan_rows_dropped": 0}
 
     stitched = pd.concat(oos_frames, ignore_index=True)
+
+    missing = [c for c in _STITCH_REQUIRED_COLUMNS if c not in stitched.columns]
+    if missing:
+        raise ValueError(
+            f"stitch_oos_metrics: stitched OOS frame is missing required "
+            f"column(s): {', '.join(missing)}")
+
     stitched = stitched.sort_values("Date").reset_index(drop=True)
+    # Dedupe boundary bars shared by consecutive windows (keep first occurrence).
+    stitched = stitched.drop_duplicates(subset="Date", keep="first").reset_index(
+        drop=True)
+
+    # Drop NaN-contaminated return rows entirely so every metric shares one
+    # denominator; report the count loudly (0 normally).
+    nan_mask = stitched["Strategy_Daily_Return"].isna()
+    nan_rows_dropped = int(nan_mask.sum())
+    if nan_rows_dropped:
+        stitched = stitched[~nan_mask].reset_index(drop=True)
+
     strat = stitched["Strategy_Daily_Return"]
     qqq = stitched["QQQ_Daily_Return"]
 
@@ -225,6 +257,7 @@ def stitch_oos_metrics(oos_frames: list[pd.DataFrame]) -> dict:
         "max_drawdown": _max_drawdown(strat),
         "qqq_total_return": float(qqq_total),
         "alpha_vs_qqq": float(total - qqq_total),
+        "nan_rows_dropped": nan_rows_dropped,
     }
 
 
@@ -269,15 +302,50 @@ def param_value_distribution(winners: list[dict]) -> dict[str, Counter]:
     return dist
 
 
-def golden_top_decile_share(window_is_rows: list[list[dict]], param: str,
-                            golden_value) -> float:
-    """Fraction of windows where `golden_value` for `param` ranks in the top decile
-    of that window's IS-Sharpe distribution for that param.
+def golden_combo_top_decile_share(window_is_rows: list[list[dict]],
+                                  golden_hash: str) -> float:
+    """Fraction of windows where the golden COMBO ranks in the top decile of that
+    window's grid by IS sharpe (cutoff = ceil(0.10 * n_valid_combos), >= 1).
 
-    For each window: collect the best IS Sharpe achieved by each distinct value of
-    `param` (marginalising over the other axes), rank the values by their best IS
-    Sharpe, and check whether `golden_value` falls within the top ceil(10%)
-    (min 1). Windows where the param never appears are skipped.
+    This is the spec §5/§10 VERDICT input: "the golden value is in the top decile
+    of that window's grid" — grid = the 31 combos, so a true decile (cutoff 4)
+    exists. Feed the result to stability_verdict().
+
+    Windows where the golden combo has no finite IS sharpe are skipped (not
+    counted). Ties: ranking is by (-sharpe, combo_hash) so ordering is
+    deterministic and a tie cannot silently demote the golden combo based on
+    iteration order.
+    """
+    hits = counted = 0
+    for rows in window_is_rows:
+        ranked = sorted(
+            (r for r in rows if _is_finite_number(r.get("is_sharpe"))),
+            key=lambda r: (-r["is_sharpe"], r.get("hash", "")))
+        hashes = [r.get("hash") for r in ranked]
+        if golden_hash not in hashes:
+            continue
+        counted += 1
+        cutoff = max(1, math.ceil(len(ranked) * TOP_DECILE_FRACTION))
+        if golden_hash in hashes[:cutoff]:
+            hits += 1
+    return hits / counted if counted else 0.0
+
+
+def golden_axis_winner_share(window_is_rows: list[list[dict]], param: str,
+                             golden_value) -> float:
+    """Fraction of windows where the golden value is the OUTRIGHT best per-axis value.
+
+    STRICT DIAGNOSTIC, NOT the spec §10 verdict input: for each window this
+    marginalises over the other axes (best IS Sharpe per distinct value of
+    `param`) and checks whether `golden_value` sits in the top ceil(10%) bucket.
+    With 3-value axes a true decile is impossible — ceil(0.10*3)=1 — so this is
+    effectively an "is golden the outright per-axis winner?" test, which is why it
+    is demoted to a diagnostic. Use golden_combo_top_decile_share() for the verdict.
+
+    Tie handling is deterministic AND golden-favorable: a tie with the golden
+    value counts as a win (the golden value is compared into its rank bucket with
+    `>=`), so an unlucky iteration order can never demote golden on a tie.
+    Windows where `param` never appears are skipped.
     """
     hits = 0
     counted = 0
@@ -293,16 +361,24 @@ def golden_top_decile_share(window_is_rows: list[list[dict]], param: str,
         if golden_value not in best:
             continue
         counted += 1
-        ranked = sorted(best.items(), key=lambda kv: kv[1], reverse=True)
-        cutoff = max(1, math.ceil(len(ranked) * TOP_DECILE_FRACTION))
-        top_values = {v for v, _ in ranked[:cutoff]}
-        if golden_value in top_values:
+        golden_score = best[golden_value]
+        cutoff = max(1, math.ceil(len(best) * TOP_DECILE_FRACTION))
+        # Golden-favorable: count values STRICTLY better than golden. If fewer than
+        # `cutoff` values beat golden, golden lands within the top bucket (ties with
+        # golden do not push it out).
+        strictly_better = sum(1 for s in best.values() if s > golden_score)
+        if strictly_better < cutoff:
             hits += 1
     return (hits / counted) if counted else 0.0
 
 
 def stability_verdict(share: float) -> str:
-    """spec §10: >=80% -> stable; <50% -> unstable; otherwise inconclusive."""
+    """spec §10: >=80% -> stable; <50% -> unstable; otherwise inconclusive.
+
+    `share` is the spec §5/§10 verdict input — feed it the output of
+    golden_combo_top_decile_share() (golden COMBO ranked among the window's
+    31-combo grid), NOT the per-axis diagnostic golden_axis_winner_share().
+    """
     if share >= STABLE_THRESHOLD:
         return "stable"
     if share < UNSTABLE_THRESHOLD:

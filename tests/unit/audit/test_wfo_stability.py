@@ -117,6 +117,7 @@ class TestSelectISWinner:
 # ---------------------------------------------------------------------------
 import numpy as np
 import pandas as pd
+import pytest
 
 from jutsu_engine.audit.wfo_stability import stitch_oos_metrics
 
@@ -165,14 +166,55 @@ class TestStitchOOSMetrics:
         m = stitch_oos_metrics([])
         assert m["oos_days"] == 0 and m["sharpe"] == 0.0
 
+    def test_stitch_dedupes_shared_boundary_date(self):
+        """Two frames sharing one boundary date count it once; metrics on deduped series."""
+        # w1 covers 3 days; w2 starts on w1's last day (shared boundary bar).
+        w1 = _oos_frame([0.01, 0.02, 0.03], [0.0, 0.0, 0.0], "2013-01-01")
+        w2 = _oos_frame([0.03, 0.04], [0.0, 0.0], "2013-01-03")  # 2013-01-03 shared
+        m = stitch_oos_metrics([w1, w2])
+        # 3 + 2 = 5 rows, minus 1 duplicated boundary day = 4 unique days.
+        assert m["oos_days"] == 4
+        # total return uses each unique day once (boundary 0.03 counted once).
+        expected = (1.01 * 1.02 * 1.03 * 1.04) - 1.0
+        assert abs(m["total_return"] - expected) < 1e-9
+
+    def test_stitch_drops_nan_rows_loudly(self):
+        """One NaN return row → nan_rows_dropped==1, oos_days excludes it, one denominator."""
+        w1 = _oos_frame([0.01, float("nan"), 0.02], [0.0, 0.0, 0.0], "2013-01-01")
+        m = stitch_oos_metrics([w1])
+        assert m["nan_rows_dropped"] == 1
+        assert m["oos_days"] == 2
+        # sharpe/total computed on the 2 surviving days only (shared denominator).
+        surviving = pd.Series([0.01, 0.02])
+        expected_total = (1.01 * 1.02) - 1.0
+        assert abs(m["total_return"] - expected_total) < 1e-9
+        expected_sharpe = float(
+            surviving.mean() / surviving.std(ddof=1) * np.sqrt(252))
+        assert abs(m["sharpe"] - expected_sharpe) < 1e-9
+
+    def test_stitch_missing_column_raises(self):
+        """A frame without QQQ_Daily_Return raises a ValueError naming the column."""
+        bad = pd.DataFrame({
+            "Date": pd.date_range("2013-01-01", periods=2, freq="D", tz="UTC"),
+            "Strategy_Daily_Return": [0.01, 0.02],
+        })
+        with pytest.raises(ValueError, match="QQQ_Daily_Return"):
+            stitch_oos_metrics([bad])
+
+    def test_nan_rows_dropped_is_zero_normally(self):
+        """Clean frames report nan_rows_dropped == 0."""
+        w1 = _oos_frame([0.01, 0.02], [0.0, 0.0], "2013-01-01")
+        assert stitch_oos_metrics([w1])["nan_rows_dropped"] == 0
+
 
 # ---------------------------------------------------------------------------
 # Task 5 — Parameter-drift table + golden top-decile share (spec §5/§10)
 # ---------------------------------------------------------------------------
 from jutsu_engine.audit.wfo_stability import (
-    drift_table, param_value_distribution, golden_top_decile_share,
+    drift_table, param_value_distribution,
+    golden_combo_top_decile_share, golden_axis_winner_share,
 )
-from jutsu_engine.audit.wfo_stability import GOLDEN_SENSITIVE
+from jutsu_engine.audit.wfo_stability import GOLDEN_SENSITIVE, expand_grid
 
 
 def _winner(window_id, overrides, is_sharpe):
@@ -202,23 +244,112 @@ class TestDriftTable:
         assert dist["upper_thresh_z"][1.0] == 1
 
 
-class TestGoldenTopDecileShare:
-    def test_share_of_windows_where_golden_is_top_decile(self):
-        """Golden top-decile share = fraction of windows where each golden axis value
-        ranks in the top decile of that window's IS-Sharpe distribution."""
-        # Two windows, 3-combo grid each (top decile of 3 combos = the #1 combo).
+def _golden_hash():
+    """Hash of the golden combo (combo_id 0) in the real 31-combo grid."""
+    return expand_grid()[0]["hash"]
+
+
+def _grid_window(golden_sharpe, other_sharpe=0.0, golden_rank=None):
+    """Build a 31-combo IS window; optionally place golden at a target rank.
+
+    If golden_rank is given, sharpes are assigned so the golden combo lands at
+    exactly that 1-based rank (all non-golden combos get distinct descending
+    sharpes and golden is inserted between them).
+    """
+    combos = expand_grid()
+    golden_h = combos[0]["hash"]
+    others = [c for c in combos if c["hash"] != golden_h]
+    rows = []
+    if golden_rank is None:
+        rows.append({"hash": golden_h, "is_sharpe": golden_sharpe})
+        for i, c in enumerate(others):
+            rows.append({"hash": c["hash"], "is_sharpe": other_sharpe - i})
+        return rows
+    # Assign descending sharpes 30..1 to the 30 non-golden combos, then set the
+    # golden combo's sharpe so it slots into `golden_rank` (1 = best).
+    n_others = len(others)  # 30
+    for i, c in enumerate(others):
+        rows.append({"hash": c["hash"], "is_sharpe": float(n_others - i)})
+    # rank r means (r-1) combos strictly above golden. Non-golden sharpes are
+    # 30,29,...,1. Put golden between the (r-1)th and rth non-golden value.
+    above = golden_rank - 1
+    if above == 0:
+        golden_s = float(n_others) + 0.5      # above the best
+    else:
+        golden_s = float(n_others - above) + 0.5  # between rank above & above+1
+    rows.append({"hash": golden_h, "is_sharpe": golden_s})
+    return rows
+
+
+class TestGoldenComboTopDecileShare:
+    def test_golden_combo_top_decile_share_ranks_within_grid(self):
+        """Golden combo ranked 4th of 31 hits (cutoff 4); ranked 5th misses."""
+        golden_h = _golden_hash()
+        hit_window = _grid_window(None, golden_rank=4)      # rank 4 == cutoff
+        miss_window = _grid_window(None, golden_rank=5)     # rank 5 > cutoff
+        assert golden_combo_top_decile_share([hit_window], golden_h) == 1.0
+        assert golden_combo_top_decile_share([miss_window], golden_h) == 0.0
+
+    def test_golden_combo_tie_is_deterministic(self):
+        """Golden tied with a rival at the cutoff boundary → same result any order."""
+        golden_h = _golden_hash()
+        combos = expand_grid()
+        others = [c for c in combos if c["hash"] != golden_h]
+        # Golden and one rival both sit at the rank-4 boundary sharpe; the two
+        # combos ranked below the top-3 both have sharpe 5.0 (a tie). 3 combos
+        # strictly above (sharpe 6,7,8) → golden shares the 4th/5th slots.
+        rows = []
+        top3 = others[:3]
+        rival = others[3]
+        fillers = others[4:]
+        for i, c in enumerate(top3):
+            rows.append({"hash": c["hash"], "is_sharpe": 8.0 - i})  # 8,7,6
+        rows.append({"hash": golden_h, "is_sharpe": 5.0})           # tie
+        rows.append({"hash": rival["hash"], "is_sharpe": 5.0})      # tie
+        for c in fillers:
+            rows.append({"hash": c["hash"], "is_sharpe": 1.0})
+        import random
+        forward = golden_combo_top_decile_share([list(rows)], golden_h)
+        shuffled = list(rows)
+        random.Random(7).shuffle(shuffled)
+        reversed_rows = list(reversed(rows))
+        assert forward == golden_combo_top_decile_share([shuffled], golden_h)
+        assert forward == golden_combo_top_decile_share([reversed_rows], golden_h)
+
+    def test_golden_combo_with_no_finite_sharpe_is_skipped(self):
+        """A window where the golden combo errored is not counted (not a miss)."""
+        golden_h = _golden_hash()
+        errored = [{"hash": golden_h, "is_sharpe": None},
+                   {"hash": "x", "is_sharpe": 0.5}]
+        # Only skipped window → no counted windows → share 0.0 by convention.
+        assert golden_combo_top_decile_share([errored], golden_h) == 0.0
+
+
+class TestGoldenAxisWinnerShare:
+    def test_share_of_windows_where_golden_is_axis_winner(self):
+        """Diagnostic: fraction of windows where golden is the outright per-axis best."""
         window_is_rows = [
-            # window 1: golden upper_thresh_z=1.0 is the best (top decile)
+            # window 1: golden upper_thresh_z=1.0 is the best
             [{"overrides": {"upper_thresh_z": 0.8}, "is_sharpe": 0.5},
              {"overrides": {"upper_thresh_z": 1.0}, "is_sharpe": 0.9},
              {"overrides": {"upper_thresh_z": 1.2}, "is_sharpe": 0.7}],
-            # window 2: golden upper_thresh_z=1.0 is worst (NOT top decile)
+            # window 2: golden upper_thresh_z=1.0 is worst
             [{"overrides": {"upper_thresh_z": 0.8}, "is_sharpe": 0.9},
              {"overrides": {"upper_thresh_z": 1.0}, "is_sharpe": 0.3},
              {"overrides": {"upper_thresh_z": 1.2}, "is_sharpe": 0.7}],
         ]
-        share = golden_top_decile_share(window_is_rows, "upper_thresh_z", 1.0)
-        assert abs(share - 0.5) < 1e-9  # golden top-decile in 1 of 2 windows
+        share = golden_axis_winner_share(window_is_rows, "upper_thresh_z", 1.0)
+        assert abs(share - 0.5) < 1e-9  # golden outright best in 1 of 2 windows
+
+    def test_axis_winner_share_tie_counts_for_golden(self):
+        """A tie between golden and a rival at the top counts as a golden win."""
+        window_is_rows = [
+            # golden tied with 0.8 for best → golden-favorable tie counts as a win
+            [{"overrides": {"upper_thresh_z": 0.8}, "is_sharpe": 0.9},
+             {"overrides": {"upper_thresh_z": 1.0}, "is_sharpe": 0.9},
+             {"overrides": {"upper_thresh_z": 1.2}, "is_sharpe": 0.7}],
+        ]
+        assert golden_axis_winner_share(window_is_rows, "upper_thresh_z", 1.0) == 1.0
 
     def test_verdict_thresholds(self):
         """>=80% -> 'stable'; <50% -> 'unstable'; between -> 'inconclusive' (spec §10)."""
