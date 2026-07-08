@@ -52,3 +52,61 @@ class TestEnumerateGrid:
         a = combo_hash({"sma_fast": 40, "sma_slow": 180})
         b = combo_hash({"sma_slow": 180, "sma_fast": 40})
         assert a == b and len(a) == 16
+
+
+import json
+from pathlib import Path
+
+from jutsu_engine.audit.selection_bias import (
+    _RETURNS_RESULT_KEYS, append_returns_row, load_completed_combo_hashes,
+    reload_returns_rows, is_error_row,
+)
+
+
+class TestReturnsPersistence:
+    def _row(self, h, dates, returns, error=None):
+        return {"combo_id": 0, "hash": h, "overrides": {"sma_fast": 40},
+                "dates": dates, "returns": returns, "sharpe": None if error else 0.5,
+                "error": error}
+
+    def test_append_and_reload_roundtrip(self, tmp_path):
+        """A returns row survives append → reload with its dates/returns intact."""
+        p = tmp_path / "c.jsonl"
+        append_returns_row(p, self._row("h1", ["2010-02-01", "2010-02-02"],
+                                        [0.01, -0.02]))
+        rows = reload_returns_rows(p)
+        assert len(rows) == 1
+        assert rows[0]["returns"] == [0.01, -0.02]
+        assert rows[0]["dates"] == ["2010-02-01", "2010-02-02"]
+
+    def test_completed_hashes_skips_errors_when_retrying(self, tmp_path):
+        """--retry-errors excludes error rows from the completed set."""
+        p = tmp_path / "c.jsonl"
+        append_returns_row(p, self._row("ok", ["d"], [0.01]))
+        append_returns_row(p, self._row("bad", None, None, error="boom"))
+        assert load_completed_combo_hashes(p) == {"ok", "bad"}
+        assert load_completed_combo_hashes(p, retry_errors=True) == {"ok"}
+
+    def test_last_wins_dedup_on_retry(self, tmp_path):
+        """A retried combo (error then success) counts as done regardless of flag."""
+        p = tmp_path / "c.jsonl"
+        append_returns_row(p, self._row("h", None, None, error="boom"))
+        append_returns_row(p, self._row("h", ["d"], [0.01]))   # success supersedes
+        assert load_completed_combo_hashes(p, retry_errors=True) == {"h"}
+        rows = reload_returns_rows(p)
+        assert len(rows) == 1 and rows[0]["error"] is None
+
+    def test_torn_final_line_tolerated(self, tmp_path):
+        """A truncated trailing line (crash mid-write) is skipped, not fatal."""
+        p = tmp_path / "c.jsonl"
+        append_returns_row(p, self._row("h", ["d"], [0.01]))
+        with open(p, "a") as f:
+            f.write('{"hash": "partial", "returns": [0.0')   # no newline, truncated
+        assert load_completed_combo_hashes(p) == {"h"}
+        assert len(reload_returns_rows(p)) == 1
+
+    def test_is_error_row(self):
+        """A row with a non-null error or missing returns is an error row."""
+        assert is_error_row({"error": "x", "returns": None})
+        assert is_error_row({"error": None, "returns": None})
+        assert not is_error_row({"error": None, "returns": [0.01]})
