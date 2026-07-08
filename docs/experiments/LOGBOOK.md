@@ -27,6 +27,7 @@ in-sample numbers optimistic by construction.
 | EXP-002 | 2026-07-06 | Are the 8 logic-mismatch days a production bug? | No — audit artifact (information-set mismatch); true divergence 1.1% |
 | EXP-003 | 2026-07-07 | How robust is the golden config to small parameter perturbations (plateau vs cliff)? | Plateau, no cliffs (both strategies); golden at 48th/57.5th pct of own neighborhood; vol-regime channel most sensitive |
 | EXP-004 | 2026-07-07 | Are the golden parameters stable across WFO time windows (does adaptive tuning have anything to chase)? | Adaptive tuning CLOSED: winners are noise (golden top-decile 3.7%, below chance); chasing them OOS earns Sharpe 0.46 / CAGR 5.4% vs ~0.8 / ~23% fixed; all 4 quarantined candidates killed |
+| EXP-005 | 2026-07-07 | Given the trial count, how likely is the golden Sharpe real (DSR + PBO)? | _(pending campaign)_ |
 
 ---
 
@@ -441,3 +442,66 @@ Module 3, with the full gauntlet (plateau + WFO + DSR) as its fitness function.
 **Follow-ups spawned.** Module 3 DSR/PBO (spec §14) — the trial-count correction for
 the v2.x→v3.5b search history is still unmeasured. If WFO says unstable, the
 adaptive-parameters idea is dead and R&D moves entirely to regime-transition quality.
+
+---
+
+## EXP-005 — Baseline audit Phase 4: selection-bias correction (DSR + PBO) (2026-07-07)
+
+**Question.** After correcting for how many configurations were tried, how likely
+is the golden config's Sharpe to be real rather than the luckiest draw of the
+search? (a) Deflated Sharpe Ratio (Bailey & López de Prado) at bracketed trial
+counts N = 243 / 1,000 / 5,000; (b) Probability of Backtest Overfitting (PBO) via
+CSCV (S=16) over the historical 243-combo golden grid's per-combo daily returns.
+
+**Why.** EXP-001 established honest Sharpe ~0.8 (not the in-sample ~2.8). EXP-003
+lowered the parameter-overfit prior (48th percentile of its own neighborhood).
+EXP-004 closed adaptive tuning. Module 3 is the last unmeasured piece: the
+trial-count correction for the v2.x→v3.5b search history. XREF-001 (n=1
+crash-episode caution) says backtest-only evidence is structurally underpowered,
+so DSR/PBO carry the burden of proof. Decision framework: spec
+`docs/superpowers/specs/2026-07-06-baseline-audit-design.md` §7/§10.
+
+**Method.** Built `jutsu_engine/audit/{dsr,pbo,selection_bias}.py` + `jutsu audit dsr`.
+- **DSR** (pure math, `dsr.py`): PSR(SR*) = Φ(((SR_obs−SR*)√(T−1)) / √(1 − γ₃·SR_obs
+  + ((γ₄−1)/4)·SR_obs²)); SR* = √V·((1−γ)Φ⁻¹(1−1/N) + γΦ⁻¹(1−1/(N·e))), γ =
+  Euler–Mascheroni; DSR = PSR(SR*). Golden daily returns from the campaign's golden
+  combo; V from the actual per-combo Sharpes; N bracketed. Non-excess kurtosis
+  (scipy excess + 3); sample skew/kurtosis (bias=False). Guards: N≥2, T≥2, positive
+  radicand, non-zero variance.
+- **PBO** (pure math, `pbo.py`): CSCV S=16, all C(16,8)=12,870 IS/OOS partitions;
+  per partition rank combos by IS Sharpe, take IS-best, compute its OOS relative
+  rank ω̄; PBO = fraction with ω̄ < 0.5 (logit < 0). Plus logit distribution,
+  IS-vs-OOS degradation slope, prob-of-OOS-loss for the IS-best.
+- **Returns campaign** (`selection_bias.py`): one-time full-period (2010-02 →
+  present) re-run of the 243-combo golden grid, capturing each combo's daily
+  Strategy_Daily_Return series inline in fsync-JSONL (reusing the plateau/WFO
+  checkpoint/resume/breaker/single-writer/tempdir machinery — NOT parquet:
+  pyarrow uninstalled, JSONL is proven and ~10 MB). Combos enumerated from the
+  historical grid axes (documented in the Gold-Configs YAML header, versioned in
+  `grid-configs/audit/golden_grid_v3_5b_axes.yaml`): upper_thresh_z [0.8,1.0,1.2] ×
+  lower_thresh_z [-0.2,0.0,0.2] × vol_crush_threshold [-0.15,-0.20,-0.25] × sma_fast
+  [40,50,60] × sma_slow [180,200,220] = 243. Inert AND sensitive axes both retained
+  (the historical search varied them — EXP-003 inertness does not change the trial
+  count that was actually spent).
+- **Scoping:** v3_5b PRIMARY (full grid + DSR + PBO). v3_5d DSR-ONLY using its
+  golden full-period returns + a family-level N — no second grid re-run (its
+  distinguishing grid was ~10 Cell-1-exit combos, too few for CSCV).
+- Trial inventory: read-only SELECT over `optimization_results` (grouped by
+  strategy/optimizer). Early history may be incomplete → DSR reported bracketed.
+- Command (one-time, ~1.7h at 4 workers): `jutsu audit dsr --strategy v3_5b --workers 4`;
+  then DSR-only `--strategy v3_5d`. Smoke: `jutsu audit dsr --strategy v3_5b
+  --combos-limit 4` (minutes, proves pipeline end-to-end).
+
+**Results.** _(fill after running the campaign: trial inventory counts; DSR at
+N=243/1000/5000 for v3_5b; PBO + degradation slope + prob-OOS-loss; DSR for v3_5d.)_
+
+**Verdict / decisions.** _(fill: does the edge clear the DSR≥95% / PBO≤50% gates?
+Per spec §10, DSR<95% OR PBO>50% → edge statistically unproven → prioritize live
+track record over further tuning.)_
+
+**Artifacts.** Reports `claudedocs/audit/2026-07-07/report_dsr_v3_5{b,d}.md`;
+campaign JSONL `claudedocs/audit/2026-07-07/v3_5b/campaign_dsr_v3_5b.jsonl`; code
+merged to main (278 unit tests). Serena memory: `dsr_pbo_phase4_<date>`.
+
+**Follow-ups spawned.** _(fill: regime-classifier upgrade program with the full
+gauntlet — plateau + WFO + DSR — as fitness function.)_

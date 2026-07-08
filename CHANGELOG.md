@@ -1,3 +1,45 @@
+#### **Feature: Baseline Audit Phase 4 — Module 3 DSR/PBO, Tasks 13–15: CLI + smoke mode + docs** (2026-07-07)
+
+Added `jutsu audit dsr` CLI subcommand, smoke-mode support, and final documentation.
+
+- **Task 13 (`jutsu_engine/cli/commands/audit.py`):** `jutsu audit dsr` subcommand with
+  midnight-safe DSR run-dir resolver (`_resolve_run_dir_dsr`, scans
+  `campaign_dsr_<strategy>.jsonl`, ISO-date-dir filter prevents test tmp artifacts from
+  being picked up as resume candidates). `_load_trial_inventory` helper degrades
+  gracefully to `[]` when DB unavailable (DSR still runs; inventory table empty).
+  Options: `--workers`, `--retry-errors`, `--run-date`, `--skip-campaign`,
+  `--combos-limit`. Distinct RuntimeError/AuditDBUnavailable handlers; err=True;
+  logger. Guard: `summary["pbo"] is None` (v3_5d DSR-only path) in the echo line.
+- **Task 14 (smoke mode):** `enumerate_golden_grid(limit=N)` truncates to first N combos.
+  `run_dsr(combos_limit=N, cscv_blocks=S)` threads both through to the campaign and
+  summarizer. PBO guard: skip gracefully when T < 2·S (each CSCV block needs ≥2 rows
+  for ddof=1 Sharpe — prevents all-NaN crash on tiny smoke matrices). New tests:
+  `TestSmoke.test_combos_limit_truncates_grid` and
+  `test_run_dsr_threads_combos_limit` (injected fake `run_one_combo`, no DB/backtest).
+- **Task 15 (full-suite regression + docs):** 278 tests, all passing.
+- **Review-driven fixes included (Tasks 13–15):**
+  - DSR conservatism directionality documented in report: higher N → higher SR* →
+    more deflation → lower DSR (conservative direction correctly stated in the table
+    header and verdict prose).
+  - `V=` keyword-required in `deflated_sharpe_brackets` call (prevents silent V=0
+    bug if positional convention changes; enforced in `summarize_selection_bias`).
+  - Zero-variance CSCV guard: `T < 2·S` check skips PBO instead of crashing with
+    all-NaN Sharpe when each block has fewer than 2 rows (hit in smoke tests with
+    T=2, S=2 synthetic data).
+  - NaN fail-fast: `compute_pbo` propagates ValueError for degenerate matrices;
+    `summarize_selection_bias` re-wraps with matrix shape + S + n_filled context.
+  - Fill-count guard already in Task 9 follow-up: combos with filled fraction >0.1%
+    dropped before PBO (guards against truncated-backtest CSVs silently entering the
+    returns matrix).
+  - ISO-date-dir filter in `_resolve_run_dir_dsr` (and noted as a future hardening
+    for `_resolve_run_dir` / `_resolve_run_dir_wfo` which share the same pattern).
+- New: `tests/unit/audit/test_dsr_cli.py`.
+- Modified: `jutsu_engine/cli/commands/audit.py`,
+  `jutsu_engine/audit/selection_bias.py`,
+  `tests/unit/audit/test_selection_bias.py`.
+- Docs: `docs/experiments/LOGBOOK.md` (EXP-005 skeleton, index row).
+- Suite: 278 tests (from 274 before Tasks 13–15).
+
 #### **Feature: Baseline Audit Phase 4 — Module 3 selection-bias correction (DSR + PBO), Tasks 10–12** (2026-07-07)
 
 Added trial-count inventory (Task 10), `run_dsr` orchestrator + summary dict (Task 11),
