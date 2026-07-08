@@ -361,8 +361,13 @@ def _resolve_run_dir_dsr(run_date_str: str | None, strategy_id: str) -> "Path":
 
     audit_base = report_output_dir().parent
     campaign_pattern = f"campaign_dsr_{strategy_id}.jsonl"
+    # Only consider directories that look like ISO date directories (YYYY-MM-DD).
+    # This prevents test tmp_path siblings from being picked up as campaign dirs.
+    import re as _re
+    _DATE_RE = _re.compile(r"^\d{4}-\d{2}-\d{2}$")
     candidates = sorted(
-        audit_base.glob(f"*/{strategy_id}/{campaign_pattern}"),
+        (p for p in audit_base.glob(f"*/{strategy_id}/{campaign_pattern}")
+         if _DATE_RE.match(p.parent.parent.name)),
         key=lambda p: p.parent.parent.name,
         reverse=True,
     )

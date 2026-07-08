@@ -346,3 +346,30 @@ class TestSummarize:
             family_N=(1000, 5000))
         assert summary["pbo"] is None
         assert [r["N"] for r in summary["dsr_brackets"]] == [1000, 5000]
+
+
+class TestSmoke:
+    def test_combos_limit_truncates_grid(self):
+        """enumerate_golden_grid(limit=N) returns the first N combos for smoke runs."""
+        from jutsu_engine.audit.selection_bias import enumerate_golden_grid
+        assert len(enumerate_golden_grid(limit=5)) == 5
+        assert len(enumerate_golden_grid()) == 243
+
+    def test_run_dsr_threads_combos_limit(self, tmp_path, monkeypatch):
+        """run_dsr(combos_limit=N) runs only N combos in the campaign."""
+        import jutsu_engine.audit.selection_bias as sb
+        monkeypatch.setattr(sb, "_all_symbols", lambda sid: [], raising=False)
+        # inject the fake worker so no DB/backtest is touched
+        seen = []
+
+        def fake_run_fn(strategy_id, combo, symbols, start, end, initial_capital="10000"):
+            seen.append(combo["combo_id"])
+            return {"combo_id": combo["combo_id"], "hash": combo["hash"],
+                    "overrides": combo["overrides"],
+                    "dates": ["2010-02-01", "2010-02-02"],
+                    "returns": [0.01, -0.02], "sharpe": 0.1, "error": None}
+
+        monkeypatch.setattr(sb, "run_one_combo", fake_run_fn)
+        # smoke=4 combos; PBO needs >=2 combos and S<=T, so use S=2 via a tiny matrix.
+        sb.run_dsr("v3_5b", tmp_path, combos_limit=4, cscv_blocks=2)
+        assert sorted(seen) == [0, 1, 2, 3]

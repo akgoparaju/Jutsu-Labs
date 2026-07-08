@@ -541,7 +541,15 @@ def summarize_selection_bias(strategy_id: str, rows: list[dict], golden_hash: st
     golden_moments = sample_moments(golden_series)
 
     pbo_block = None
-    if compute_pbo_block and matrix.size and matrix.shape[1] >= 2:
+    # Guard: need >=2 combos AND each CSCV block must have >=2 rows (ddof=1 Sharpe).
+    # T < 2*S means blocks have <2 rows → all-NaN Sharpes → skip PBO gracefully.
+    pbo_eligible = (
+        compute_pbo_block
+        and matrix.size
+        and matrix.shape[1] >= 2
+        and matrix.shape[0] >= 2 * S
+    )
+    if pbo_eligible:
         try:
             raw_pbo = compute_pbo(matrix, S=S)
         except ValueError as exc:
