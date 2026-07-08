@@ -84,3 +84,63 @@ class TestExpectedMaxSharpe:
         """Cross-trial variance V must be non-negative."""
         with pytest.raises(ValueError, match="V must be >= 0"):
             expected_max_sharpe(V=-0.01, N=100)
+
+
+class TestSampleMoments:
+    def test_skew_and_nonexcess_kurtosis(self):
+        """sample_moments returns per-period Sharpe, γ₃ skew, γ₄ NON-excess kurtosis."""
+        data = np.array([0.01, -0.02, 0.015, -0.005, 0.03,
+                         -0.01, 0.02, -0.015, 0.005, 0.01])
+        m = sample_moments(data)
+        # scipy skew(bias=False) and kurtosis(fisher=True,bias=False)+3:
+        assert m["skew"] == pytest.approx(-0.023853, abs=1e-5)
+        assert m["kurt_nonexcess"] == pytest.approx(2.040487, abs=1e-5)
+        # non-excess kurtosis is excess + 3; normal-ish data ⇒ near 3 minus platykurtic
+        assert m["T"] == 10
+
+    def test_zero_variance_raises(self):
+        """A constant series has zero std → Sharpe undefined; raise."""
+        with pytest.raises(ValueError, match="zero variance"):
+            sample_moments(np.array([0.01, 0.01, 0.01, 0.01]))
+
+
+class TestDeflatedSharpe:
+    def test_end_to_end_reference(self):
+        """DSR end-to-end for a synthetic golden series matches the hand value."""
+        # Build a daily series with per-period Sharpe = 0.8/sqrt(252) = 0.05039526,
+        # skew≈0, non-excess kurt≈3, T=4100; N=243, V=0.0004 ⇒ SR*=0.0565716.
+        rng = np.random.default_rng(7)
+        T = 4100
+        target_daily_sr = 0.8 / np.sqrt(252)
+        # scale a standard normal to mean/std giving the target Sharpe
+        base = rng.standard_normal(T)
+        base = (base - base.mean()) / base.std(ddof=1)   # exact 0 mean, unit std
+        returns = 0.01 * base + 0.01 * target_daily_sr   # std≈0.01, mean=0.01*SR*std
+        d = deflated_sharpe(returns, N=243, V=0.0004)
+        assert d["sr_star"] == pytest.approx(0.0565716, abs=1e-6)
+        # DSR ≈ 0.346 for this configuration (SR_obs ≈ SR*, so DSR near 0.5·… < 0.5)
+        assert 0.30 <= d["dsr"] <= 0.42
+        assert d["sr_obs"] == pytest.approx(target_daily_sr, abs=1e-3)
+
+    def test_high_sharpe_low_N_gives_high_dsr(self):
+        """A genuinely high Sharpe with few trials survives deflation (DSR→1)."""
+        rng = np.random.default_rng(1)
+        T = 2000
+        base = rng.standard_normal(T)
+        base = (base - base.mean()) / base.std(ddof=1)
+        # per-period Sharpe ≈ 0.2 (very high daily) with N=2 trials
+        returns = 0.01 * base + 0.01 * 0.2
+        d = deflated_sharpe(returns, N=2, V=0.0001)
+        assert d["dsr"] > 0.99
+
+    def test_dsr_brackets_shape(self):
+        """deflated_sharpe_brackets returns one row per bracketed N, DSR falling with N."""
+        rng = np.random.default_rng(3)
+        base = rng.standard_normal(3000)
+        base = (base - base.mean()) / base.std(ddof=1)
+        returns = 0.01 * base + 0.01 * 0.08
+        rows = deflated_sharpe_brackets(returns, N_values=DEFAULT_N_BRACKETS, V=0.0004)
+        assert [r["N"] for r in rows] == list(DEFAULT_N_BRACKETS)
+        # DSR is monotone non-increasing in N (more trials → more deflation)
+        dsrs = [r["dsr"] for r in rows]
+        assert dsrs == sorted(dsrs, reverse=True)
