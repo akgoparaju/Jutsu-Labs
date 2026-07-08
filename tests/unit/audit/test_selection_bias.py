@@ -185,18 +185,35 @@ from jutsu_engine.audit.selection_bias import (
 
 class TestReturnsMatrix:
     def test_aligns_on_union_of_dates(self):
-        """Combos with different date coverage align on the union (NaN-filled → 0)."""
+        """Combos sharing most dates align on union; the missing cell is filled 0.0."""
+        # Use 1000-date series with one combo missing ONE date (0.1% fill ≤ threshold).
+        dates = [f"2010-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(1000)]
+        rows = [
+            {"combo_id": 0, "hash": "a", "overrides": {}, "error": None,
+             "dates": dates, "returns": [0.01] * 1000},
+            {"combo_id": 1, "hash": "b", "overrides": {}, "error": None,
+             "dates": dates[1:], "returns": [0.02] * 999},  # missing first date
+        ]
+        mat, cols, out_dates, n_filled = build_returns_matrix(rows)
+        assert mat.shape == (1000, 2)          # union of 1000 dates, 2 combos
+        assert out_dates == dates
+        # combo 1 has no first date → filled 0.0
+        assert mat[0, 1] == 0.0
+        assert n_filled == 1                   # exactly one cell filled
+
+    def test_aligns_on_union_of_dates_no_gaps(self):
+        """Two combos sharing all dates: n_filled=0, both in matrix."""
         rows = [
             {"combo_id": 0, "hash": "a", "overrides": {}, "error": None,
              "dates": ["2010-02-01", "2010-02-02"], "returns": [0.01, 0.02]},
             {"combo_id": 1, "hash": "b", "overrides": {}, "error": None,
-             "dates": ["2010-02-02", "2010-02-03"], "returns": [0.03, 0.04]},
+             "dates": ["2010-02-01", "2010-02-02"], "returns": [0.03, 0.04]},
         ]
-        mat, cols, dates = build_returns_matrix(rows)
-        assert mat.shape == (3, 2)           # union of 3 dates, 2 combos
-        assert dates == ["2010-02-01", "2010-02-02", "2010-02-03"]
-        # combo 0 has no 2010-02-03 → filled 0.0; combo 1 has no 2010-02-01 → 0.0
-        assert mat[2, 0] == 0.0 and mat[0, 1] == 0.0
+        mat, cols, dates, n_filled = build_returns_matrix(rows)
+        assert mat.shape == (2, 2)
+        assert dates == ["2010-02-01", "2010-02-02"]
+        assert n_filled == 0
+        assert cols == ["a", "b"]
 
     def test_excludes_error_rows(self):
         """Error rows (returns None) are dropped from the matrix."""
@@ -206,9 +223,53 @@ class TestReturnsMatrix:
             {"combo_id": 1, "hash": "b", "overrides": {}, "error": "boom",
              "dates": None, "returns": None},
         ]
-        mat, cols, dates = build_returns_matrix(rows)
+        mat, cols, dates, n_filled = build_returns_matrix(rows)
         assert mat.shape[1] == 1              # only the good combo
         assert cols == ["a"]
+
+    def test_filled_cells_counted_and_returned(self):
+        """n_filled_cells counts cells zero-filled during union alignment."""
+        # Build 3 combos all sharing 1000 dates (no fills) — n_filled == 0.
+        dates = [f"2010-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(1000)]
+        rows = [
+            {"combo_id": j, "hash": chr(97 + j), "overrides": {}, "error": None,
+             "dates": dates, "returns": [0.001 * j] * 1000}
+            for j in range(3)
+        ]
+        mat, cols, out_dates, n_filled = build_returns_matrix(rows)
+        assert n_filled == 0
+        assert mat.shape == (1000, 3)
+
+    def test_high_fill_fraction_combo_dropped(self):
+        """A combo whose filled fraction > 0.1% is silently dropped from the matrix."""
+        # 1000-date union; one combo covers only 998 dates → 2/1000 = 0.2% > threshold.
+        dates = [f"2010-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(1000)]
+        rows = [
+            # combo 0: all 1000 dates — no fill
+            {"combo_id": 0, "hash": "full", "overrides": {}, "error": None,
+             "dates": dates, "returns": [0.001] * 1000},
+            # combo 1: only 998 dates — 2/1000 = 0.2% fill > 0.1% threshold → dropped
+            {"combo_id": 1, "hash": "short", "overrides": {}, "error": None,
+             "dates": dates[:998], "returns": [0.002] * 998},
+        ]
+        mat, cols, out_dates, n_filled = build_returns_matrix(rows)
+        assert "short" not in cols      # high-fill combo dropped
+        assert "full" in cols           # no-fill combo kept
+        assert mat.shape[1] == 1
+
+    def test_low_fill_fraction_combo_kept(self):
+        """A combo whose filled fraction <= 0.1% is kept (fill counted but not dropped)."""
+        # 1000-date union; one combo covers 999 dates → 1/1000 = 0.1% <= threshold.
+        dates = [f"2010-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(1000)]
+        rows = [
+            {"combo_id": 0, "hash": "full", "overrides": {}, "error": None,
+             "dates": dates, "returns": [0.001] * 1000},
+            {"combo_id": 1, "hash": "one_short", "overrides": {}, "error": None,
+             "dates": dates[:999], "returns": [0.002] * 999},
+        ]
+        mat, cols, out_dates, n_filled = build_returns_matrix(rows)
+        assert "one_short" in cols      # at-threshold combo kept
+        assert n_filled == 1            # exactly 1 cell was filled
 
     def test_cross_trial_variance_from_sharpes(self):
         """V is the variance of per-combo per-period Sharpes across the matrix columns."""

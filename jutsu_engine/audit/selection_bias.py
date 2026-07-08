@@ -32,7 +32,8 @@ from jutsu_engine.audit.config import PROJECT_ROOT
 # NOTE: the live golden config's sma_slow=140 is OUTSIDE this historical grid
 # [180,200,220]. The live value was tuned in a later phase. For DSR, the in-grid
 # anchor uses sma_slow=200 (closest center value). This mismatch is documented in
-# _golden_anchor_hash() and in the report.
+# _golden_anchor_hash() (defined in this module, see below) and in the DSR report
+# (report.py:render_dsr_section, written by write_dsr_report).
 GOLDEN_GRID_AXES: dict[str, list] = {
     "upper_thresh_z": [0.8, 1.0, 1.2],
     "lower_thresh_z": [-0.2, 0.0, 0.2],
@@ -366,6 +367,13 @@ import numpy as np
 import pandas as pd
 
 
+# Threshold: a combo with more than 0.1% of its cells zero-filled (i.e., its date
+# coverage has gaps vs the union) is dropped. A typical combo missing 4 of 4,100
+# dates = 0.098% (under threshold). Combos with material gaps (e.g., a crash mid-run
+# whose CSV was truncated) are dropped with a LOUD warning.
+_MAX_FILLED_FRACTION = 0.001   # 0.1%
+
+
 def build_returns_matrix(rows: list[dict]):
     """Assemble a (T, N) returns matrix from campaign rows, aligned on date union.
 
@@ -379,35 +387,68 @@ def build_returns_matrix(rows: list[dict]):
     ("matrix contains NaN — drop errored combos before compute_pbo"). The number of
     dropped combos is available from the caller via (len(rows) - len(good)).
 
-    Returns (matrix, col_hashes, dates):
-      matrix     — np.ndarray shape (T, N), float64, zero NaN
-      col_hashes — list[str] combo hashes, column order matching the matrix
-      dates      — list[str] the sorted union of dates (length T)
+    Fill-cell tracking (Task 9 follow-up):
+      The union alignment may fill dates absent from a combo's own series with 0.0.
+      We count those filled cells per combo, print a LOUD warning when any exist, and
+      DROP any combo whose filled fraction > _MAX_FILLED_FRACTION (0.1%). This guards
+      against silently including combos whose backtest CSV was truncated.
+
+    Returns (matrix, col_hashes, dates, n_filled_cells):
+      matrix         — np.ndarray shape (T, N), float64, zero NaN
+      col_hashes     — list[str] combo hashes, column order matching the matrix
+      dates          — list[str] the sorted union of dates (length T)
+      n_filled_cells — int total zero-filled cells across all accepted combos
     """
     good = [r for r in rows if not is_error_row(r)]
-    n_dropped = len(rows) - len(good)
-    if n_dropped > 0:
-        print(f"[build_returns_matrix] DROPPED {n_dropped} errored/incomplete combo(s) "
+    n_dropped_err = len(rows) - len(good)
+    if n_dropped_err > 0:
+        print(f"[build_returns_matrix] DROPPED {n_dropped_err} errored/incomplete combo(s) "
               f"from matrix ({len(good)} good combos remain)")
     if not good:
-        return np.empty((0, 0), dtype=float), [], []
+        return np.empty((0, 0), dtype=float), [], [], 0
     all_dates = sorted({d for r in good for d in r["dates"]})
     date_index = pd.Index(all_dates)
+    T = len(all_dates)
     cols = []
     col_hashes = []
+    total_filled = 0
+    n_dropped_fill = 0
     for r in good:
         s = pd.Series(r["returns"], index=pd.Index([str(d) for d in r["dates"]]))
         s = s[~s.index.duplicated(keep="first")]       # guard duplicate dates
-        aligned = s.reindex(date_index).fillna(0.0).to_numpy(dtype=float)
-        cols.append(aligned)
+        aligned_series = s.reindex(date_index)
+        n_filled = int(aligned_series.isna().sum())    # count NaN before fill
+        filled_frac = n_filled / T if T > 0 else 0.0
+        if n_filled > 0:
+            print(
+                f"[build_returns_matrix] WARNING: combo {r.get('hash', '?')!r} has "
+                f"{n_filled}/{T} zero-filled cells ({filled_frac:.4%}) in date union."
+            )
+        if filled_frac > _MAX_FILLED_FRACTION:
+            print(
+                f"[build_returns_matrix] DROPPING combo {r.get('hash', '?')!r}: "
+                f"filled fraction {filled_frac:.4%} > threshold {_MAX_FILLED_FRACTION:.1%}"
+            )
+            n_dropped_fill += 1
+            continue
+        total_filled += n_filled
+        cols.append(aligned_series.fillna(0.0).to_numpy(dtype=float))
         col_hashes.append(r["hash"])
+    if n_dropped_fill > 0:
+        print(
+            f"[build_returns_matrix] DROPPED {n_dropped_fill} combo(s) for "
+            f"exceeding the {_MAX_FILLED_FRACTION:.1%} fill-fraction threshold "
+            f"({len(col_hashes)} remain)"
+        )
+    if not cols:
+        return np.empty((0, 0), dtype=float), [], [], 0
     matrix = np.column_stack(cols).astype(float)
     # Invariant: no NaN in the assembled matrix (fillna(0.0) guarantees this).
     assert not np.isnan(matrix).any(), (
         "build_returns_matrix produced NaN — this is a bug; all missing dates "
         "should be filled 0.0"
     )
-    return matrix, col_hashes, all_dates
+    return matrix, col_hashes, all_dates, total_filled
 
 
 def cross_trial_variance(matrix: np.ndarray) -> float:
