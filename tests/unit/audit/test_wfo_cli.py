@@ -21,12 +21,15 @@ def _summary():
                      "qqq_total_return": 0.08, "alpha_vs_qqq": 0.02},
         "drift_table": pd.DataFrame([{"window_id": 1, "is_sharpe": 0.9}]),
         "value_distribution": {"upper_thresh_z": {1.0: 2}},
-        "top_decile_share": {
+        "combo_top_decile_share": 1.0,
+        "combo_verdict": "stable",
+        "overall_verdict": "stable",
+        "golden_combo_hash": "a1b2c3d4e5f6a1b2",
+        "axis_diagnostics": {
             "upper_thresh_z": {"golden_value": 1.0, "share": 1.0, "verdict": "stable"},
             "realized_vol_window": {"golden_value": 21, "share": 1.0, "verdict": "stable"},
             "sma_slow": {"golden_value": 140, "share": 1.0, "verdict": "stable"},
         },
-        "overall_min_share": 1.0, "overall_verdict": "stable",
         "campaign_file": "/x/campaign_wfo_v3_5b.jsonl",
     }
 

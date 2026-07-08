@@ -10,7 +10,7 @@ evidence-driven from EXP-003: 31 combos/window (3×3×3 sensitive-param product 
 for `vol_crush_threshold`, `bond_sma_fast`, `bond_sma_slow`, `osc_smoothness`); six
 EXP-003 inert knobs excluded (documented). Architecture: thin per-window IS grid
 search + OOS stitching built on the audit package's own infra — WFORunner rejected
-(stitches trades, no resume, cannot produce a stitched daily-return curve). 198 unit
+(stitches trades, no resume, cannot produce a stitched daily-return curve). 199 unit
 tests (audit + CLI scope), all DB-free.
 
 - New: `jutsu_engine/audit/wfo_stability.py`, `tests/unit/audit/test_wfo_stability.py`,
