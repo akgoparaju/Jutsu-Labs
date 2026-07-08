@@ -596,3 +596,93 @@ pipeline must be loud, and any fired guard is an investigation, not a nuisance.
 **Artifacts.** Fix merged to main @ `d2d4123` (301 tests; consumption-side span
 filters heal existing checkpoints — no backtests re-run). Corrected reports
 regenerated: `report_wfo_v3_5{b,d}.md`, `report_dsr_v3_5b.md`.
+
+---
+
+## SYNTHESIS-001 — Where the program stands after the baseline audit (2026-07-08)
+
+*This section interprets EXP-001…006 as a whole. It is written to be readable
+cold — including by the Kronos research agent, which should treat the
+"Binding facts for downstream research" list as constraints on its experiments.*
+
+### The complete honest picture of v3.5b / v3.5d
+
+| Question | Answer | Evidence |
+|---|---|---|
+| Does live trading match the backtest engine? | Yes — 1.1% true divergence (1 borderline day / 93) | EXP-002 |
+| What does the strategy actually earn (fixed golden, 2010→2026)? | Sharpe ~0.81, CAGR ~23%, MaxDD **−51%** | EXP-001, reproduced twice |
+| What would adaptive 6-month re-optimization earn? | Sharpe ~0.83, CAGR ~19.9%, MaxDD −54% — **the same** | EXP-004 as corrected by EXP-006 |
+| Are the golden parameters overfit? | No — plateau, 48th/57.5th pct of own neighborhood, no cliffs | EXP-003 |
+| Is the edge statistically real given the search history? | Yes — DSR ≥0.997 at N≤5000 (conservative); 0.82–0.97 under wider structural-search V | EXP-005 |
+| Can grid search pick "the best" config? | No — PBO 0.85; IS winners are noise draws (3.7% top-decile, below chance) | EXP-005, EXP-004 |
+| Where does the strategy fail? | Regime transitions: 2022 bear −46% vs QQQ −33%; cells 4/6 net losers; 2025-present alpha negative | EXP-001 |
+| Where is it most sensitive? | The vol-regime classification inputs (upper_thresh_z, vol windows, sma_slow) — identically on both strategies | EXP-003, replicated |
+
+### Interpretation of the final outcome
+
+1. **The strategy family has a real edge, and it lives in the structure.** DSR
+   says the edge survives selection-deflation decisively; PBO says selecting
+   among configs is meaningless. Both are true because the parameter surface is
+   a flat plateau (EXP-003): every nearby config is nearly the same strategy.
+   The 6-cell regime framework earns the returns; the exact parameter values do
+   not matter within ±15-20%.
+2. **Every parametric improvement route is now closed with data, not opinion.**
+   Parameter tuning (EXP-003: flat), adaptive re-tuning (EXP-004/006: equals
+   fixed, at higher complexity), candidate swaps (EXP-004: all four quarantined
+   candidates killed OOS), finer selection (EXP-005: PBO 0.85). This was the
+   original 2026-07-06 question ("agent that modifies parameters to make it
+   better?") — answered: **no such agent can help this strategy.**
+3. **The only open improvement route is structural: regime-transition quality.**
+   Five independent lines point at the same subsystem — the volatility-regime
+   classifier and the crash exit/re-entry path: (a) 2022 era loss exceeding
+   QQQ's; (b) defensive cells losing money over 16 years; (c) EXP-003
+   sensitivity ranking (vol-channel inputs on top, both strategies); (d) the
+   Kronos program's independent finding that the vol channel is the only real
+   zero-shot signal channel; (e) 2025-present negative alpha during choppy
+   transitions.
+4. **Risk framing changed materially.** The documented MaxDD −18% is wrong; the
+   honest number is −51% (fixed) / −54% (walk-forward). Anyone sizing positions
+   or leverage on the documented number is carrying ~3x the believed drawdown
+   risk. This is an open operational decision, not an experiment.
+5. **The measurement infrastructure is now the asset.** The gauntlet — live
+   fidelity recon, era/cell attribution, plateau map, WFO with stitched OOS,
+   DSR/PBO — is re-runnable (`jutsu audit all|plateau|wfo|dsr`), checkpointed,
+   and reviewed. Every future candidate change must pass through it. Its loud-
+   guard philosophy already paid for itself twice (EXP-002, EXP-006).
+
+### Binding facts for downstream research (Kronos agent: read this list)
+
+- **Honest benchmarks to evaluate overlays against:** fixed golden full-period
+  (Sharpe 0.81 / CAGR 23.1% / MaxDD −51.2%, 2010-02→2026-07) and the corrected
+  walk-forward OOS curve (Sharpe 0.83 / CAGR 19.9% / MaxDD −54.4%, 2012-08→
+  2026-07, 3,391 days). Do NOT use the documented Sharpe 2.79 / MaxDD −18%
+  anywhere; do NOT use EXP-004's retracted pre-correction numbers (Sharpe 0.46).
+- **Any regime classifier/input must beat the best single raw feature it would
+  replace** — for the vol state, that bar is raw vol_zscore at AUC 0.828
+  (t+21 vol-state prediction; the Kronos program's own VER1 finding).
+- **Selection discipline:** IS ranking is inadmissible as evidence (PBO 0.85);
+  acceptance requires OOS superiority in the gauntlet, plus DSR/PBO-style
+  multiple-testing correction for however many overlay variants were tried.
+- **Information set:** live decisions happen ~15 min after the open of day D
+  (bars ≤ D−1 + an unpersisted intraday quote). Any signal computed on day D's
+  close and "traded" on day D in a backtest is look-ahead (EXP-002).
+- **Engine data gotcha:** regime-timeseries CSVs contain warmup rows dated
+  before the backtest start (0.0 returns, length varies with config). Trim to
+  the analysis span before computing anything (EXP-006).
+- **Statistical power warning:** the whole 16-year record contains ~6 crash
+  episodes, and every drawdown-protection overlay tested so far (ours and
+  Kronos's ~25 variants) ends up clipping the same single episode. Backtest
+  evidence for transition improvements is structurally underpowered — design
+  experiments accordingly (era-sliced, null-matched, and humble).
+
+### Program state
+
+- Audit spec (docs/superpowers/specs/2026-07-06-baseline-audit-design.md):
+  **all five modules complete.** Code on main @ `9acb696`, 301 audit tests.
+- Kronos program: zero-shot iteration exhausted (their logbook); I7 fine-tune
+  trained on the M4; its overlay re-tests should be final-gated in this
+  gauntlet (era-sliced, 2022 crash exit focus).
+- Next arc: regime-classifier upgrade program — candidate confirming inputs
+  (VIX term structure, credit spreads, breadth, Kronos ema-blend fwd-vol)
+  evaluated ablation-style in the gauntlet against the AUC-0.828 bar and OOS
+  acceptance rules. The plateau/WFO/DSR machinery is its fitness function.
