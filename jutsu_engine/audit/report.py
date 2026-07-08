@@ -536,3 +536,197 @@ def write_wfo_report(run_dir: Path, strategy_id: str, markdown: str) -> Path:
     out = run_dir / f"report_wfo_{strategy_id}.md"
     out.write_text(markdown)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Module 3 DSR/PBO — spec §7 / §10 report renderer
+# ---------------------------------------------------------------------------
+
+# spec §10 decision thresholds for Module 3 (selection-bias correction).
+DSR_CONFIDENCE_THRESHOLD = 0.95   # DSR (a probability); < 0.95 → edge unproven
+PBO_THRESHOLD = 0.50              # PBO > 0.50 → overfitting red flag
+
+
+def render_dsr_section(summary: dict) -> str:
+    """Render the Selection-bias correction (Module 3) section as markdown.
+
+    ``summary`` is the dict from selection_bias.summarize_selection_bias():
+      strategy_id, n_combos, cross_trial_V, golden_hash, golden_moments,
+      trial_inventory (list of {strategy_name, optimizer_type, trials}),
+      dsr_brackets (list of {N, sr_obs, sr_star, dsr, T}),
+      pbo (dict {pbo, prob_oos_loss, degradation_slope, n_partitions,
+                 logit_histogram} OR None for the v3_5d DSR-only path).
+
+    Renders: trial inventory table, DSR-across-N table with conservatism note and
+    golden-anchor caveat, the spec §10 gate (DSR < 95% → edge statistically unproven
+    → prioritize live record), PBO block with IS-vs-OOS plain-language verdict, and
+    the spec §7 plain-language verdict sentence.
+
+    Conventions: _fmt() for every number; captions OUTSIDE GFM tables;
+    standalone file report_dsr_<strategy>.md (write_dsr_report).
+    """
+    sid = summary["strategy_id"]
+    gm = summary["golden_moments"]
+    brackets = summary["dsr_brackets"]
+    inv = summary["trial_inventory"]
+    pbo = summary["pbo"]
+
+    # DSR at the smallest N bracket is the least-deflated (most generous) confidence.
+    dsr_at_min_N = brackets[0]["dsr"] if brackets else 0.0
+    min_N = brackets[0]["N"] if brackets else 0
+    dsr_proven = dsr_at_min_N >= DSR_CONFIDENCE_THRESHOLD
+
+    lines = [
+        "## Selection-bias correction (Module 3)",
+        "",
+        f"- Strategy: **{sid}**  |  Golden combo hash: `{summary['golden_hash']}`",
+        f"- Golden daily Sharpe (per-period): **{_fmt(gm.get('sr_obs'), '.5f')}**  |  "
+        f"skew γ₃: **{_fmt(gm.get('skew'), '.3f')}**  |  "
+        f"kurtosis γ₄ (non-excess): **{_fmt(gm.get('kurt_nonexcess'), '.3f')}**  |  "
+        f"T: **{gm.get('T')}**",
+        f"- Grid combos with usable returns: **{summary['n_combos']}**  |  "
+        f"cross-trial Sharpe variance V: **{_fmt(summary.get('cross_trial_V'), '.6f')}**",
+        "",
+        "### Trial-count inventory (read-only; early history may be incomplete)",
+        "_The `optimization_results` table may not capture every historical search "
+        "phase (v2.x→v3.5b). DSR is therefore reported at BRACKETED N values below; "
+        "higher N deflates harder and is the conservative read._",
+        "",
+    ]
+    if inv:
+        lines += ["| strategy | optimizer | trials |", "| --- | --- | --- |"]
+        for r in inv:
+            lines.append(f"| {r['strategy_name']} | {r['optimizer_type']} | "
+                         f"{r['trials']} |")
+    else:
+        lines.append("_(no optimization_results rows found for this strategy)_")
+
+    # DSR-across-N table with conservatism note and golden-anchor caveat.
+    lines += [
+        "",
+        "### Deflated Sharpe Ratio across bracketed N (spec §7)",
+        "_DSR = PSR(SR\\*): the probability the golden Sharpe reflects real skill "
+        "rather than the luckiest of N tries. SR\\* is the expected max Sharpe under "
+        "N trials with cross-trial variance V._",
+        "",
+        "**Conservatism note:** Both the effective-N approximation (correlated grid "
+        "neighbours have fewer independent draws than nominal N) and the V-noise bias "
+        "(sample V inflated by per-trial estimation noise ~1/T) push SR\\* UP and DSR "
+        "DOWN. The result is conservative — it will not over-claim the edge. "
+        "Do **not** re-inflate DSR to compensate.",
+        "",
+        "**Golden-anchor caveat:** The live golden config's `sma_slow=140` is "
+        "OUTSIDE the historical grid axis `[180, 200, 220]` (the live value was tuned "
+        "in a later phase). The in-grid anchor uses `sma_slow=200` (closest center "
+        "value) as the representative combo. DSR uses the LIVE golden campaign returns "
+        "regardless — the anchor only identifies which row the golden combo's returns "
+        "come from.",
+        "",
+        "| N (trials) | SR_obs (daily) | SR\\* (expected max) | DSR (confidence) |",
+        "| --- | --- | --- | --- |",
+    ]
+    for r in brackets:
+        lines.append(
+            f"| {r['N']} | {_fmt(r['sr_obs'], '.5f')} | "
+            f"{_fmt(r['sr_star'], '.5f')} | {_fmt(r['dsr'], '.4f')} |"
+        )
+
+    # spec §10 gate
+    lines += [
+        "",
+        "**Spec §10 decision gate:**",
+        "| Signal | Threshold | Consequence |",
+        "| --- | --- | --- |",
+        "| DSR confidence | < 95% | Edge statistically unproven → "
+        "prioritize accumulating live record over further tuning |",
+        "| PBO | > 50% | Same as above |",
+        "",
+    ]
+    if dsr_proven:
+        lines.append(
+            f"**Verdict (DSR):** at N={min_N}, DSR = **{_fmt(dsr_at_min_N, '.4f')}** "
+            f">= 0.95 — the edge clears the selection-bias gate at the smallest "
+            f"trial-count bracket.")
+    else:
+        lines.append(
+            f"**Verdict (DSR):** at N={min_N}, DSR = **{_fmt(dsr_at_min_N, '.4f')}** "
+            f"< 0.95 — the edge is **statistically unproven** after correcting for "
+            f"selection over ~{min_N} trials (spec §10). It deflates further at "
+            f"higher N. Prioritize accumulating a live track record.")
+
+    # PBO block
+    lines += ["", "### Probability of Backtest Overfitting (PBO via CSCV, S=16)"]
+    if pbo is None:
+        lines += [
+            "_PBO not computed for this strategy: its distinguishing grid was too "
+            "small for CSCV (needs a wide combo matrix). DSR above uses a "
+            "family-level N estimate. PBO is reported for v3_5b (primary) only._",
+            "",
+        ]
+    else:
+        pbo_val = pbo["pbo"]
+        over = pbo_val > PBO_THRESHOLD
+        lines += [
+            f"- CSCV partitions: **{pbo['n_partitions']}** (all C(16,8))",
+            f"- **PBO = {_fmt(pbo_val, '.4f')}** "
+            + ("→ **overfitting red flag** (>50%): in the majority of IS/OOS "
+               "partitions, the IS-best configuration falls below the OOS median — "
+               "the backtest performance is unlikely to reflect true out-of-sample edge."
+               if over else
+               "(≤50%): the IS-best configuration generally holds up out-of-sample."),
+            f"- Probability of OOS loss for the IS-best: "
+            f"**{_fmt(pbo['prob_oos_loss'], '.4f')}**",
+            f"- Performance-degradation slope (OOS Sharpe on IS Sharpe): "
+            f"**{_fmt(pbo['degradation_slope'], '.4f')}** "
+            "(1.0 = perfect carry-over; lower = IS edge does not persist OOS)",
+            "",
+            "#### Logit distribution of OOS relative ranks (plot-as-table)",
+            "_Negative logit ⇒ IS-best is OOS below-median (overfit). Median "
+            f"logit: **{_fmt(pbo['logit_histogram'].get('median'), '.3f')}**._",
+            "",
+            _histogram_as_table(pbo["logit_histogram"]),
+        ]
+
+    # spec §7 plain-language verdict sentence (always present)
+    prob_real_pct = dsr_at_min_N * 100.0
+    lines += [
+        "### Plain-language verdict (spec §7)",
+        "",
+        f"> Given how many configurations you tried (~{min_N}+), the probability "
+        f"that the observed Sharpe is real (not the luckiest draw of the search) is "
+        f"**{prob_real_pct:.1f}%**"
+        + (f", and the probability the backtest is overfit (PBO) is "
+           f"**{pbo['pbo'] * 100:.1f}%**." if pbo is not None else ".")
+        + " Backtest-only evidence is structurally underpowered here (XREF-001, "
+          "n=1 crash-episode caution) — the live track record carries the burden "
+          "of proof from here.",
+        "",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _histogram_as_table(hist: dict) -> str:
+    """Render a {counts, edges} histogram as a compact markdown bin table."""
+    counts = hist.get("counts", [])
+    edges = hist.get("edges", [])
+    if not counts:
+        return "_(no histogram data)_\n"
+    lines = ["| bin (logit range) | count |", "| --- | --- |"]
+    for i, c in enumerate(counts):
+        lo = edges[i]
+        hi = edges[i + 1] if i + 1 < len(edges) else edges[-1]
+        lines.append(f"| [{lo:.2f}, {hi:.2f}) | {c} |")
+    return "\n".join(lines) + "\n"
+
+
+def write_dsr_report(run_dir: Path, strategy_id: str, markdown: str) -> Path:
+    """Write report_dsr_<strategy>.md into run_dir (separate from other reports).
+
+    Deliberately a SEPARATE file so the DSR run never touches report_<strategy>.md,
+    report_plateau_<strategy>.md, or report_wfo_<strategy>.md.
+    """
+    run_dir = Path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    out = run_dir / f"report_dsr_{strategy_id}.md"
+    out.write_text(markdown)
+    return out

@@ -429,3 +429,96 @@ class TestRenderWFO:
         md = render_wfo_section(s)
         assert ": None" not in md
         assert "**None**" not in md
+
+
+# ---------------------------------------------------------------------------
+# Task 12 — DSR report renderer
+# ---------------------------------------------------------------------------
+from jutsu_engine.audit.report import render_dsr_section, write_dsr_report
+
+
+def _dsr_summary(dsr_conf=0.30, pbo=0.55):
+    return {
+        "strategy_id": "v3_5b",
+        "n_combos": 243,
+        "cross_trial_V": 0.0004,
+        "golden_hash": "abc123def4567890",
+        "golden_moments": {"sr_obs": 0.0504, "skew": -0.1,
+                           "kurt_nonexcess": 4.2, "T": 4100},
+        "trial_inventory": [
+            {"strategy_name": "Hierarchical_Adaptive_v3_5b",
+             "optimizer_type": "grid_search", "trials": 243},
+        ],
+        "dsr_brackets": [
+            {"N": 243, "sr_obs": 0.0504, "sr_star": 0.0566, "dsr": dsr_conf, "T": 4100},
+            {"N": 1000, "sr_obs": 0.0504, "sr_star": 0.0620, "dsr": 0.18, "T": 4100},
+            {"N": 5000, "sr_obs": 0.0504, "sr_star": 0.0680, "dsr": 0.09, "T": 4100},
+        ],
+        "pbo": {"pbo": pbo, "prob_oos_loss": 0.42, "degradation_slope": 0.31,
+                "n_partitions": 12870,
+                "logit_histogram": {"counts": [1, 2, 3], "edges": [-3, -1, 1, 3],
+                                    "median": -0.4}},
+    }
+
+
+class TestRenderDSR:
+    def test_renders_trial_inventory_and_brackets(self):
+        """The DSR section shows the trial inventory and per-N DSR rows."""
+        md = render_dsr_section(_dsr_summary())
+        assert "Selection-bias correction (Module 3)" in md
+        assert "243" in md and "1000" in md and "5000" in md
+        assert "grid_search" in md
+
+    def test_unproven_verdict_when_dsr_below_95(self):
+        """DSR < 95% at N=243 → 'edge statistically unproven' (spec §10)."""
+        md = render_dsr_section(_dsr_summary(dsr_conf=0.30))
+        assert "statistically unproven" in md.lower()
+
+    def test_pbo_over_50_flags_overfitting(self):
+        """PBO > 50% is called out as an overfitting red flag (spec §10)."""
+        md = render_dsr_section(_dsr_summary(pbo=0.55))
+        assert "overfitting" in md.lower()
+        assert "12870" in md   # partition count present
+
+    def test_plain_language_verdict_present(self):
+        """The spec §7 plain-language sentence about trials is rendered."""
+        md = render_dsr_section(_dsr_summary())
+        assert "probability" in md.lower()
+        assert "configurations you tried" in md.lower()
+
+    def test_dsr_only_summary_renders_without_pbo(self):
+        """A v3_5d DSR-only summary (pbo None) renders without a PBO block."""
+        s = _dsr_summary()
+        s["pbo"] = None
+        s["strategy_id"] = "v3_5d"
+        md = render_dsr_section(s)
+        assert "PBO not computed" in md
+
+    def test_conservatism_note_in_dsr_table(self):
+        """DSR bracket table carries the conservatism note (effective-N + V noise)."""
+        md = render_dsr_section(_dsr_summary())
+        assert "conservative" in md.lower() or "deflat" in md.lower()
+
+    def test_golden_anchor_caveat_present(self):
+        """Report notes that live sma_slow=140 is outside the historical grid."""
+        md = render_dsr_section(_dsr_summary())
+        # The report must mention the sma_slow mismatch or the anchor caveat.
+        assert "sma_slow" in md or "anchor" in md.lower() or "outside" in md.lower()
+
+    def test_spec10_gate_line_present(self):
+        """The spec §10 gate line (DSR conf <95% → prioritize live record) is present."""
+        md = render_dsr_section(_dsr_summary())
+        assert "95%" in md or "0.95" in md
+        assert "live" in md.lower()
+
+    def test_pbo_verdict_plain_language(self):
+        """PBO verdict sentence uses plain language (spec §7)."""
+        md = render_dsr_section(_dsr_summary(pbo=0.55))
+        # should mention partitions and IS-best and out-of-sample in plain language
+        assert "IS-best" in md or "in-sample" in md.lower() or "out-of-sample" in md.lower()
+
+    def test_write_dsr_report(self, tmp_path):
+        """write_dsr_report writes report_dsr_<strategy>.md into the run dir."""
+        out = write_dsr_report(tmp_path, "v3_5b", "# hi\n")
+        assert out.name == "report_dsr_v3_5b.md"
+        assert out.read_text() == "# hi\n"
