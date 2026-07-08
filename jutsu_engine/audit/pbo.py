@@ -79,9 +79,26 @@ def _sharpes_from_stats(
 ) -> np.ndarray:
     """Compute per-combo Sharpe for a set of blocks from precomputed stats.
 
-    Uses the parallel formula: mean = sum/n, var = sumsq/n − mean^2, std (ddof=1)
-    = sqrt(max(var*n/(n-1), 0)).  Columns with zero std get NaN Sharpe.
+    Uses the parallel formula: mean = sum/n, var_pop = sumsq/n − mean², std
+    (ddof=1) = sqrt(max(var_pop*n/(n-1), 0)).
+
+    Degenerate (zero/near-zero variance) guard — scale-invariant relative test:
+      A column is treated as degenerate when
+          var_pop  ≤  _VAR_EPS * (sumsq/n + _VAR_TINY)
+      where _VAR_EPS = 1e-12 and _VAR_TINY = 1e-300 (prevents division by zero
+      when sumsq/n is also zero).  This is relative to the mean-square magnitude
+      so it fires on truly constant columns regardless of scale (e.g. a combo
+      whose daily return is always 0.001 has sumsq/n ≈ 1e-6 and var_pop ≈ 0 due
+      to floating-point cancellation — the ratio is ~1e-19, well below 1e-12).
+      Genuine tiny-but-real variance at realistic daily-return scales is preserved:
+      for returns with mean ≈ std ≈ 1e-4 the ratio var_pop/mean_sq ≈ 0.5, which
+      is >> 1e-12, so such columns are NOT zapped.
+    Degenerate columns receive NaN Sharpe and are never selected as IS-best by
+    nanargmax, preventing a constant-return combo from silently forcing PBO=0.
     """
+    _VAR_EPS = 1e-12   # relative threshold (scale-invariant)
+    _VAR_TINY = 1e-300  # absolute floor so threshold is non-zero when mean_sq=0
+
     n = int(counts[block_ids].sum())
     if n < 2:
         # Cannot compute ddof=1 std with fewer than 2 observations.
@@ -92,9 +109,11 @@ def _sharpes_from_stats(
     mean = s / n
     # population variance from block stats; correct to sample variance (ddof=1)
     var_pop = sq / n - mean ** 2
+    mean_sq = sq / n                          # ≥ 0 by construction
+    degenerate = var_pop <= _VAR_EPS * (mean_sq + _VAR_TINY)
     var_samp = np.maximum(var_pop * n / (n - 1), 0.0)
     std = np.sqrt(var_samp)
-    std = np.where(std == 0.0, np.nan, std)
+    std = np.where(degenerate, np.nan, std)
     return mean / std
 
 
@@ -154,6 +173,13 @@ def logit(omega: float) -> float:
 def compute_pbo(matrix: np.ndarray, S: int = 16) -> dict:
     """Probability of Backtest Overfitting + diagnostics over a T×N returns matrix.
 
+    Contract: ``matrix`` must be a T×N float array of DAILY RETURNS with NO NaN
+    values and ≥2 combos.  Errored/incomplete combos must be DROPPED (whole
+    column) by the caller before assembly (see selection_bias matrix assembly).
+    NaN peers bias relative_rank downward, an all-NaN partition raises, and NaN
+    IS-best OOS values corrupt the degradation regression — none are handled here
+    by design.
+
     For each CSCV partition (C(S, S/2) total):
       - pick the IS-best combo n* (highest IS Sharpe, nanargmax).
       - record ω̄ = relative_rank(oos_sharpes, n*).
@@ -167,16 +193,22 @@ def compute_pbo(matrix: np.ndarray, S: int = 16) -> dict:
     Returns dict:
       pbo               — fraction of partitions with ω̄ < 0.5.
       prob_oos_loss     — fraction of partitions where the IS-best has OOS Sharpe ≤ 0.
-      degradation_slope — OLS slope of OOS Sharpe (y) on IS Sharpe (x) across the
-                          IS-best of every partition. 1.0 = perfect carry-over;
-                          <1 = degradation; 0.0 if IS Sharpes have no variance.
+      degradation_slope — pooled OLS over all partitions' (IS-best IS Sharpe,
+                          OOS Sharpe) points — not a per-partition aggregate.
+                          1.0 = perfect carry-over; <1 = degradation;
+                          0.0 if IS Sharpes have no variance.
       logits            — list of per-partition logit values (the λ distribution).
       n_partitions      — C(S, S/2).
 
     Raises ValueError if N < 2 (nothing to rank).
+    Raises ValueError if matrix contains any NaN (caller must drop errored combos).
     """
     if matrix.shape[1] < 2:
         raise ValueError("PBO needs at least 2 combos to rank")
+    if np.isnan(matrix).any():
+        raise ValueError(
+            "matrix contains NaN — drop errored combos before compute_pbo"
+        )
 
     logits: list[float] = []
     oos_losses = 0
