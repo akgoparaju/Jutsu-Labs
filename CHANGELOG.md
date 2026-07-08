@@ -1,3 +1,36 @@
+#### **Feature: Baseline Audit Phase 4 — Module 3 selection-bias correction (DSR + PBO), Tasks 10–12** (2026-07-07)
+
+Added trial-count inventory (Task 10), `run_dsr` orchestrator + summary dict (Task 11),
+and DSR/PBO report renderer (Task 12). Also: Task 9 follow-up extension to
+`build_returns_matrix` (fill-cell tracking, >0.1% fill-fraction drop, loud warning).
+
+- **Task 9 follow-up:** `build_returns_matrix` now returns a 4-tuple `(matrix,
+  col_hashes, dates, n_filled_cells)`. Counts zero-filled cells during union
+  alignment; prints LOUD warning when any exist; DROPs combos with filled fraction
+  > 0.1% (guards against silently including truncated-backtest CSVs). Also fixed
+  dangling `_golden_anchor_hash()` comment reference in `selection_bias.py` line ~35.
+- **Task 10 (`jutsu_engine/audit/db.py`):** added `trial_count_records()` (pure
+  shaper, no DB) and `load_trial_counts()` (read-only SELECT over
+  `optimization_results` grouped by strategy/optimizer). Unit-tested on synthetic
+  rows. The ONLY new DB touch for Module 3.
+- **Task 11 (`jutsu_engine/audit/selection_bias.py`):** added
+  `summarize_selection_bias()` (pure over campaign rows → DSR brackets + PBO block
+  + golden moments), `run_dsr()` orchestrator (campaign → matrix → DSR + PBO
+  summary), `_golden_anchor_hash()` (documents sma_slow=140 live vs sma_slow=200
+  in-grid mismatch), `_logit_histogram()`. Also added `enumerate_golden_grid(limit=)`
+  for smoke-mode combos truncation and hoisted `_all_symbols` to module level for
+  monkeypatching.
+- **Task 12 (`jutsu_engine/audit/report.py`):** added `render_dsr_section()` and
+  `write_dsr_report()`. Renders: trial inventory, DSR bracket table (with
+  conservatism note and golden-anchor caveat), spec §10 gate (DSR <95% → edge
+  statistically unproven → prioritize live record), PBO block (IS-vs-OOS plain
+  language, n_partitions, degradation slope, logit histogram), and spec §7
+  plain-language verdict sentence.
+- Modified: `jutsu_engine/audit/db.py`, `jutsu_engine/audit/selection_bias.py`,
+  `jutsu_engine/audit/report.py`, `tests/unit/audit/test_db.py`,
+  `tests/unit/audit/test_selection_bias.py`, `tests/unit/audit/test_report.py`.
+- Suite: 274 tests (from 255 before Tasks 10–12).
+
 #### **Feature: Baseline Audit Phase 3 — Module 1 WFO parameter-stability study** (2026-07-07)
 
 Added `jutsu audit wfo` (`jutsu_engine/audit/wfo_stability.py`): walk-forward
