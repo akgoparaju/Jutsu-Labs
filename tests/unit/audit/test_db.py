@@ -76,3 +76,37 @@ class TestSchedulerSnapshotsToRecords:
         assert r["t_norm"] == 0.4
         assert r["z_score"] == -0.3
         assert r["total_equity"] == 10100.0  # latest ts wins
+
+
+# ---------------------------------------------------------------------------
+# Task 10 — Trial-count inventory (pure shaper, no DB)
+# ---------------------------------------------------------------------------
+from jutsu_engine.audit.db import trial_count_records
+
+
+class TestTrialCountRecords:
+    def test_shapes_grouped_counts(self):
+        """trial_count_records turns (strategy, optimizer, count) rows into dicts."""
+        rows = [
+            ("Hierarchical_Adaptive_v3_5b", "grid_search", 243),
+            ("Hierarchical_Adaptive_v3_5b", "bayesian", 57),
+            ("Hierarchical_Adaptive_v2_8", "grid_search", 400),
+        ]
+        recs = trial_count_records(rows)
+        assert recs == [
+            {"strategy_name": "Hierarchical_Adaptive_v2_8",
+             "optimizer_type": "grid_search", "trials": 400},
+            {"strategy_name": "Hierarchical_Adaptive_v3_5b",
+             "optimizer_type": "bayesian", "trials": 57},
+            {"strategy_name": "Hierarchical_Adaptive_v3_5b",
+             "optimizer_type": "grid_search", "trials": 243},
+        ]
+
+    def test_none_optimizer_labeled(self):
+        """A NULL optimizer_type is labeled '(unknown)', not dropped."""
+        recs = trial_count_records([("S", None, 10)])
+        assert recs[0]["optimizer_type"] == "(unknown)"
+
+    def test_empty_rows(self):
+        """No rows → empty list (no crash)."""
+        assert trial_count_records([]) == []

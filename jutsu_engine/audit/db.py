@@ -155,6 +155,51 @@ def load_scheduler_snapshots(engine, strategy_id: str, start: date) -> list[dict
     return scheduler_snapshots_to_records(rows)
 
 
+def trial_count_records(rows: Iterable[Any]) -> list[dict]:
+    """Shape (strategy_name, optimizer_type, count) rows into sorted trial-count dicts.
+
+    Pure (no DB): unit-tested on synthetic rows. NULL optimizer_type becomes
+    '(unknown)'. Sorted by (strategy_name, optimizer_type) for a stable report.
+    """
+    out = []
+    for strategy_name, optimizer_type, count in rows:
+        out.append({
+            "strategy_name": strategy_name,
+            "optimizer_type": optimizer_type if optimizer_type is not None
+                              else "(unknown)",
+            "trials": int(count),
+        })
+    out.sort(key=lambda d: (d["strategy_name"], d["optimizer_type"]))
+    return out
+
+
+def load_trial_counts(engine, strategy_like: str | None = None) -> list[dict]:
+    """READ-ONLY: historical optimization-trial counts by strategy & optimizer.
+
+    SELECT-only over optimization_results (jutsu_engine/optimization/results.py).
+    Groups by strategy_name + optimizer_type. Optional strategy_like filters with
+    a SQL LIKE (e.g. '%v3_5b%'). Returns trial_count_records()-shaped dicts.
+
+    This is the ONLY new DB touch for Module 3, and it is a pure SELECT — the audit
+    remains strictly read-only.
+    """
+    from sqlalchemy import text
+    where = ""
+    params: dict = {}
+    if strategy_like is not None:
+        where = "WHERE strategy_name LIKE :like"
+        params["like"] = strategy_like
+    q = text(
+        "SELECT strategy_name, optimizer_type, COUNT(*) AS n "
+        "FROM optimization_results "
+        f"{where} "
+        "GROUP BY strategy_name, optimizer_type"
+    )
+    with engine.connect() as c:
+        rows = list(c.execute(q, params))
+    return trial_count_records(rows)
+
+
 def load_snapshot_source_counts(engine, strategy_id: str, start: date) -> dict[str, int]:
     """Count snapshots by snapshot_source since `start` (for the report's provenance table)."""
     from sqlalchemy import text
