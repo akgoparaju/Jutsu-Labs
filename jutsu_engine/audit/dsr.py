@@ -16,6 +16,21 @@ Formulas (spelled out so implementers never guess):
          Euler–Mascheroni constant ≈ 0.5772)
 
   DSR  = PSR(SR*)
+
+Statistical caveats (see also expected_max_sharpe docstring):
+
+  (a) N is the number of EFFECTIVELY INDEPENDENT trials. The approximation assumes
+      independence; correlated trials (e.g. neighbouring grid combos on a plateau)
+      have effective N far below the nominal combo count. Using the nominal count
+      overstates N → overstates SR* → UNDERSTATES DSR: the result is conservative
+      and will not over-claim the edge. Do not re-inflate DSR to "compensate".
+
+  (b) V should be the variance of TRUE cross-trial Sharpes. A sample variance of
+      ESTIMATED Sharpes is inflated by per-trial estimation noise (~1/T each), which
+      further inflates SR* and deflates DSR (also conservative).
+
+  (c) Both biases (effective-N overcount, estimation noise in V) push DSR in the
+      SAME direction — they do not offset each other.
 """
 from __future__ import annotations
 
@@ -38,7 +53,8 @@ EULER_MASCHERONI: float = 0.5772156649015329
 DEFAULT_N_BRACKETS: tuple[int, ...] = (243, 1000, 5000)
 
 
-def psr(sr_obs: float, sr_star: float, T: int, skew: float, kurt: float) -> float:
+def psr(sr_obs: float, sr_star: float, T: int, skew: float,
+        kurt_nonexcess: float) -> float:
     """Probabilistic Sharpe Ratio PSR(SR*): P(true SR > SR*) given sample moments.
 
     Args:
@@ -46,7 +62,8 @@ def psr(sr_obs: float, sr_star: float, T: int, skew: float, kurt: float) -> floa
       sr_star: benchmark Sharpe to beat (0 for the classic PSR; SR* for DSR).
       T: number of return observations (>= 2).
       skew: γ₃, sample skewness of the returns.
-      kurt: γ₄, NON-EXCESS kurtosis (normal == 3.0; excess kurtosis + 3).
+      kurt_nonexcess: γ₄, NON-EXCESS kurtosis (normal == 3.0; excess kurtosis + 3).
+          Named explicitly to guard against the scipy default of excess kurtosis.
 
     Returns Φ(z) where
       z = (sr_obs − sr_star)·√(T−1) / √(1 − γ₃·sr_obs + ((γ₄−1)/4)·sr_obs²).
@@ -56,12 +73,13 @@ def psr(sr_obs: float, sr_star: float, T: int, skew: float, kurt: float) -> floa
     """
     if T < 2:
         raise ValueError(f"T must be >= 2 for PSR (got {T})")
-    radicand = 1.0 - skew * sr_obs + ((kurt - 1.0) / 4.0) * (sr_obs ** 2)
+    radicand = (1.0 - skew * sr_obs
+                + ((kurt_nonexcess - 1.0) / 4.0) * (sr_obs ** 2))
     if radicand <= 0.0:
         raise ValueError(
             f"PSR denominator radicand is non-positive ({radicand:.6g}); "
             f"skew/kurtosis/SR combination is pathological "
-            f"(skew={skew}, kurt={kurt}, sr_obs={sr_obs})"
+            f"(skew={skew}, kurt_nonexcess={kurt_nonexcess}, sr_obs={sr_obs})"
         )
     z = (sr_obs - sr_star) * math.sqrt(T - 1) / math.sqrt(radicand)
     return float(_Phi(z))
@@ -81,12 +99,31 @@ def expected_max_sharpe(V: float, N: int) -> float:
       N: number of (effectively independent) trials. N >= 2 (N=1 means no
          selection: Φ⁻¹(1 − 1/1) = Φ⁻¹(0) = −∞).
 
-    Raises ValueError for N < 2 or V < 0.
+    Statistical caveats — both biases are conservative (push DSR down, not up):
+
+      (a) N is the number of EFFECTIVELY INDEPENDENT trials. The approximation
+          assumes independence; correlated trials (e.g. neighbouring grid combos on
+          a plateau) have effective N far below the nominal combo count. Using the
+          nominal count overstates N → overstates SR* → UNDERSTATES DSR: the result
+          is conservative and will not over-claim the edge. Do not re-inflate DSR
+          to "compensate".
+
+      (b) V should be the variance of TRUE cross-trial Sharpes. A sample variance of
+          ESTIMATED Sharpes is inflated by per-trial estimation noise (~1/T each),
+          which further inflates SR* and deflates DSR (also conservative).
+
+      (c) Both biases push DSR in the SAME direction — they do not offset each other.
+
+    Raises ValueError for N < 2, V < 0, or N > 10**12 (Φ⁻¹ degenerates to inf).
     """
     if N < 2:
         raise ValueError(f"N must be >= 2 (got {N}); N=1 means no selection")
     if V < 0:
         raise ValueError(f"V must be >= 0 (got {V})")
+    if N > 10 ** 12:
+        raise ValueError(
+            f"N too large ({N}); Phi-inverse degenerates — use N <= 10**12"
+        )
     g = EULER_MASCHERONI
     term = ((1.0 - g) * _Phi_inv(1.0 - 1.0 / N)
             + g * _Phi_inv(1.0 - 1.0 / (N * math.e)))
@@ -129,13 +166,19 @@ def deflated_sharpe(returns, N: int, V: float) -> dict:
     m = sample_moments(returns)
     sr_star = expected_max_sharpe(V=V, N=N)
     dsr = psr(sr_obs=m["sr_obs"], sr_star=sr_star, T=m["T"],
-              skew=m["skew"], kurt=m["kurt_nonexcess"])
+              skew=m["skew"], kurt_nonexcess=m["kurt_nonexcess"])
     return {**m, "sr_star": sr_star, "dsr": dsr}
 
 
-def deflated_sharpe_brackets(returns, N_values=DEFAULT_N_BRACKETS,
-                             V: float = 0.0) -> list[dict]:
+def deflated_sharpe_brackets(returns, N_values=DEFAULT_N_BRACKETS, *,
+                             V: float) -> list[dict]:
     """DSR at each bracketed N (spec §7: N = 243 / 1000 / 5000).
+
+    Args:
+      returns: the strategy's per-period (daily) return series.
+      N_values: iterable of trial counts to bracket; defaults to DEFAULT_N_BRACKETS.
+      V: cross-trial Sharpe variance (per-period units). Required — V=0 silently
+         produces a non-deflated number that looks like a valid DSR.
 
     Returns a list of {N, sr_obs, sr_star, dsr, T, skew, kurt_nonexcess} rows, one
     per N. Higher N ⇒ higher SR* ⇒ lower DSR (more deflation), so the caller can
