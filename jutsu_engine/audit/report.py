@@ -601,7 +601,10 @@ def render_dsr_section(summary: dict) -> str:
             lines.append(f"| {r['strategy_name']} | {r['optimizer_type']} | "
                          f"{r['trials']} |")
     else:
-        lines.append("_(no optimization_results rows found for this strategy)_")
+        lines.append(
+            "_(no rows — table missing or DB unavailable; N brackets are the "
+            "honest bound)_"
+        )
 
     # DSR-across-N table with conservatism note and golden-anchor caveat.
     lines += [

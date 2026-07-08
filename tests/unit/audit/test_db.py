@@ -110,3 +110,65 @@ class TestTrialCountRecords:
     def test_empty_rows(self):
         """No rows → empty list (no crash)."""
         assert trial_count_records([]) == []
+
+
+# ---------------------------------------------------------------------------
+# Task 10 fix — load_trial_counts degrades gracefully when the table is absent
+# ---------------------------------------------------------------------------
+from unittest.mock import MagicMock
+from jutsu_engine.audit.db import load_trial_counts
+
+
+class TestLoadTrialCountsDegrades:
+    """load_trial_counts returns [] instead of propagating when the DB raises."""
+
+    def _make_engine(self, exc: Exception) -> MagicMock:
+        """Return a fake SQLAlchemy engine whose connect().__enter__().execute raises exc."""
+        ctx = MagicMock()
+        ctx.execute.side_effect = exc
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=ctx)
+        cm.__exit__ = MagicMock(return_value=False)
+        engine = MagicMock()
+        engine.connect.return_value = cm
+        return engine
+
+    def test_programming_error_returns_empty_list(self):
+        """ProgrammingError (UndefinedTable) must return [] without raising."""
+        from sqlalchemy.exc import ProgrammingError
+        # ProgrammingError(statement, params, orig) — use a bare string as orig
+        exc = ProgrammingError(
+            "SELECT ... FROM optimization_results ...",
+            {},
+            Exception('relation "optimization_results" does not exist'),
+        )
+        engine = self._make_engine(exc)
+        result = load_trial_counts(engine)
+        assert result == [], (
+            "load_trial_counts must return [] when optimization_results is absent"
+        )
+
+    def test_operational_error_returns_empty_list(self):
+        """Any SQLAlchemy error (e.g. OperationalError) must also return []."""
+        from sqlalchemy.exc import OperationalError
+        exc = OperationalError("SELECT ...", {}, Exception("connection refused"))
+        engine = self._make_engine(exc)
+        result = load_trial_counts(engine)
+        assert result == []
+
+    def test_successful_query_still_works(self):
+        """Verify the happy path still shapes rows correctly after the guard is added."""
+        ctx = MagicMock()
+        ctx.execute.return_value = [
+            ("Hierarchical_Adaptive_v3_5b", "grid_search", 243),
+        ]
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=ctx)
+        cm.__exit__ = MagicMock(return_value=False)
+        engine = MagicMock()
+        engine.connect.return_value = cm
+        result = load_trial_counts(engine)
+        assert result == [
+            {"strategy_name": "Hierarchical_Adaptive_v3_5b",
+             "optimizer_type": "grid_search", "trials": 243}
+        ]

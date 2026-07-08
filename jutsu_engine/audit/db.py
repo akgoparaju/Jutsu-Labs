@@ -182,7 +182,15 @@ def load_trial_counts(engine, strategy_like: str | None = None) -> list[dict]:
 
     This is the ONLY new DB touch for Module 3, and it is a pure SELECT — the audit
     remains strictly read-only.
+
+    If the optimization_results table does not exist in the target DB (historical
+    grid searches were persisted to CSVs, not always to the DB), or any other
+    SQLAlchemy error occurs while querying it, this function degrades gracefully:
+    logs a single warning and returns [] so the DSR campaign can continue with
+    bracketed N.  A syntax error in OUR SQL is treated the same way — the loud
+    warning makes it visible without aborting the run.
     """
+    import logging
     from sqlalchemy import text
     where = ""
     params: dict = {}
@@ -195,9 +203,20 @@ def load_trial_counts(engine, strategy_like: str | None = None) -> list[dict]:
         f"{where} "
         "GROUP BY strategy_name, optimizer_type"
     )
-    with engine.connect() as c:
-        rows = list(c.execute(q, params))
-    return trial_count_records(rows)
+    try:
+        with engine.connect() as c:
+            rows = list(c.execute(q, params))
+        return trial_count_records(rows)
+    except Exception as exc:  # noqa: BLE001
+        # Covers sqlalchemy.exc.ProgrammingError (UndefinedTable) and any other
+        # SQLAlchemy / driver error.  We intentionally keep this broad so the DSR
+        # campaign is never blocked by a missing or inaccessible inventory table.
+        _log = logging.getLogger(__name__)
+        _log.warning(
+            "trial inventory unavailable (optimization_results missing or "
+            "unreadable) — DSR proceeds with bracketed N. Error: %s", exc
+        )
+        return []
 
 
 def load_snapshot_source_counts(engine, strategy_id: str, start: date) -> dict[str, int]:
