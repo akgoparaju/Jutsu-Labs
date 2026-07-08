@@ -110,3 +110,57 @@ class TestSelectISWinner:
         """If every IS combo errored, there is no winner (returns None)."""
         rows = [{"hash": "a", "overrides": {}, "is_sharpe": None}]
         assert select_is_winner(rows) is None
+
+
+# ---------------------------------------------------------------------------
+# Task 4 — Stitched OOS-curve metrics
+# ---------------------------------------------------------------------------
+import numpy as np
+import pandas as pd
+
+from jutsu_engine.audit.wfo_stability import stitch_oos_metrics
+
+
+def _oos_frame(strategy_returns, qqq_returns, start="2013-01-01"):
+    dates = pd.date_range(start, periods=len(strategy_returns), freq="D", tz="UTC")
+    return pd.DataFrame({
+        "Date": dates,
+        "Strategy_Daily_Return": strategy_returns,
+        "QQQ_Daily_Return": qqq_returns,
+    })
+
+
+class TestStitchOOSMetrics:
+    def test_concatenates_windows_and_computes_on_stitched_series(self):
+        """Metrics are computed on the concatenated series, NOT averaged per window."""
+        w1 = _oos_frame([0.01, 0.01], [0.005, 0.005], "2013-01-01")
+        w2 = _oos_frame([-0.01, 0.02], [0.0, 0.01], "2013-07-01")
+        m = stitch_oos_metrics([w1, w2])
+        assert m["oos_days"] == 4
+        # total return = prod(1+r)-1 over ALL 4 days
+        expected = (1.01 * 1.01 * 0.99 * 1.02) - 1.0
+        assert abs(m["total_return"] - expected) < 1e-9
+
+    def test_alpha_is_stitched_strategy_minus_qqq_total_return(self):
+        """alpha_vs_qqq = stitched strategy total return - stitched QQQ total return."""
+        w1 = _oos_frame([0.10], [0.04], "2013-01-01")
+        m = stitch_oos_metrics([w1])
+        assert abs(m["alpha_vs_qqq"] - (0.10 - 0.04)) < 1e-9
+
+    def test_never_averages_per_window_sharpe(self):
+        """A window with a huge per-window Sharpe cannot dominate the stitched Sharpe."""
+        # Window A: tiny consistent gains (high per-window Sharpe).
+        wa = _oos_frame([0.001] * 30, [0.0] * 30, "2013-01-01")
+        # Window B: volatile (low per-window Sharpe).
+        wb = _oos_frame(list(np.tile([0.05, -0.05], 15)), [0.0] * 30, "2013-07-01")
+        stitched = stitch_oos_metrics([wa, wb])["sharpe"]
+        # Averaging per-window Sharpes would give a very different (inflated) number;
+        # the stitched Sharpe reflects the combined 60-day series volatility.
+        combined = pd.concat([wa, wb])["Strategy_Daily_Return"]
+        expected = float(combined.mean() / combined.std(ddof=1) * np.sqrt(252))
+        assert abs(stitched - expected) < 1e-9
+
+    def test_empty_input_returns_zero_metrics(self):
+        """No OOS windows -> zeroed metrics, no crash."""
+        m = stitch_oos_metrics([])
+        assert m["oos_days"] == 0 and m["sharpe"] == 0.0

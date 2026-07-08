@@ -178,3 +178,51 @@ def select_is_winner(is_rows: list[dict]) -> dict | None:
     if not valid:
         return None
     return max(valid, key=lambda r: r["is_sharpe"])
+
+
+# ---------------------------------------------------------------------------
+# Task 4 — Stitched OOS-curve metrics (spec §5 output 1)
+# ---------------------------------------------------------------------------
+import numpy as np
+import pandas as pd
+
+# Reuse the audit's proven pure metric helpers (attribution.py) so the stitched
+# curve uses the SAME math as Module 4, not a re-implementation.
+from jutsu_engine.audit.attribution import _sharpe, _max_drawdown, _total_return
+
+
+def stitch_oos_metrics(oos_frames: list[pd.DataFrame]) -> dict:
+    """Concatenate per-window OOS daily returns and compute headline metrics.
+
+    Each frame has columns Date, Strategy_Daily_Return, QQQ_Daily_Return (the
+    regime-timeseries CSV shape BacktestRunner emits, regime_analyzer.py:192-222).
+    Frames are concatenated in chronological order and ALL metrics are computed on
+    the single stitched series — never by averaging per-window Sharpes (spec §5).
+
+    Returns dict: oos_days, total_return, cagr, sharpe, max_drawdown,
+    qqq_total_return, alpha_vs_qqq.
+    """
+    if not oos_frames:
+        return {"oos_days": 0, "total_return": 0.0, "cagr": 0.0, "sharpe": 0.0,
+                "max_drawdown": 0.0, "qqq_total_return": 0.0, "alpha_vs_qqq": 0.0}
+
+    stitched = pd.concat(oos_frames, ignore_index=True)
+    stitched = stitched.sort_values("Date").reset_index(drop=True)
+    strat = stitched["Strategy_Daily_Return"]
+    qqq = stitched["QQQ_Daily_Return"]
+
+    total = _total_return(strat)
+    qqq_total = _total_return(qqq)
+    n_days = int(len(strat))
+    years = n_days / 252.0
+    cagr = ((1.0 + total) ** (1.0 / years) - 1.0) if years > 0 and total > -1 else 0.0
+
+    return {
+        "oos_days": n_days,
+        "total_return": float(total),
+        "cagr": float(cagr),
+        "sharpe": _sharpe(strat),
+        "max_drawdown": _max_drawdown(strat),
+        "qqq_total_return": float(qqq_total),
+        "alpha_vs_qqq": float(total - qqq_total),
+    }
