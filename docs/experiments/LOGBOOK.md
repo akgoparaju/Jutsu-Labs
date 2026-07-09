@@ -686,3 +686,45 @@ cold — including by the Kronos research agent, which should treat the
   (VIX term structure, credit spreads, breadth, Kronos ema-blend fwd-vol)
   evaluated ablation-style in the gauntlet against the AUC-0.828 bar and OOS
   acceptance rules. The plateau/WFO/DSR machinery is its fitness function.
+
+---
+
+## XREF-002 — Kronos program concluded; ema5_blend handoff accepted into the ablation queue (2026-07-08)
+
+The Kronos regime-detection program is **concluded** (their `experiments.md`
+PROGRAM ANSWER + `docs/2026-07-08-kronos-vol-input-handoff.md`). Summary of their
+ending: the I7 fine-tune (25.8h on the M4, clean pre-registered evaluation) went
+**RED on all four gates** — it halved the bearish prior but *degraded* the rank
+signal (ρ 0.19→0.14, DA 0.56→0.52) and the vol channel (AUC 0.793→0.767); the one
+genuine gain (embeddings probe 0.76→0.797) still sits under the raw vol_zscore
+bar (0.815–0.828). Final answer to their central question: **Kronos is not a
+leading regime detector for v3.5b, zero-shot or fine-tuned.**
+
+**Surviving deliverable, accepted here as ONE pre-registered candidate:**
+`kronos_vol_blend` (zero-shot Kronos-base fwd-vol → trailing-200 z → EMA5 →
+50/50 blend with production vol z → unchanged hysteresis). Evidence on OUR
+engine's decision stream (their exp10): Sharpe +0.09, MaxDD −36.1%→−29.0%,
+**2022 return −30.2%→−13.2%** — the effect sits exactly on our identified
+failure mode. Honest limits: never statistically significant (all CIs include
+zero; shared n≈1-crash-episode problem); the Kronos leg ALONE is worse than raw
+vol_zscore (0.793 vs 0.815–0.828) — the entire claim is forward+backward
+**complementarity**, untested; same-close convention optimistic (T-1 numbers
+were path noise); their port agrees with our engine on only 87.5% of days →
+acceptance runs must be engine-side (their own instruction).
+
+**Ablation-battery design decision (recorded now, binding on the upcoming
+regime program):** the battery must contain two control arms that their program
+could not provide:
+1. **`vix_blend`** — the identical 5-step recipe with an implied-vol z-score
+   (VIX or VIX3M/VIX structure) as the forward-looking leg. The market already
+   publishes a forward vol forecast; if it captures the same 2022 improvement,
+   Kronos adds model-ops for nothing. If Kronos beats it, that is a genuinely
+   remarkable finding. This is the decisive comparison.
+2. **`smoothing-only` control** — blend the production vol z with its own EMA5
+   (no external information at all). I2b's improvement may be partly "smoother
+   input → less whipsaw", which needs no forecaster. This isolates the
+   information content from the filter effect.
+Plus the stock baseline. All arms: engine-side, T-1 information set, era-sliced
+(2022 decisive), gauntlet OOS acceptance, no variant sweeping without DSR/PBO
+correction. Precomputed Kronos forecasts cover 2019-08→2025-12 (two stress
+episodes: 2020, 2022) — the evaluable window for arms needing the Kronos leg.
