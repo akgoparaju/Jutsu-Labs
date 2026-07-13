@@ -29,6 +29,7 @@ in-sample numbers optimistic by construction.
 | EXP-004 | 2026-07-07 | Are the golden parameters stable across WFO time windows (does adaptive tuning have anything to chase)? | Adaptive tuning CLOSED: winners are noise (golden top-decile 3.7%, below chance); chasing them OOS earns Sharpe 0.46 / CAGR 5.4% vs ~0.8 / ~23% fixed; all 4 quarantined candidates killed |
 | EXP-005 | 2026-07-07 | Given the trial count, how likely is the golden Sharpe real (DSR + PBO)? | Edge is REAL (DSR ≥0.997 all N brackets, conservative; V-sensitivity bounded) but selection within the family is noise (PBO 0.85) — trust the structure, not the pick |
 | EXP-006 | 2026-07-08 | Correction: warmup rows polluted timeseries consumers | EXP-004 stitched OOS corrected (Sharpe 0.46→0.83, CAGR 5.4%→19.9%): adaptive tuning adds NOTHING (not "destroys value"); closure stands; EXP-001 unknown-era explained |
+| EXP-007 | 2026-07-13 | Does a forward-looking (Kronos/VIX) or smoothing-only vol-input leg improve transition quality enough for a shadow slot? | PENDING (battery built; results after Tier-1 run) |
 
 ---
 
@@ -728,3 +729,155 @@ Plus the stock baseline. All arms: engine-side, T-1 information set, era-sliced
 (2022 decisive), gauntlet OOS acceptance, no variant sweeping without DSR/PBO
 correction. Precomputed Kronos forecasts cover 2019-08→2025-12 (two stress
 episodes: 2020, 2022) — the evaluable window for arms needing the Kronos leg.
+
+---
+
+## EXP-007 — Regime program Phase 1: transition metrics + vol-input ablation battery (2026-07-13)
+
+**Question.** The baseline audit closed every parametric route and localized v3.5b's
+weakness to regime-transition quality — specifically the vol-state classifier around
+crash exits/re-entries (SYNTHESIS-001). Does replacing the vol-state INPUT series with a
+forward-looking leg (Kronos forecast or implied vol) — or mere smoothing — improve
+transition behavior enough to earn a paper-trading shadow slot? Four arms, pre-registered
+gates: `stock` (baseline) / `kronos` (Kronos program's sole surviving deliverable,
+XREF-002) / `vix` (implied-vol control) / `smoothing` (zero-information filter control).
+
+**Why.** SYNTHESIS-001 identified the vol-regime classification channel as the
+load-bearing failure mode, confirmed by five independent lines of evidence (EXP-001
+cell 4/6 losses, EXP-003 sensitivity ranking replicated on both strategies, XREF-001
+Kronos independent signal analysis, 2022 bear underperformance, 2025-present negative
+alpha). XREF-002 accepted the Kronos program's sole surviving deliverable
+(`kronos_vol_blend`) but mandated two control arms to isolate whether the improvement
+is from forward-looking information or merely smoother inputs — the battery delivers
+both controls and a rigorous engine-side harness the Kronos port could not provide
+(their port agreed with our engine on only 87.5% of days).
+
+**Method.** Built the transition-metrics gauntlet + the ablation battery (this plan,
+`docs/superpowers/plans/2026-07-13-regime-battery-phase1.md`). Code commit `dd5a847`
+(spec) + this plan; data facts verified against DB + parquet on 2026-07-13.
+
+*Registry (Task 1-2).* `grid-configs/audit/crash_episodes.yaml`: 8 crash episodes
+(dotcom/gfc/euro2011/china2015/q4_2018/covid2020/bear2022/spring2025). Peak/trough
+dates QQQ-verified against `market_data` closes (read-only). Two corrections applied
+during verification (Task 2): `bear2022` peak 2021-12-27→**2021-12-27** (confirmed)
+and `spring2025` dates confirmed. Each episode's `portfolio_scored` flag controls
+whether portfolio-level metrics are computed (pre-2010 episodes: signal-only, since
+TQQQ backtests start 2010-02). Loader/validator in
+`jutsu_engine/audit/transitions.py`.
+
+*Transition scorer (Tasks 3-4).* Pure functions over a WARMUP-TRIMMED regime
+timeseries (EXP-006 lesson — trim to `[start_date, end_date]` before any metric):
+exit_lag_days / drawdown_capture / reentry_lag_days / whipsaw_flips /
+days_defensive per (arm × episode) at portfolio level; signal-level: flip
+lead/lag relative to episode peak, flip_count_ratio vs stock arm, AUC(vol-state@t+21)
+vs the raw-bar VER1 bar of 0.815–0.828.
+
+*Exit-lag semantics (SIGNED — critical correctness note).* `exit_lag_days` is the
+count of trading days from the episode peak row to the first row with a defensive
+cell (4/5/6) in the `at_or_after_peak` slice — measured as the 0-based index of
+that row, so 0 means the peak day itself was defensive, 1 means one trading day
+later, etc. A strategy that de-risks BEFORE the peak would show 0 (defensiveness
+had already started). `None` if the strategy never enters a defensive cell from
+peak through trough. This semantics was revised during review: earlier drafts defined
+exit_lag relative to the run-start date; the signed/index definition is the
+as-built engine truth.
+
+*Input-series builders (Tasks 5-6, 8 for smoothing via replay).*
+- **`kronos`**: checksummed parquet `claudedocs/inputs/QQQ_kronos_base.parquet`
+  (sha256 `a9a4a34502ccdb601723972ac469ae399837d500a41228d7485c9b9353c3ab6e`); uses
+  `std_return` at `horizon==5`; span 2019-08-06→2025-12-31 (1,612 timestamps).
+  Pipeline: trailing z(200) → EMA5 (T-1 aligned). Signal window: 2019-08→2025-12.
+- **`vix`**: `$VIX` daily close from `market_data` (read-only SELECT), deduped
+  deterministically (earliest intraday timestamp per date keeps the real CBOE close;
+  validated against 2020-03-16=82.69 anchor). Data span ends 2026-02-03 (STALE —
+  `jutsu sync $VIX` is out-of-scope; the vix arm's signal window ends at the data
+  boundary). Pipeline: trailing z(200) → EMA5 (T-1 aligned). Note: `$VIX` has 1,879
+  duplicate-date days in market_data; the dedup policy is anchor-validated and raises
+  on drift. VIX bounded at its 2026-02-03 data end for signal window; portfolio
+  window 2019-08→2025-12 unaffected (the data covers through 2026-02-03).
+- **`smoothing`**: engine-truth vol_z series (from `calculate_signal_stream` replay)
+  → EMA5. No external information — isolates filter effect from forecasting.
+- **`stock`** (baseline): unmodified production vol_z series from engine replay.
+All series T-1 aligned; causality guaranteed by trailing-only pipeline (prefix-stability
+unit-tested). Max trading-row cap: 120 rows from episode peak for whipsaw counting
+(prevents the score from wandering into unrelated market events).
+
+*Vol-input adapter (Task 7).* `jutsu_engine/strategies/Hierarchical_Adaptive_v3_5b_VolInput.py`
+— diagnostic-only subclass. Blends the precomputed series at the vol-z step:
+`blended_z = weight * series_value + (1 - weight) * engine_vol_z`. Decimal
+conventions consistent with the live strategy. **Identity guarantee**: with no
+injected series (`vol_input_series=None`) the adapter's output matches stock v3_5b
+exactly over 2010-02→2026-07 on all daily regimes (tested via full BacktestRunner
+run, ~30–50 s, PASS on main). Live YAMLs and live/scheduler code UNTOUCHED.
+
+*Engine-truth signal replay (Task 8).* Via `LiveStrategyRunner.calculate_signal_stream`
+(additive method, single bar-loop pass, no portfolio execution). Replay cost: ~1–3 min
+for the stock/vix/smoothing arms (6,800 QQQ bars, 1999-03→2026-07); <1 min for kronos
+(1,600 bars, 2019-08→2025-12). This single-pass mechanism is the lesson from the
+Kronos port's 87.5% day-agreement: nothing is reimplemented.
+
+*Battery arms (Task 9).* Four gated arms at blend weight `w=0.5`; six ungated
+flatness-diagnostic neighbors at `w=0.25` and `w=0.75` (one pair per non-stock arm).
+The SIGN rule (spec §8 flatness gate): a diagnostic neighbor at the same w=0.5 verdict
+that flips sign vs the gated arm (positive ↔ negative) counts as flatness evidence even
+if both are within noise — the direction of effect is unreliable at that weight.
+Ungated diagnostics never used to pick `w`; they are read-only evidence of weight
+sensitivity.
+
+*AUC NaN policy.* `auc_vol_state_forward` returns `float('nan')` when the label
+vector is single-class (undefined AUC), mirroring the Kronos VER1 convention.
+NaN rows are dropped cleanly from the AUC gap threading in the report (not
+forward-filled or imputed).
+
+*Battery runner (Tasks 11-12).* 10 `BacktestRunner` backtests over the Tier-1
+portfolio window 2019-08→2025-12 (~1,600 trading days each); ~1–1.5 min total at
+`--workers 4`. Campaign JSONL: fsync-append checkpoint/resume, single-writer
+invariant, circuit breaker (from the plateau/DSR machinery). Smoke test: stock arm
+only, short window, ~15–30 s.
+
+*Gates (Tasks 9, 13) — pre-registered per spec §8.*
+- **Signal gate** (per arm): AUC > 0.815 AND flip lead/lag improves vs stock.
+- **Portfolio gate** (per arm): era-sliced 2022 Sharpe delta ≥ +0.05 with bootstrap
+  CI entirely above zero; drawdown_capture improvement vs stock in covid2020 + bear2022.
+- **Flatness SIGN rule**: if the w=0.25 and w=0.75 neighbors bracket sign changes,
+  the arm is flagged for weight sensitivity.
+- **Tier-2 trigger**: only if exactly `kronos` survives and vix does NOT — confirms
+  that the Kronos leg is the specific informational contribution, not just filter
+  smoothing. Trigger runs extended window 2010-02→2019-08 backfill + 2010→present
+  portfolio run.
+
+*Identity regression gate.* Before any battery run: the adapter subclass (no injected
+series) must reproduce stock v3_5b daily regimes exactly over 2010-02→2026-07. This
+ran on main; **result: PASS** (zero divergent days, full 16-year period).
+
+*Tier-1 windows.*
+- Portfolio: 2019-08→2025-12 (two stress episodes: covid2020 and bear2022).
+- Signal: 1999-03→present for stock/vix/smoothing (non-kronos); 2019-08→2025-12
+  for kronos (parquet span). VIX signal window bounded at 2026-02-03 (data end).
+
+*Pre-registered expected outcomes (spec §8 — recorded so we cannot rationalize later).*
+- If **smoothing** survives and kronos/vix add nothing beyond it → "filtering, not
+  forecasting"; the cheapest possible improvement ships.
+- If **vix** matches kronos → Kronos adds model-ops for nothing.
+- If **kronos** uniquely survives → a learned forecaster beat implied vol
+  (extraordinary); Tier 2 must confirm.
+
+Command (Tier-1 run, read-only): `jutsu audit battery --strategy v3_5b --workers 4`.
+Smoke: `jutsu audit battery --strategy v3_5b --smoke`.
+
+**Results.** PENDING — fill after the Tier-1 campaign: per-arm × per-episode
+transition tables, signal AUC vs the 0.815-0.828 bar, era-sliced 2022 portfolio
+deltas with bootstrap CIs, the flatness SIGN diagnostic, the per-arm verdict, and
+the Tier-2 trigger decision. Reports land in
+`claudedocs/audit/<date>/report_regime_battery_v3_5b.md`.
+
+**Verdict / decisions.** PENDING (battery pending — filled after the Tier-1 run).
+
+**Artifacts.**
+- Spec: `docs/superpowers/specs/2026-07-13-regime-battery-design.md` (commit `dd5a847`).
+- Plan: `docs/superpowers/plans/2026-07-13-regime-battery-phase1.md`.
+- Report path (post-run): `claudedocs/audit/<date>/report_regime_battery_v3_5b.md`.
+- Campaign JSONL (post-run): `claudedocs/audit/<date>/v3_5b/` (battery arm JSONL).
+
+**Follow-ups spawned.** (Conditional) Tier 2 if kronos uniquely survives and vix does
+not; (conditional) Phase-2 shadow spec if any arm survives all gates.
