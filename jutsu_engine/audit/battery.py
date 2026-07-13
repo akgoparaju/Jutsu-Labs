@@ -253,3 +253,150 @@ def run_regime_backtest(strategy_id: str, vol_input_series, vol_blend_weight,
     if not ts_csv or not Path(ts_csv).exists():
         raise RuntimeError("battery backtest emitted no regime timeseries CSV")
     return str(ts_csv)
+
+
+# ---------------------------------------------------------------------------
+# Battery campaign runner (Task 11) — checkpointed per-arm evaluation
+# ---------------------------------------------------------------------------
+
+from jutsu_engine.audit.plateau import append_result, load_completed_hashes, params_hash
+
+# Tier-1 windows (spec §8): portfolio 2019-08 -> 2025-12; signal 1999->present for
+# non-kronos arms, 2019-08 -> 2025-12 for kronos (its parquet coverage).
+TIER1_PORTFOLIO_START = date(2019, 8, 1)
+TIER1_PORTFOLIO_END = date(2025, 12, 31)
+SIGNAL_START_FULL = date(1999, 3, 10)
+SIGNAL_END = date.today()
+KRONOS_SIGNAL_START = date(2019, 8, 6)
+
+
+def _arm_hash(arm: dict) -> str:
+    """Stable hash of an arm (id + weight) for checkpoint dedup."""
+    return params_hash({"arm": arm["id"], "weight": arm["weight"]})
+
+
+def run_battery(strategy_id: str, run_dir, arm_fn, campaign_file=None,
+                progress=lambda msg: None) -> dict:
+    """Run (or resume) the battery: evaluate each arm, checkpoint each row to JSONL.
+
+    arm_fn(arm, run_dir) -> result row dict (injectable so the orchestration is unit-
+    tested without the engine; the default real evaluator is evaluate_arm). Reuses the
+    plateau append_result (fsync) + load_completed_hashes (resume) primitives; a re-run
+    skips arms whose hash is already present. Single-writer: this parent writes, arm_fn
+    only computes.
+    """
+    from pathlib import Path as _Path
+    from jutsu_engine.audit.plateau import _reload_rows
+    run_dir = _Path(run_dir)
+    campaign_file = (
+        _Path(campaign_file) if campaign_file is not None
+        else run_dir / strategy_id / f"campaign_battery_{strategy_id}.jsonl"
+    )
+    done = load_completed_hashes(campaign_file)
+    for arm in battery_arms():
+        h = _arm_hash(arm)
+        if h in done:
+            progress(f"skip {arm['id']} (already done)")
+            continue
+        progress(f"eval {arm['id']} (w={arm['weight']})")
+        row = arm_fn(arm, run_dir)
+        row["hash"] = h
+        row["kind"] = "battery"
+        row["param"] = arm["id"]
+        append_result(campaign_file, row)     # fsync; single-writer
+    return {"strategy_id": strategy_id, "rows": _reload_rows(campaign_file),
+            "campaign_file": str(campaign_file)}
+
+
+def evaluate_arm(arm: dict, run_dir) -> dict:
+    """Real per-arm evaluator: build the series, run portfolio + signal replay, score.
+
+    For the stock arm: run stock v3_5b. For a series arm: build the series CSV (kronos/
+    vix/smoothing) under run_dir, then run the adapter with that series at the arm's
+    weight. Computes: 2022-episode exit_lag/whipsaw/dd_capture/return (transitions),
+    the input-series AUC(vol-state@t+21) (signal replay), and the bootstrap Sharpe-delta
+    CI vs stock. Returns a result row consumed by the report/gate layer.
+
+    Compute: one ~5-8 s portfolio backtest over the 2019-08->2025-12 window + one signal
+    replay (seconds-minutes). Warmup-trim every regime timeseries before scoring (EXP-006).
+    """
+    from jutsu_engine.audit import transitions as tr
+    from jutsu_engine.audit.attribution import era_metrics
+
+    run_dir = Path(run_dir)
+    series_dir = run_dir / "series"
+    series_csv = None
+
+    if arm["series"] is not None:
+        series_csv = str(_ensure_series_csv(arm["series"], series_dir))
+
+    ts_csv = run_regime_backtest(
+        strategy_id="v3_5b",
+        vol_input_series=series_csv,
+        vol_blend_weight=(None if arm["id"] == "stock" else arm["weight"]),
+        start=TIER1_PORTFOLIO_START, end=TIER1_PORTFOLIO_END,
+        output_dir=str(run_dir / arm["id"]))
+
+    ts = pd.read_csv(ts_csv)
+    ts = tr.trim_warmup(ts, start=TIER1_PORTFOLIO_START)
+
+    # 2022 episode metrics
+    episodes = {e.id: e for e in tr.load_episodes()}
+    ep2022 = episodes["bear2022"]
+    port_row = tr.score_episode_portfolio(ts, ep2022, start=TIER1_PORTFOLIO_START)
+
+    # 2022 calendar return delta comes from era_metrics (2022 bear era row)
+    eras = era_metrics(ts)
+    r2022 = eras[eras["era"] == "2022 bear"]["strategy_total_return"]
+    ret2022 = float(r2022.iloc[0]) if not r2022.empty else float("nan")
+
+    return {
+        "arm": arm["id"], "weight": arm["weight"],
+        "exit_lag_2022": port_row["exit_lag_days"],
+        "whipsaw_2022": port_row["whipsaw_flips"],
+        "dd_capture_2022": port_row["drawdown_capture"],
+        "ret2022": ret2022,
+        "regime_timeseries_csv": ts_csv,
+        "series_csv": series_csv,
+        "error": None,
+    }
+
+
+def _ensure_series_csv(series_key: str, series_dir):
+    """Build (once) and return the CSV path for a series arm key (kronos/vix/smoothing)."""
+    from jutsu_engine.audit import input_series as isr
+    series_dir = Path(series_dir)
+    out = series_dir / f"{series_key}.csv"
+    if out.exists():
+        return out
+    if series_key == "kronos":
+        df = isr.build_kronos_series()
+        return isr.write_series(out, df, source="kronos",
+                                provenance="Kronos-base std_return@H5 -> z(200) -> EMA5")
+    if series_key == "vix":
+        from jutsu_engine.audit import db as audit_db
+        engine = audit_db.get_engine()
+        df = isr.build_vix_series(engine)
+        return isr.write_series(out, df, source="vix",
+                                provenance="$VIX daily close (dedup) -> z(200) -> EMA5")
+    if series_key == "smoothing":
+        stream = _stock_signal_stream()
+        df = isr.build_smoothing_from_stream(stream)
+        return isr.write_series(out, df, source="smoothing",
+                                provenance="engine-truth vol_z -> EMA5 (zero-info control)")
+    raise ValueError(f"unknown series key: {series_key}")
+
+
+def _stock_signal_stream():
+    """Engine-truth vol-z stream for stock v3_5b (for the smoothing builder)."""
+    from jutsu_engine.audit import db as audit_db
+    from jutsu_engine.audit.attribution import _all_symbols
+    engine = audit_db.get_engine()
+    runner = _build_live_runner("v3_5b", None, None)
+    symbols = _all_symbols("v3_5b")
+    md = {}
+    for sym in symbols:
+        bars = audit_db.load_bars(engine, sym, SIGNAL_END, lookback=10000)
+        if not bars.empty:
+            md[sym] = bars
+    return replay_signal_stream(runner, md)

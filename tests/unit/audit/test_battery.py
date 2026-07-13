@@ -141,6 +141,38 @@ def test_bootstrap_sharpe_delta_ci_is_deterministic_with_seed():
     assert ci1 == ci2
 
 
+def test_run_battery_checkpoints_and_resumes(tmp_path):
+    """run_battery records one row per arm and skips arms already in the JSONL."""
+    from jutsu_engine.audit.battery import run_battery, battery_arms
+
+    calls = {"n": 0}
+
+    def fake_arm_fn(arm, run_dir):
+        """Fake per-arm evaluator: returns a minimal result row without the engine."""
+        calls["n"] += 1
+        return {
+            "arm": arm["id"], "weight": arm["weight"],
+            "exit_lag_2022": 3, "whipsaw_ratio": 0.9, "auc": 0.82,
+            "dd_capture_2022": 0.7, "ret2022": -0.13,
+            "sharpe_ci_lo": -0.02, "sharpe_ci_hi": 0.03,
+            "error": None,
+        }
+
+    campaign = tmp_path / "campaign_battery_v3_5b.jsonl"
+    res1 = run_battery("v3_5b", tmp_path, arm_fn=fake_arm_fn,
+                       campaign_file=campaign)
+    n_arms = len(battery_arms())
+    assert calls["n"] == n_arms
+    assert len(res1["rows"]) == n_arms
+
+    # Resume: no arm should be re-run.
+    calls["n"] = 0
+    res2 = run_battery("v3_5b", tmp_path, arm_fn=fake_arm_fn,
+                       campaign_file=campaign)
+    assert calls["n"] == 0
+    assert len(res2["rows"]) == n_arms
+
+
 def test_signal_stream_final_bar_matches_calculate_signals_db_gated():
     """calculate_signal_stream's last record equals calculate_signals' final signal."""
     from sqlalchemy import text
