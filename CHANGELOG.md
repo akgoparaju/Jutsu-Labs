@@ -1,3 +1,48 @@
+#### **Feature: Regime program Phase 1 — transition metrics + vol-input ablation battery (EXP-007)** (2026-07-13)
+
+Built a permanent transition-metrics gauntlet capability and the EXP-007 vol-input
+ablation battery (stock / kronos / vix / smoothing arms). Read-only; T-1 aligned;
+warmup-trimmed (EXP-006). Live YAMLs/scheduler untouched — the adapter is a new
+diagnostic-only strategy file.
+
+- Added: `grid-configs/audit/crash_episodes.yaml` (8 QQQ-verified crash episodes,
+  peak/trough corrected against market_data closes)
+- Added: `jutsu_engine/audit/transitions.py` (registry loader/validator + portfolio
+  transition scorer + signal-level flip/AUC helpers)
+- Added: `jutsu_engine/audit/input_series.py` (kronos/vix/smoothing series builders;
+  VIX anchor-validated dedup; shared z→EMA5 causal pipeline)
+- Added: `jutsu_engine/audit/battery.py` (engine-truth vol_z/signal replay + arms
+  table + gated/ungated battery campaign runner + gate evaluation + summarize)
+- Added: `jutsu_engine/strategies/Hierarchical_Adaptive_v3_5b_VolInput.py` (blend
+  adapter; identity guarantee = stock v3_5b with no injected series)
+- Modified: `jutsu_engine/live/strategy_runner.py` (additive `calculate_signal_stream`
+  method; read-only, no changes to existing paths)
+- Modified: `jutsu_engine/audit/report.py` (`render_transition_section`,
+  `render_battery_section`, `write_battery_report`; existing renderers untouched)
+- Modified: `jutsu_engine/cli/commands/audit.py` (`jutsu audit battery` subcommand;
+  existing subcommands untouched)
+- Docs: LOGBOOK EXP-007 skeleton (results pending); this CHANGELOG entry
+- Tests: 344 canonical DB-free tests + 10 engine-gated adapter tests (identity
+  regression PASS 2010-02→2026-07; smoke backtest); files:
+  `tests/unit/audit/test_transitions.py`, `test_input_series.py`, `test_battery.py`,
+  `tests/unit/strategies/test_vol_input_adapter.py`,
+  `tests/unit/cli/test_battery_cli.py`
+
+Review-driven fixes applied during implementation:
+- **Signed exit-lag semantics**: exit_lag_days is the 0-based index of the first
+  defensive row in the at_or_after_peak slice (not relative to run-start date);
+  negative lag is impossible by construction (exits before peak appear as 0).
+- **AUC NaN policy**: `auc_vol_state_forward` returns `float('nan')` on single-class
+  label vectors (mirrors Kronos VER1 convention); NaN rows dropped cleanly via gap
+  threading in the report renderer (not forward-filled).
+- **Trading-row caps**: whipsaw counting capped at 120 trading rows from episode peak
+  to prevent the metric from wandering into unrelated market events.
+- **AUC gap threading**: the report renderer threads NaN-safe AUC values column by
+  column; no imputation or coercion to zero.
+- **Identity regression gate PASS**: the adapter subclass (no injected series)
+  reproduces stock v3_5b daily regimes exactly over the full 2010-02→2026-07 period
+  (zero divergent days); gate verified on main before any battery run.
+
 #### **Fix: Audit Modules 1 & 3 — trim warmup-era rows before analysis; intersection alignment** (2026-07-08)
 
 Cross-module data-quality defect surfaced by the Phase-4 fill-guard. The regime-timeseries
