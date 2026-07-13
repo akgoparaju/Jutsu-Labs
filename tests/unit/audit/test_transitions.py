@@ -187,3 +187,39 @@ def test_episode_outside_series_span_is_skipped_loudly():
     row = score_episode_portfolio(ts, ep, start=date(2020, 1, 1))
     assert row["skipped"] is True
     assert row["exit_lag_days"] is None
+
+
+def test_flip_lead_lag_around_peak():
+    """signal_flip_lead_lag returns trading days from peak to first High-vol flip."""
+    from jutsu_engine.audit.transitions import Episode, signal_flip_lead_lag
+    ep = Episode(id="t", peak=date(2020, 1, 3), trough=date(2020, 1, 10),
+                 recovery=date(2020, 1, 20), portfolio_scored=True)
+    # vol-state series (dates, vol): flips to High two days after peak
+    dates = ["2020-01-02", "2020-01-03", "2020-01-06", "2020-01-07"]
+    vol = ["Low", "Low", "Low", "High"]
+    lead = signal_flip_lead_lag(dates, vol, ep)  # positive = lagging (after peak)
+    assert lead == 2
+
+
+def test_flip_count_ratio_vs_stock():
+    """flip_count_ratio divides an arm's flip count by the stock arm's."""
+    from jutsu_engine.audit.transitions import flip_count_ratio
+    arm_vol = ["Low", "High", "Low", "High", "Low"]   # 4 flips
+    stock_vol = ["Low", "Low", "High", "Low"]         # 2 flips
+    assert flip_count_ratio(arm_vol, stock_vol) == 2.0
+
+
+def test_auc_vol_state_at_t_plus_21_perfect_separator():
+    """auc_vol_state_forward returns 1.0 when the score perfectly ranks t+21 state."""
+    from jutsu_engine.audit.transitions import auc_vol_state_forward
+    # score rises monotonically; future High-vol (label 1) has the higher scores
+    scores = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+    future_high = [0, 0, 0, 1, 1, 1]   # already the t+21 labels aligned by caller
+    assert auc_vol_state_forward(scores, future_high) == 1.0
+
+
+def test_auc_handles_single_class_returns_nan():
+    """auc_vol_state_forward returns nan when the label vector is single-class."""
+    import math
+    from jutsu_engine.audit.transitions import auc_vol_state_forward
+    assert math.isnan(auc_vol_state_forward([0.1, 0.2, 0.3], [1, 1, 1]))

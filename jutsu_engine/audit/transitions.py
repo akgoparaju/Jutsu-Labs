@@ -177,3 +177,77 @@ def score_episode_portfolio(ts: pd.DataFrame, ep: Episode, start: _date) -> dict
     base["whipsaw_flips"] = int(sum(1 for a, b in zip(vol, vol[1:]) if a != b))
 
     return base
+
+
+# ---------------------------------------------------------------------------
+# Task 4 — Signal-level transition helpers
+# ---------------------------------------------------------------------------
+
+
+def _count_flips(vol_states: list[str]) -> int:
+    """Number of consecutive-day vol-state changes in a Low/High sequence."""
+    return sum(1 for a, b in zip(vol_states, vol_states[1:]) if a != b)
+
+
+def signal_flip_lead_lag(dates, vol_states, ep: Episode):
+    """Trading days from an episode's peak to the first Low->High vol flip.
+
+    Positive = the flip lags the peak (High-vol detected AFTER the peak). Negative =
+    leads (detected before). None if no Low->High flip occurs in the series after the
+    first row at/after peak. `dates` and `vol_states` are parallel lists ordered
+    chronologically. dates may be strings or Timestamps.
+    """
+    ds = [pd.Timestamp(d).date() if not isinstance(d, _date) else d for d in dates]
+    idx_peak = next((i for i, d in enumerate(ds) if d >= ep.peak), None)
+    if idx_peak is None:
+        return None
+    for j in range(max(idx_peak, 1), len(vol_states)):
+        if vol_states[j - 1] == "Low" and vol_states[j] == "High":
+            return j - idx_peak
+    return None
+
+
+def flip_count_ratio(arm_vol: list[str], stock_vol: list[str]) -> float:
+    """Ratio of an arm's vol-flip count to the stock arm's (inf if stock has 0)."""
+    n_stock = _count_flips(stock_vol)
+    n_arm = _count_flips(arm_vol)
+    if n_stock == 0:
+        return float("inf") if n_arm > 0 else 1.0
+    return float(n_arm) / float(n_stock)
+
+
+def auc_vol_state_forward(scores, labels) -> float:
+    """AUC of a continuous score for a binary label (Mann-Whitney U form).
+
+    scores and labels are parallel: labels[i] == 1 means vol-state@t+21 is High for
+    row i (the caller aligns the +21 shift and drops the tail). Returns the rank-AUC
+    (fraction of (positive, negative) pairs the score orders correctly, ties = 0.5).
+    Returns nan for a single-class label vector (undefined AUC), mirroring the
+    Kronos VER1 convention. This is compared against the raw-bar range 0.815-0.828.
+    """
+    s = np.asarray(scores, dtype=float)
+    y = np.asarray(labels, dtype=int)
+    pos = s[y == 1]
+    neg = s[y == 0]
+    if len(pos) == 0 or len(neg) == 0:
+        return float("nan")
+    # rank-based Mann-Whitney U / (n_pos * n_neg)
+    combined = np.concatenate([pos, neg])
+    sort_idx = np.argsort(combined, kind="mergesort")
+    tie_ranks = np.empty(len(combined), dtype=float)
+    srt = combined[sort_idx]
+    i = 0
+    pos_rank = 1
+    while i < len(srt):
+        j = i
+        while j + 1 < len(srt) and srt[j + 1] == srt[i]:
+            j += 1
+        avg = (pos_rank + (pos_rank + (j - i))) / 2.0
+        for k in range(i, j + 1):
+            tie_ranks[sort_idx[k]] = avg
+        pos_rank += (j - i + 1)
+        i = j + 1
+    rank_pos_sum = tie_ranks[:len(pos)].sum()
+    n_pos, n_neg = len(pos), len(neg)
+    u = rank_pos_sum - n_pos * (n_pos + 1) / 2.0
+    return float(u / (n_pos * n_neg))
