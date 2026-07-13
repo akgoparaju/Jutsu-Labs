@@ -45,6 +45,81 @@ def test_build_smoothing_from_stream():
     assert out["value"].iloc[-1] > out["value"].iloc[0]
 
 
+def test_battery_arms_table():
+    """battery_arms yields stock + 3 gated @0.5 + 6 ungated diagnostic @0.25/0.75."""
+    from jutsu_engine.audit.battery import battery_arms
+    arms = battery_arms()
+    ids = [a["id"] for a in arms]
+    assert "stock" in ids
+    gated = [a for a in arms if a["gated"]]
+    assert {a["id"] for a in gated} == {"kronos", "vix", "smoothing"}
+    assert all(a["weight"] == 0.5 for a in gated)
+    diag = [a for a in arms if a["id"].endswith(("_lo", "_hi"))]
+    assert len(diag) == 6
+    assert {a["weight"] for a in diag} == {0.25, 0.75}
+
+
+def test_signal_gate_requires_improvement_without_auc_drop():
+    """signal_gate passes only if exit-lag OR whipsaw improves AND AUC stays >= 0.815."""
+    from jutsu_engine.audit.battery import signal_gate
+    # improves whipsaw ratio (<1) and AUC within bar -> pass
+    assert signal_gate(exit_lag_delta=0.0, whipsaw_ratio=0.9, auc=0.82) is True
+    # AUC below the raw-bar range -> fail regardless of improvement
+    assert signal_gate(exit_lag_delta=-1.0, whipsaw_ratio=0.8, auc=0.80) is False
+    # no improvement (worse exit lag, whipsaw ratio >=1) -> fail
+    assert signal_gate(exit_lag_delta=1.0, whipsaw_ratio=1.1, auc=0.82) is False
+
+
+def test_portfolio_gate_bootstrap_ci_rule():
+    """portfolio_gate passes if 2022 improves and Sharpe CI is not a CI-excluding-zero drop."""
+    from jutsu_engine.audit.battery import portfolio_gate
+    # 2022 dd_capture improves (lower), Sharpe delta CI overlaps zero -> pass
+    assert portfolio_gate(dd_capture_delta=-0.05, ret2022_delta=0.0,
+                          sharpe_ci=(-0.02, 0.03)) is True
+    # 2022 improves but Sharpe CI excludes zero on the negative side -> fail
+    assert portfolio_gate(dd_capture_delta=-0.05, ret2022_delta=0.0,
+                          sharpe_ci=(-0.10, -0.02)) is False
+    # no 2022 improvement -> fail
+    assert portfolio_gate(dd_capture_delta=0.05, ret2022_delta=-0.01,
+                          sharpe_ci=(-0.01, 0.01)) is False
+
+
+def test_flatness_sign_rule():
+    """flatness_diagnostic passes only if every gate-delta keeps its sign at 0.25/0.75."""
+    from jutsu_engine.audit.battery import flatness_diagnostic
+    # all three deltas negative at 0.5 and both neighbors -> same sign -> pass
+    at50 = {"exit_lag": -1.0, "whipsaw_ratio": -0.1, "dd_capture": -0.05}
+    lo = {"exit_lag": -0.5, "whipsaw_ratio": -0.2, "dd_capture": -0.02}
+    hi = {"exit_lag": -1.5, "whipsaw_ratio": -0.05, "dd_capture": -0.08}
+    assert flatness_diagnostic(at50, lo, hi) is True
+    # a sign flip at the hi neighbor (dd_capture positive) -> fragile -> fail
+    hi_flip = {"exit_lag": -1.5, "whipsaw_ratio": -0.05, "dd_capture": 0.02}
+    assert flatness_diagnostic(at50, lo, hi_flip) is False
+
+
+def test_flatness_none_delta_excluded_counted_loudly():
+    """flatness_diagnostic excludes metrics with None on either side; report_excluded != 0."""
+    from jutsu_engine.audit.battery import flatness_diagnostic
+    # exit_lag=None at w=0.5 -> excluded (its sign cannot be checked)
+    at50 = {"exit_lag": None, "whipsaw_ratio": -0.1, "dd_capture": -0.05}
+    lo   = {"exit_lag": None, "whipsaw_ratio": -0.2, "dd_capture": -0.02}
+    hi   = {"exit_lag": None, "whipsaw_ratio": -0.05, "dd_capture": -0.08}
+    result, n_excluded = flatness_diagnostic(at50, lo, hi, return_excluded=True)
+    assert result is True          # remaining two metrics both consistent
+    assert n_excluded == 1         # exit_lag was excluded
+
+
+def test_flatness_inf_whipsaw_excluded_counted_loudly():
+    """flatness_diagnostic excludes +inf whipsaw_ratio (stock had 0 flips); n_excluded > 0."""
+    from jutsu_engine.audit.battery import flatness_diagnostic
+    at50 = {"exit_lag": -1.0, "whipsaw_ratio": float("inf"), "dd_capture": -0.05}
+    lo   = {"exit_lag": -0.5, "whipsaw_ratio": float("inf"), "dd_capture": -0.02}
+    hi   = {"exit_lag": -1.5, "whipsaw_ratio": float("inf"), "dd_capture": -0.08}
+    result, n_excluded = flatness_diagnostic(at50, lo, hi, return_excluded=True)
+    assert result is True          # exit_lag and dd_capture are both consistent
+    assert n_excluded == 1         # whipsaw_ratio excluded (all inf, not just one side)
+
+
 def test_signal_stream_final_bar_matches_calculate_signals_db_gated():
     """calculate_signal_stream's last record equals calculate_signals' final signal."""
     from sqlalchemy import text
