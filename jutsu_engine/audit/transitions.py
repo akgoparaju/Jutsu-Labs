@@ -5,6 +5,21 @@ human-curated and versioned; load_episodes/validate_episodes parse and sanity-ch
 it. Task 2 verifies each peak/trough against QQQ closes in market_data (read-only)
 and corrects the YAML to the data. The transition-scorer functions (Task 3) consume
 a WARMUP-TRIMMED regime timeseries (EXP-006), QQQ closes, and the registry.
+
+Conventions (verbatim for downstream consumers, e.g. Task-12 gate renderer):
+  * Trading-row positioning: all lags/caps are measured in POSITIONS within the
+    warmup-trimmed trading-day series, never in calendar (timedelta) days. The
+    +120-day whipsaw/reentry cap therefore means 120 TRADING days (rows), not 120
+    calendar days.
+  * Span boundary: the episode span is the INCLUSIVE range [peak, trough] on
+    trading rows — a trading row whose date equals the peak or the trough is inside
+    the span.
+  * Peak anchoring: the exit-lag anchor is the first trading row on-or-after the
+    episode peak (resolves holiday/weekend peaks by snapping forward to the next
+    trading day).
+  * flip_count_ratio may return +inf (stock arm has 0 flips but the arm has >0);
+    the Task-12 gate consumer must special-case inf when differencing ratios
+    (e.g. inf - inf is NaN and must be handled explicitly, not treated as 0).
 """
 from __future__ import annotations
 
@@ -81,7 +96,6 @@ def validate_episodes(eps: list[Episode]) -> None:
 # ---------------------------------------------------------------------------
 
 from datetime import date as _date
-from datetime import timedelta as _timedelta
 
 import numpy as np
 import pandas as pd
@@ -121,15 +135,40 @@ def _max_drawdown(returns: pd.Series) -> float:
 def score_episode_portfolio(ts: pd.DataFrame, ep: Episode, start: _date) -> dict:
     """Portfolio-level transition metrics for one (arm, episode) pair.
 
-    Consumes a regime timeseries (warmup-trimmed here defensively), scores:
-      exit_lag_days   trading days peak -> first defensive cell (4/5/6); negative if
-                      de-risked before peak; None if never defensive in [peak,trough].
+    Consumes a regime timeseries (warmup-trimmed here defensively). All lags/caps
+    are measured in POSITIONS within the trimmed trading-day series, never calendar
+    days. The episode span is the INCLUSIVE trading-row range [peak, trough].
+
+    Metrics:
+      exit_lag_days     SIGNED trading-row lag from the peak anchor to the strategy's
+                        defensive transition (see below); None if the strategy is
+                        offensive at the anchor and never de-risks in-span.
       drawdown_capture  strat MaxDD / QQQ MaxDD within [peak,trough] (lower better;
-                      1.0 = no protection); None if QQQ MaxDD is 0.
-      reentry_lag_days  trading days trough -> first offensive cell (1/2/3) after
-                      trough; None if never re-enters by recovery+120d.
-      whipsaw_flips   count of vol-state flips within [peak, min(recovery, +120d)].
-      days_defensive  count of defensive-cell days within [peak, trough].
+                        1.0 = no protection); None if QQQ MaxDD is 0.
+      reentry_lag_days  trading-row lag from the trough row to the first offensive
+                        cell (1/2/3) on-or-after the trough; None if never re-enters
+                        within the cap (trough + 120 TRADING rows, clipped to series).
+      whipsaw_flips     count of vol-state flips within [peak, cap], where cap is the
+                        earlier of the recovery row and peak + 120 TRADING rows.
+      days_defensive    count of defensive-cell trading rows within [peak, trough].
+
+    exit_lag_days semantics (signed, run-start based):
+      anchor = the first trading row on-or-after the episode peak (its integer
+      position in the trimmed series). This snaps a holiday/weekend peak forward to
+      the next trading day.
+        * If the strategy is DEFENSIVE (cell 4/5/6) AT the anchor row:
+          exit_lag_days = (start position of the CONTIGUOUS defensive run that
+          contains the anchor) - anchor_position. This is <= 0 and credits the
+          strategy from when that particular defensive run began — a run that began
+          BEFORE the peak yields a NEGATIVE lag ("de-risked before the peak"). Only
+          the run containing the anchor earns credit: a brief defensive dip that
+          ENDED before the peak (offensive again at the anchor) earns NO negative
+          credit.
+        * Otherwise (offensive at the anchor):
+          exit_lag_days = (position of the first defensive row strictly after the
+          anchor and still within the span [peak, trough]) - anchor_position. This
+          is > 0. If no defensive row exists in-span after the anchor -> None.
+
     Returns a dict; skipped=True (all metrics None/0) when the episode span does not
     overlap the timeseries — surfaced loudly by the caller.
     """
@@ -141,17 +180,42 @@ def score_episode_portfolio(ts: pd.DataFrame, ep: Episode, start: _date) -> dict
             "drawdown_capture": None, "whipsaw_flips": 0, "days_defensive": 0,
             "skipped": False}
 
-    span = df[(df["d"] >= ep.peak) & (df["d"] <= ep.trough)]
     if df.empty or ep.trough < df["d"].min() or ep.peak > df["d"].max():
         return {**base, "skipped": True}
 
-    # exit_lag: index the trading days; find first defensive at/after peak.
-    at_or_after_peak = df[df["d"] >= ep.peak].reset_index(drop=True)
-    defensive = at_or_after_peak[at_or_after_peak["cell"].isin(sorted(DEFENSIVE_CELLS))]
-    if not defensive.empty:
-        # position (0-based) of first defensive row relative to the peak row
-        base["exit_lag_days"] = int(defensive.index[0])
-    # (None already set if never defensive after peak)
+    cells = df["cell"].tolist()
+    dates = df["d"].tolist()
+    n = len(df)
+    defensive_set = set(DEFENSIVE_CELLS)
+    offensive_set = set(OFFENSIVE_CELLS)
+
+    # positional span [peak, trough] inclusive on trading rows
+    span_mask = (df["d"] >= ep.peak) & (df["d"] <= ep.trough)
+    span = df[span_mask]
+
+    # anchor = position of first trading row on-or-after the peak
+    anchor = next((i for i, d in enumerate(dates) if d >= ep.peak), None)
+
+    # exit_lag: signed, run-start based (see docstring)
+    if anchor is not None:
+        if cells[anchor] in defensive_set:
+            # walk backward to the start of the contiguous defensive run @ anchor
+            run_start = anchor
+            while run_start - 1 >= 0 and cells[run_start - 1] in defensive_set:
+                run_start -= 1
+            base["exit_lag_days"] = run_start - anchor  # <= 0
+        else:
+            # first defensive row strictly after anchor, within span [peak, trough]
+            first_def = None
+            for i in range(anchor + 1, n):
+                if dates[i] > ep.trough:
+                    break
+                if cells[i] in defensive_set:
+                    first_def = i
+                    break
+            if first_def is not None:
+                base["exit_lag_days"] = first_def - anchor  # > 0
+            # else None (never defensive in-span after the anchor)
 
     # days_defensive within [peak, trough]
     base["days_defensive"] = int(span["cell"].isin(sorted(DEFENSIVE_CELLS)).sum())
@@ -162,19 +226,29 @@ def score_episode_portfolio(ts: pd.DataFrame, ep: Episode, start: _date) -> dict
         qqq_dd = abs(_max_drawdown(span["QQQ_Daily_Return"]))
         base["drawdown_capture"] = float(strat_dd / qqq_dd) if qqq_dd > 0 else None
 
-    # reentry_lag: first offensive cell after trough, capped at recovery+120d
-    cap = min(ep.recovery + _timedelta(days=120),
-              df["d"].max() + _timedelta(days=1))
-    after_trough = df[(df["d"] >= ep.trough) & (df["d"] <= cap)].reset_index(drop=True)
-    offensive = after_trough[after_trough["cell"].isin(sorted(OFFENSIVE_CELLS))]
-    if not offensive.empty:
-        base["reentry_lag_days"] = int(offensive.index[0])
+    # reentry_lag: first offensive cell on-or-after trough, capped at trough + 120
+    # TRADING rows (positional), clipped to the series. Lag is relative to the trough
+    # row position.
+    trough_pos = next((i for i, d in enumerate(dates) if d >= ep.trough), None)
+    if trough_pos is not None:
+        reentry_cap_pos = min(trough_pos + 120, n - 1)
+        for i in range(trough_pos, reentry_cap_pos + 1):
+            if cells[i] in offensive_set:
+                base["reentry_lag_days"] = i - trough_pos
+                break
 
-    # whipsaw_flips: vol-state flips within [peak, min(recovery, peak+120d)]
-    whip_cap = min(ep.recovery, ep.peak + _timedelta(days=120))
-    whip = df[(df["d"] >= ep.peak) & (df["d"] <= whip_cap)]
-    vol = whip["Vol"].tolist()
-    base["whipsaw_flips"] = int(sum(1 for a, b in zip(vol, vol[1:]) if a != b))
+    # whipsaw_flips: vol-state flips within [peak, cap], cap = earlier of the
+    # recovery row and peak + 120 TRADING rows (positional).
+    if anchor is not None:
+        recovery_pos = next(
+            (i for i in range(n - 1, -1, -1) if dates[i] <= ep.recovery), None
+        )
+        whip_cap_pos = anchor + 120
+        if recovery_pos is not None:
+            whip_cap_pos = min(whip_cap_pos, recovery_pos)
+        whip_cap_pos = min(whip_cap_pos, n - 1)
+        vol = df["Vol"].tolist()[anchor:whip_cap_pos + 1]
+        base["whipsaw_flips"] = int(sum(1 for a, b in zip(vol, vol[1:]) if a != b))
 
     return base
 
@@ -208,7 +282,14 @@ def signal_flip_lead_lag(dates, vol_states, ep: Episode):
 
 
 def flip_count_ratio(arm_vol: list[str], stock_vol: list[str]) -> float:
-    """Ratio of an arm's vol-flip count to the stock arm's (inf if stock has 0)."""
+    """Ratio of an arm's vol-flip count to the stock arm's.
+
+    Returns +inf when the stock arm has 0 flips but the arm has >0 (undefined ratio,
+    surfaced as inf rather than clipped), and 1.0 when both have 0. Downstream
+    consumers (the Task-12 gate) MUST handle inf explicitly: differencing two ratios
+    where both are inf yields NaN (inf - inf), which must not be silently treated as
+    a zero delta.
+    """
     n_stock = _count_flips(stock_vol)
     n_arm = _count_flips(arm_vol)
     if n_stock == 0:
@@ -224,9 +305,20 @@ def auc_vol_state_forward(scores, labels) -> float:
     (fraction of (positive, negative) pairs the score orders correctly, ties = 0.5).
     Returns nan for a single-class label vector (undefined AUC), mirroring the
     Kronos VER1 convention. This is compared against the raw-bar range 0.815-0.828.
+
+    NaN policy: non-finite scores are dropped PAIRWISE (score+label together) before
+    ranking. A NaN score would otherwise sort last under mergesort and bias the AUC
+    toward 1.0; dropping it is the neutral choice. Returns nan if fewer than 2 finite
+    pairs remain, or if the surviving labels are single-class.
     """
     s = np.asarray(scores, dtype=float)
     y = np.asarray(labels, dtype=int)
+    # drop non-finite scores pairwise (score+label) before ranking
+    finite = np.isfinite(s)
+    s = s[finite]
+    y = y[finite]
+    if len(s) < 2:
+        return float("nan")
     pos = s[y == 1]
     neg = s[y == 0]
     if len(pos) == 0 or len(neg) == 0:

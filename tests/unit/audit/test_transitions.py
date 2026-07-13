@@ -112,13 +112,13 @@ def test_episode_dates_match_qqq():
 import pandas as pd
 
 
-def _synthetic_ts(dates, cells, qqq_closes, strat_returns):
+def _synthetic_ts(dates, cells, qqq_closes, strat_returns, vol=None):
     """Build a regime-timeseries DataFrame with the CSV's exact columns."""
     return pd.DataFrame({
         "Date": pd.to_datetime(dates, utc=True),
         "Regime": [f"Cell_{c}" for c in cells],
         "Trend": ["-"] * len(dates),
-        "Vol": ["-"] * len(dates),
+        "Vol": vol if vol is not None else ["-"] * len(dates),
         "QQQ_Close": qqq_closes,
         "QQQ_Daily_Return": pd.Series(qqq_closes).pct_change().fillna(0.0).tolist(),
         "Portfolio_Value": [1.0] * len(dates),
@@ -150,6 +150,81 @@ def test_exit_lag_days_counts_trading_days_to_defensive():
     row = score_episode_portfolio(ts, ep, start=date(2020, 1, 1))
     # peak index is 2020-01-03; defensive first at 2020-01-07 = 2 trading days later
     assert row["exit_lag_days"] == 2
+
+
+def test_exit_lag_negative_when_defensive_at_peak():
+    """Defensive run starting 3 rows before the peak anchor yields exit_lag_days=-3."""
+    from jutsu_engine.audit.transitions import Episode, score_episode_portfolio
+    # peak lands on the row at index 3; the defensive run (cell 4) covers rows 0..3,
+    # so the run containing the anchor started 3 rows earlier -> -3.
+    ep = Episode(id="t", peak=date(2020, 1, 8), trough=date(2020, 1, 15),
+                 recovery=date(2020, 1, 22), portfolio_scored=True)
+    dates = ["2020-01-03", "2020-01-06", "2020-01-07", "2020-01-08",
+             "2020-01-09", "2020-01-10"]
+    cells = [4, 4, 4, 4, 4, 4]  # defensive run began at row 0, covers the anchor
+    ts = _synthetic_ts(dates, cells, [100, 99, 98, 97, 96, 95],
+                       [0.0, -0.01, -0.01, -0.01, -0.01, -0.01])
+    row = score_episode_portfolio(ts, ep, start=date(2020, 1, 1))
+    assert row["exit_lag_days"] == -3
+
+
+def test_pre_peak_dip_that_ended_earns_no_credit():
+    """A defensive dip that ended before the peak earns no credit; +2 to next run."""
+    from jutsu_engine.audit.transitions import Episode, score_episode_portfolio
+    # defensive rows 0..2 (before peak) form a dip that ENDS; offensive at the peak
+    # anchor (row 3); defensive again 2 rows after the anchor -> exit_lag_days=+2.
+    ep = Episode(id="t", peak=date(2020, 1, 8), trough=date(2020, 1, 15),
+                 recovery=date(2020, 1, 22), portfolio_scored=True)
+    dates = ["2020-01-03", "2020-01-06", "2020-01-07", "2020-01-08",
+             "2020-01-09", "2020-01-10", "2020-01-13"]
+    cells = [4, 4, 4, 1, 1, 4, 1]  # dip 0..2 ended; anchor(row3)=offensive; def@row5
+    ts = _synthetic_ts(dates, cells, [100, 99, 98, 97, 96, 95, 94],
+                       [0.0, -0.01, -0.01, 0.0, 0.0, -0.01, 0.0])
+    row = score_episode_portfolio(ts, ep, start=date(2020, 1, 1))
+    assert row["exit_lag_days"] == 2
+
+
+def test_peak_on_non_trading_day_anchors_next_row():
+    """Peak on a Saturday anchors to the next trading row; defensive there -> 0."""
+    from jutsu_engine.audit.transitions import Episode, score_episode_portfolio
+    # peak 2020-01-11 is a Saturday; first trading row on-or-after is Mon 2020-01-13,
+    # which is defensive and starts its own run at the anchor -> exit_lag_days=0.
+    ep = Episode(id="t", peak=date(2020, 1, 11), trough=date(2020, 1, 17),
+                 recovery=date(2020, 1, 24), portfolio_scored=True)
+    dates = ["2020-01-09", "2020-01-10", "2020-01-13", "2020-01-14"]
+    cells = [1, 1, 4, 4]  # offensive Thu/Fri; Mon(anchor) defensive, run starts there
+    ts = _synthetic_ts(dates, cells, [100, 100, 95, 94],
+                       [0.0, 0.0, -0.05, -0.01])
+    row = score_episode_portfolio(ts, ep, start=date(2020, 1, 1))
+    assert row["exit_lag_days"] == 0
+
+
+def test_whipsaw_cap_is_trading_days():
+    """Whipsaw cap counts 120 trading rows: a flip at +119 counts, +121 does not."""
+    from jutsu_engine.audit.transitions import Episode, score_episode_portfolio
+    # peak at row 0, trough at row 1, recovery far in the future so only the +120
+    # trading-row cap binds. n=200 rows well past the cap.
+    dates = list(pd.bdate_range("2020-01-06", periods=200).strftime("%Y-%m-%d"))
+    ep = Episode(id="t", peak=date.fromisoformat(dates[0]),
+                 trough=date.fromisoformat(dates[1]),
+                 recovery=date(2099, 1, 1), portfolio_scored=True)
+    cells = [1] * 200
+    closes = [100.0] * 200
+    rets = [0.0] * 200
+
+    # Case A: single flip at trough+119 (row 120) — inside the [anchor,120] window.
+    vol_in = ["Low"] * 200
+    vol_in[120] = "High"  # flip between row 119->120 (== trough+119)
+    ts_in = _synthetic_ts(dates, cells, closes, rets, vol=vol_in)
+    row_in = score_episode_portfolio(ts_in, ep, start=date(2020, 1, 1))
+    assert row_in["whipsaw_flips"] == 1
+
+    # Case B: single flip at trough+121 (row 122) — outside the window.
+    vol_out = ["Low"] * 200
+    vol_out[122] = "High"  # flip between row 121->122 (== trough+121)
+    ts_out = _synthetic_ts(dates, cells, closes, rets, vol=vol_out)
+    row_out = score_episode_portfolio(ts_out, ep, start=date(2020, 1, 1))
+    assert row_out["whipsaw_flips"] == 0
 
 
 def test_never_defensive_renders_exit_lag_none():
@@ -223,3 +298,18 @@ def test_auc_handles_single_class_returns_nan():
     import math
     from jutsu_engine.audit.transitions import auc_vol_state_forward
     assert math.isnan(auc_vol_state_forward([0.1, 0.2, 0.3], [1, 1, 1]))
+
+
+def test_auc_nan_scores_dropped_pairwise():
+    """A NaN-score row is dropped pairwise: AUC equals AUC with that row removed."""
+    import math
+    from jutsu_engine.audit.transitions import auc_vol_state_forward
+    scores = [0.1, float("nan"), 0.2, 0.9, 0.3, 0.4]
+    labels = [0, 1, 0, 1, 1, 0]
+    # remove the NaN-score pair (index 1) explicitly
+    kept_scores = [0.1, 0.2, 0.9, 0.3, 0.4]
+    kept_labels = [0, 0, 1, 1, 0]
+    got = auc_vol_state_forward(scores, labels)
+    want = auc_vol_state_forward(kept_scores, kept_labels)
+    assert not math.isnan(got)
+    assert got == want
