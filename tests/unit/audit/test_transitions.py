@@ -107,3 +107,83 @@ def test_episode_dates_match_qqq():
                 f"(neighborhood min={min_close}); correct the YAML to the data"
             )
     assert not problems, "\n".join(problems)
+
+
+import pandas as pd
+
+
+def _synthetic_ts(dates, cells, qqq_closes, strat_returns):
+    """Build a regime-timeseries DataFrame with the CSV's exact columns."""
+    return pd.DataFrame({
+        "Date": pd.to_datetime(dates, utc=True),
+        "Regime": [f"Cell_{c}" for c in cells],
+        "Trend": ["-"] * len(dates),
+        "Vol": ["-"] * len(dates),
+        "QQQ_Close": qqq_closes,
+        "QQQ_Daily_Return": pd.Series(qqq_closes).pct_change().fillna(0.0).tolist(),
+        "Portfolio_Value": [1.0] * len(dates),
+        "Strategy_Daily_Return": strat_returns,
+    })
+
+
+def test_trim_warmup_rows_drops_pre_start():
+    """trim_warmup drops regime rows dated before start_date (EXP-006)."""
+    from jutsu_engine.audit.transitions import trim_warmup
+    ts = _synthetic_ts(
+        ["2019-12-30", "2020-01-02", "2020-01-03"],
+        [1, 1, 1], [100, 101, 102], [0.0, 0.01, 0.01],
+    )
+    trimmed = trim_warmup(ts, start=date(2020, 1, 1))
+    assert len(trimmed) == 2
+    assert trimmed["Date"].min() >= pd.Timestamp("2020-01-01", tz="UTC")
+
+
+def test_exit_lag_days_counts_trading_days_to_defensive():
+    """exit_lag_days = trading days from peak until first defensive cell (4/5/6)."""
+    from jutsu_engine.audit.transitions import Episode, score_episode_portfolio
+    ep = Episode(id="t", peak=date(2020, 1, 3), trough=date(2020, 1, 8),
+                 recovery=date(2020, 1, 15), portfolio_scored=True)
+    dates = ["2020-01-02", "2020-01-03", "2020-01-06", "2020-01-07", "2020-01-08"]
+    cells = [1, 1, 1, 4, 4]              # defensive first appears on 2020-01-07
+    ts = _synthetic_ts(dates, cells, [100, 100, 90, 85, 80],
+                       [0.0, 0.0, -0.10, -0.05, -0.06])
+    row = score_episode_portfolio(ts, ep, start=date(2020, 1, 1))
+    # peak index is 2020-01-03; defensive first at 2020-01-07 = 2 trading days later
+    assert row["exit_lag_days"] == 2
+
+
+def test_never_defensive_renders_exit_lag_none():
+    """A strategy that never de-risks in [peak,trough] yields exit_lag_days=None."""
+    from jutsu_engine.audit.transitions import Episode, score_episode_portfolio
+    ep = Episode(id="t", peak=date(2020, 1, 3), trough=date(2020, 1, 8),
+                 recovery=date(2020, 1, 15), portfolio_scored=True)
+    dates = ["2020-01-03", "2020-01-06", "2020-01-07", "2020-01-08"]
+    cells = [1, 1, 1, 1]
+    ts = _synthetic_ts(dates, cells, [100, 95, 90, 85], [0.0, -0.05, -0.05, -0.05])
+    row = score_episode_portfolio(ts, ep, start=date(2020, 1, 1))
+    assert row["exit_lag_days"] is None
+    assert row["days_defensive"] == 0
+
+
+def test_drawdown_capture_ratio():
+    """drawdown_capture = strat MaxDD / QQQ MaxDD within [peak,trough] (lower=better)."""
+    from jutsu_engine.audit.transitions import Episode, score_episode_portfolio
+    ep = Episode(id="t", peak=date(2020, 1, 3), trough=date(2020, 1, 6),
+                 recovery=date(2020, 1, 10), portfolio_scored=True)
+    dates = ["2020-01-03", "2020-01-06"]
+    # QQQ drops 20%; strategy (half exposure) drops 10% => capture ~0.5
+    ts = _synthetic_ts(dates, [1, 4], [100, 80], [0.0, -0.10])
+    row = score_episode_portfolio(ts, ep, start=date(2020, 1, 1))
+    assert 0.45 <= row["drawdown_capture"] <= 0.55
+
+
+def test_episode_outside_series_span_is_skipped_loudly():
+    """An episode fully outside the timeseries span yields a skipped=True row."""
+    from jutsu_engine.audit.transitions import Episode, score_episode_portfolio
+    ep = Episode(id="old", peak=date(2001, 1, 3), trough=date(2001, 2, 6),
+                 recovery=date(2001, 3, 10), portfolio_scored=True)
+    dates = ["2020-01-03", "2020-01-06"]
+    ts = _synthetic_ts(dates, [1, 4], [100, 80], [0.0, -0.10])
+    row = score_episode_portfolio(ts, ep, start=date(2020, 1, 1))
+    assert row["skipped"] is True
+    assert row["exit_lag_days"] is None
