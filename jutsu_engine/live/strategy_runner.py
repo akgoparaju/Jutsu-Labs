@@ -295,6 +295,51 @@ class LiveStrategyRunner:
         logger.info(f"Signals calculated: Cell {signals['current_cell']}, Vol State {signals['vol_state']}")
         return signals
 
+    def calculate_signal_stream(self, market_data: Dict[str, pd.DataFrame]) -> List[Dict[str, Any]]:
+        """Replay bars chronologically, recording per-bar regime state (no portfolio).
+
+        Mirrors calculate_signals' bar-feeding loop EXACTLY (same _update_bar + on_bar
+        sequence, same treasury-bar handling) but returns ONE record per signal bar
+        instead of only the final signal. Used by the audit battery for engine-truth
+        signal-level metrics over long histories in a single pass. Read-only: touches
+        no DB and no scheduler state.
+        """
+        signal_symbol = self.get_signal_symbol()
+        treasury_symbol = self.get_treasury_symbol()
+        for symbol in [signal_symbol, treasury_symbol]:
+            if symbol not in market_data:
+                raise ValueError(f"Missing required symbol data: {symbol}")
+
+        signal_df = market_data[signal_symbol]
+        treasury_df = market_data.get(treasury_symbol)
+
+        stream: List[Dict[str, Any]] = []
+        for idx in range(len(signal_df)):
+            row = signal_df.iloc[idx]
+            bar = MarketDataEvent(
+                symbol=signal_symbol, timestamp=row['date'],
+                open=Decimal(str(row['open'])), high=Decimal(str(row['high'])),
+                low=Decimal(str(row['low'])), close=Decimal(str(row['close'])),
+                volume=int(row['volume']), timeframe="1D")
+            self.strategy._update_bar(bar)
+            if treasury_df is not None and len(treasury_df) > idx:
+                trow = treasury_df.iloc[idx]
+                self.strategy._update_bar(MarketDataEvent(
+                    symbol=treasury_symbol, timestamp=trow['date'],
+                    open=Decimal(str(trow['open'])), high=Decimal(str(trow['high'])),
+                    low=Decimal(str(trow['low'])), close=Decimal(str(trow['close'])),
+                    volume=int(trow['volume']), timeframe="1D"))
+            self.strategy.on_bar(bar)
+            trend, vol, cell = self.strategy.get_current_regime()
+            z = getattr(self.strategy, '_last_z_score', None)
+            stream.append({
+                "date": row['date'],
+                "cell": cell,
+                "vol_state": vol,
+                "z_score": float(z) if z is not None else float("nan"),
+            })
+        return stream
+
     def get_strategy_context(self) -> Dict[str, Any]:
         """
         Get current strategy context for trade logging.

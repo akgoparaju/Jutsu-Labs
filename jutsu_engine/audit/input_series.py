@@ -149,3 +149,17 @@ def build_kronos_series(parquet_path: Path | None = None, window: int = 200,
         else PROJECT_ROOT / KRONOS_PARQUET_REL
     frame = pd.read_parquet(parquet_path)
     return build_kronos_from_frame(frame, window=window, ema_span=ema_span)
+
+
+def build_smoothing_from_stream(stream: pd.DataFrame, ema_span: int = 5) -> pd.DataFrame:
+    """EMA5 of the engine-truth vol-z stream (no external information; zero-info control).
+
+    `stream` has columns date and z_score (from battery.replay_signal_stream). Returns
+    a DataFrame with columns date, value = ewm(span, adjust=False) of z_score. Trailing-
+    only (causal). This isolates the FILTER effect from any information content.
+    """
+    s = stream.copy()
+    s["date"] = pd.to_datetime(s["date"], utc=True)
+    s = s.sort_values("date").reset_index(drop=True)
+    value = s["z_score"].astype(float).ewm(span=ema_span, adjust=False).mean()
+    return pd.DataFrame({"date": s["date"], "value": value.values})
