@@ -544,3 +544,41 @@ class TestRenderDSR:
         out = write_dsr_report(tmp_path, "v3_5b", "# hi\n")
         assert out.name == "report_dsr_v3_5b.md"
         assert out.read_text() == "# hi\n"
+
+
+def test_render_transition_section_uses_na_for_none():
+    """render_transition_section prints N/A (never literal None) for missing exit lag."""
+    from jutsu_engine.audit.report import render_transition_section
+    rows = [{"arm": "stock", "episode": "covid2020", "exit_lag_days": None,
+             "reentry_lag_days": 3, "drawdown_capture": 0.7,
+             "whipsaw_flips": 2, "days_defensive": 10}]
+    md = render_transition_section(rows)
+    assert "N/A" in md
+    assert "None" not in md
+    assert "T-1" in md            # the T-1 convention note is present
+
+
+def test_render_battery_section_has_auc_bar_and_verdicts():
+    """render_battery_section shows the 0.815-0.828 AUC bar and one verdict per arm."""
+    from jutsu_engine.audit.report import render_battery_section
+    summary = {
+        "strategy_id": "v3_5b",
+        "arm_rows": [
+            {"arm": "stock", "weight": None, "auc": 0.82, "exit_lag_2022": 5,
+             "whipsaw_ratio": 1.0, "dd_capture_2022": 0.9, "ret2022": -0.30,
+             "sharpe_ci": (0.0, 0.0), "verdict": "baseline"},
+            {"arm": "smoothing", "weight": 0.5, "auc": 0.82, "exit_lag_2022": 3,
+             "whipsaw_ratio": 0.8, "dd_capture_2022": 0.7, "ret2022": -0.13,
+             "sharpe_ci": (-0.02, 0.05), "verdict": "SURVIVES"},
+        ],
+        "flatness_rows": [
+            {"arm": "smoothing", "exit_lag_sign_ok": True,
+             "whipsaw_sign_ok": True, "dd_capture_sign_ok": True, "flatness_pass": True},
+        ],
+        "tier2_trigger": "kronos did not survive Tier 1 -> Tier 2 NOT triggered",
+    }
+    md = render_battery_section(summary)
+    assert "0.815" in md and "0.828" in md
+    assert "SURVIVES" in md
+    assert "Tier 2" in md
+    assert "None" not in md

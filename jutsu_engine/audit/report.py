@@ -746,3 +746,112 @@ def write_dsr_report(run_dir: Path, strategy_id: str, markdown: str) -> Path:
     out = run_dir / f"report_dsr_{strategy_id}.md"
     out.write_text(markdown)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Regime battery (EXP-007) — spec §8 report renderers
+# ---------------------------------------------------------------------------
+
+AUC_RAW_BAR_LO, AUC_RAW_BAR_HI = 0.815, 0.828
+T1_NOTE = ("_All series are T-1 aligned: the value for day D's decision derives only "
+           "from information available at D-1's close._")
+
+
+def render_transition_section(rows: list) -> str:
+    """Render per-(arm,episode) transition metrics as markdown (captions outside tables).
+
+    rows: list of dicts with arm, episode, exit_lag_days, reentry_lag_days,
+    drawdown_capture, whipsaw_flips, days_defensive. None renders as 'N/A' via _fmt.
+    """
+    lines = [
+        "## Transition metrics (per arm x episode)",
+        "",
+        T1_NOTE,
+        "_exit/reentry lag in trading days (negative exit = de-risked before peak); "
+        "drawdown_capture = strat MaxDD / QQQ MaxDD (lower = better; 1.0 = no "
+        "protection); warmup-trimmed before scoring (EXP-006)._",
+        "",
+        "| arm | episode | exit_lag | reentry_lag | dd_capture | whipsaw | days_def |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for r in rows:
+        lines.append(
+            f"| {r['arm']} | {r['episode']} | "
+            f"{_fmt(r.get('exit_lag_days'), '.0f')} | "
+            f"{_fmt(r.get('reentry_lag_days'), '.0f')} | "
+            f"{_fmt(r.get('drawdown_capture'), '.3f')} | "
+            f"{_fmt(r.get('whipsaw_flips'), '.0f')} | "
+            f"{_fmt(r.get('days_defensive'), '.0f')} |"
+        )
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def render_battery_section(summary: dict) -> str:
+    """Render the vol-input battery (EXP-007) section: AUC bar, deltas, flatness, verdicts."""
+    lines = [
+        "## Vol-input ablation battery (EXP-007)",
+        "",
+        f"- Strategy: **{summary['strategy_id']}**  |  "
+        f"Raw vol_zscore AUC bar (VER1): **{AUC_RAW_BAR_LO}-{AUC_RAW_BAR_HI}**",
+        T1_NOTE,
+        "",
+        "### Signal AUC + 2022 portfolio deltas (2022 decisive)",
+        "_AUC = input-series AUC(vol-state@t+21), same alignment as the raw bar; an "
+        "arm must not drop AUC below the bar. Sharpe CI = paired bootstrap of the "
+        "full-window Sharpe delta vs stock (CI overlapping zero = no degradation). "
+        "Underpowered by design (n~=1-crash-episode caution, SYNTHESIS-001)._",
+        "",
+        "| arm | w | AUC | exit_lag_2022 | whipsaw_ratio | dd_capture_2022 | ret2022 | sharpe_CI | verdict |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for r in summary["arm_rows"]:
+        ci = r.get("sharpe_ci") or (None, None)
+        lines.append(
+            f"| {r['arm']} | {_fmt(r.get('weight'), '.2f')} | "
+            f"{_fmt(r.get('auc'), '.3f')} | "
+            f"{_fmt(r.get('exit_lag_2022'), '.0f')} | "
+            f"{_fmt(r.get('whipsaw_ratio'), '.3f')} | "
+            f"{_fmt(r.get('dd_capture_2022'), '.3f')} | "
+            f"{_fmt(r.get('ret2022'), '.4f')} | "
+            f"[{_fmt(ci[0], '.3f')}, {_fmt(ci[1], '.3f')}] | "
+            f"**{r.get('verdict', 'N/A')}** |"
+        )
+    lines += [
+        "",
+        "### Flatness diagnostic (w=0.25 / 0.75 sign consistency; ungated)",
+        "_Each gate-relevant delta must keep its SIGN at both neighbors as at w=0.5. "
+        "A sign flip at either neighbor = fragile = FAIL despite the 0.5 result. "
+        "Neighbors are NEVER used to select a better w (spec §8)._",
+        "",
+        "| arm | exit_lag sign ok | whipsaw sign ok | dd_capture sign ok | flatness |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for r in summary.get("flatness_rows", []):
+        lines.append(
+            f"| {r['arm']} | {r.get('exit_lag_sign_ok')} | "
+            f"{r.get('whipsaw_sign_ok')} | {r.get('dd_capture_sign_ok')} | "
+            f"**{'PASS' if r.get('flatness_pass') else 'FAIL'}** |"
+        )
+    lines += [
+        "",
+        "### Tier-2 trigger decision",
+        f"- {summary.get('tier2_trigger', 'N/A')}",
+        "",
+        "_Expected-outcomes note (pre-registered, spec §8): if smoothing survives and "
+        "kronos/vix add nothing beyond it -> 'filtering, not forecasting' (cheapest "
+        "improvement ships). If vix matches kronos -> Kronos adds model-ops for "
+        "nothing. If kronos uniquely survives -> a learned forecaster beat implied "
+        "vol; Tier 2 must confirm it._",
+        "",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def write_battery_report(run_dir, strategy_id: str, markdown: str):
+    """Write report_regime_battery_<strategy>.md (separate from other audit reports)."""
+    run_dir = Path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    out = run_dir / f"report_regime_battery_{strategy_id}.md"
+    out.write_text(markdown)
+    return out

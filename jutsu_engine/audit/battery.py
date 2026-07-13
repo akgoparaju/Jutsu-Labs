@@ -314,11 +314,16 @@ def evaluate_arm(arm: dict, run_dir) -> dict:
     For the stock arm: run stock v3_5b. For a series arm: build the series CSV (kronos/
     vix/smoothing) under run_dir, then run the adapter with that series at the arm's
     weight. Computes: 2022-episode exit_lag/whipsaw/dd_capture/return (transitions),
-    the input-series AUC(vol-state@t+21) (signal replay), and the bootstrap Sharpe-delta
-    CI vs stock. Returns a result row consumed by the report/gate layer.
+    the input-series AUC(vol-state@t+21) (signal replay; 21 TRADING ROWS forward,
+    no leakage — score at row i is vol_z at t; label is vol_state@t+21), and the
+    bootstrap Sharpe-delta CI vs stock. Returns a result row consumed by the
+    report/gate layer.
 
     Compute: one ~5-8 s portfolio backtest over the 2019-08->2025-12 window + one signal
-    replay (seconds-minutes). Warmup-trim every regime timeseries before scoring (EXP-006).
+    replay (~1-3 min for full-window arms, <1 min for kronos). Warmup-trim every regime
+    timeseries before scoring (EXP-006). Note: if this arm was already checkpointed in a
+    prior run without the 'auc' field, run_battery will skip it (hash-based dedup);
+    delete the campaign JSONL to force a full re-run.
     """
     from jutsu_engine.audit import transitions as tr
     from jutsu_engine.audit.attribution import era_metrics
@@ -350,16 +355,82 @@ def evaluate_arm(arm: dict, run_dir) -> dict:
     r2022 = eras[eras["era"] == "2022 bear"]["strategy_total_return"]
     ret2022 = float(r2022.iloc[0]) if not r2022.empty else float("nan")
 
+    # Signal-level AUC(vol-state@t+21) — engine-truth single-pass replay.
+    # score = z_score from the blended runner (causal; only info <= t).
+    # label = vol_state@t+21 (21 TRADING rows forward; trimmed tail has no label).
+    auc = float("nan")
+    try:
+        auc = _compute_arm_auc(arm, series_csv)
+    except Exception as exc:  # noqa: BLE001 — AUC failure doesn't abort the arm
+        import logging
+        logging.getLogger(__name__).warning(
+            "AUC computation failed for arm %s: %s", arm["id"], exc)
+
     return {
         "arm": arm["id"], "weight": arm["weight"],
         "exit_lag_2022": port_row["exit_lag_days"],
         "whipsaw_2022": port_row["whipsaw_flips"],
         "dd_capture_2022": port_row["drawdown_capture"],
         "ret2022": ret2022,
+        "auc": auc,
         "regime_timeseries_csv": ts_csv,
         "series_csv": series_csv,
         "error": None,
     }
+
+
+def _compute_arm_auc(arm: dict, series_csv) -> float:
+    """Engine-truth signal replay -> AUC(vol-state@t+21) for an arm.
+
+    Builds the appropriate LiveStrategyRunner (stock or adapter) and runs
+    calculate_signal_stream over the arm's signal window. The z_score column
+    is the vol classifier input after blending (T-1 aligned). Labels:
+    vol_state@t+21 = 1 if 'High'. 21 TRADING rows forward; no leakage.
+    Warmup rows (NaN z_score) are dropped before AUC.
+    """
+    from jutsu_engine.audit import db as audit_db
+    from jutsu_engine.audit.transitions import auc_vol_state_forward
+
+    # Select signal window
+    if arm["id"] == "stock" or arm.get("series") not in ("kronos",):
+        sig_start = SIGNAL_START_FULL
+    else:
+        sig_start = KRONOS_SIGNAL_START
+
+    engine = audit_db.get_engine()
+    runner = _build_live_runner(
+        "v3_5b",
+        series_csv if arm["id"] != "stock" else None,
+        arm["weight"] if arm["id"] != "stock" else None,
+    )
+    # Load QQQ (and all strategy symbols) for signal replay
+    from jutsu_engine.audit.attribution import _all_symbols
+    symbols = _all_symbols("v3_5b")
+    md = {}
+    for sym in symbols:
+        bars = audit_db.load_bars(engine, sym, SIGNAL_END, lookback=10000)
+        if not bars.empty:
+            md[sym] = bars
+
+    stream = replay_signal_stream(runner, md)
+    if stream.empty:
+        return float("nan")
+
+    # Drop warmup (NaN z_score)
+    stream = stream.dropna(subset=["z_score"]).reset_index(drop=True)
+    if len(stream) < 42:  # need at least 2*21 rows for meaningful AUC
+        return float("nan")
+
+    # Build labels: vol_state 21 TRADING rows forward (shift -21)
+    n = len(stream)
+    labels_shifted = stream["vol_state"].iloc[21:].reset_index(drop=True)
+    scores = stream["z_score"].iloc[:n - 21].reset_index(drop=True)
+
+    # Encode: High -> 1, Low -> 0
+    y = (labels_shifted == "High").astype(int).tolist()
+    s = scores.tolist()
+
+    return auc_vol_state_forward(s, y)
 
 
 def _ensure_series_csv(series_key: str, series_dir):
