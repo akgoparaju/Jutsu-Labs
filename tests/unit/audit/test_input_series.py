@@ -69,3 +69,55 @@ def test_build_vix_series_anchor_and_causality_db_gated():
     assert "value" in ser.columns and len(ser) > 1000
     # value column has warmup NaN then finite values
     assert ser["value"].notna().sum() > 500
+
+
+# ---------------------------------------------------------------------------
+# Task 6: Kronos builder tests
+# ---------------------------------------------------------------------------
+
+
+def test_kronos_parquet_checksum_matches_sidecar():
+    """The copied Kronos parquet matches its recorded .sha256 sidecar."""
+    import hashlib
+    from jutsu_engine.audit.config import PROJECT_ROOT
+    pq = PROJECT_ROOT / "claudedocs" / "inputs" / "QQQ_kronos_base.parquet"
+    sidecar = pq.with_suffix(".parquet.sha256")
+    if not pq.exists() or not sidecar.exists():
+        pytest.skip("kronos parquet not present in this checkout")
+    digest = hashlib.sha256(pq.read_bytes()).hexdigest()
+    recorded = sidecar.read_text().split()[0]
+    assert digest == recorded, "kronos parquet checksum drifted from sidecar"
+
+
+def test_build_kronos_series_selects_horizon_5_and_pipelines():
+    """build_kronos_from_frame filters horizon==5, z-EMA5s std_return, T-1 causal."""
+    from jutsu_engine.audit.input_series import build_kronos_from_frame
+    n = 260
+    dates = pd.date_range("2019-08-06", periods=n, freq="B")
+    frame = pd.DataFrame({
+        "timestamp": list(dates) * 2,
+        "horizon": [5] * n + [20] * n,          # H=20 rows must be ignored
+        "std_return": list(np.linspace(0.02, 0.05, n)) + [9.9] * n,
+    })
+    out = build_kronos_from_frame(frame, window=200, ema_span=5)
+    assert list(out.columns) == ["date", "value"]
+    assert len(out) == n                        # one row per H=5 timestamp
+    assert out["value"].isna().iloc[:199].all() # warmup NaN preserved
+    assert not math.isnan(out["value"].iloc[-1])
+
+
+def test_build_kronos_from_frame_causality():
+    """Truncating the kronos frame yields an identical value prefix (causal)."""
+    from jutsu_engine.audit.input_series import build_kronos_from_frame
+    n = 300
+    dates = pd.date_range("2019-08-06", periods=n, freq="B")
+    rng = np.random.default_rng(1)
+    frame = pd.DataFrame({
+        "timestamp": dates, "horizon": 5,
+        "std_return": np.abs(rng.normal(0.03, 0.01, n)),
+    })
+    full = build_kronos_from_frame(frame, window=200, ema_span=5)
+    trunc = build_kronos_from_frame(frame.iloc[:250], window=200, ema_span=5)
+    pd.testing.assert_series_equal(
+        full["value"].iloc[:250].reset_index(drop=True),
+        trunc["value"].reset_index(drop=True), check_names=False)
