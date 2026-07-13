@@ -29,7 +29,7 @@ in-sample numbers optimistic by construction.
 | EXP-004 | 2026-07-07 | Are the golden parameters stable across WFO time windows (does adaptive tuning have anything to chase)? | Adaptive tuning CLOSED: winners are noise (golden top-decile 3.7%, below chance); chasing them OOS earns Sharpe 0.46 / CAGR 5.4% vs ~0.8 / ~23% fixed; all 4 quarantined candidates killed |
 | EXP-005 | 2026-07-07 | Given the trial count, how likely is the golden Sharpe real (DSR + PBO)? | Edge is REAL (DSR ≥0.997 all N brackets, conservative; V-sensitivity bounded) but selection within the family is noise (PBO 0.85) — trust the structure, not the pick |
 | EXP-006 | 2026-07-08 | Correction: warmup rows polluted timeseries consumers | EXP-004 stitched OOS corrected (Sharpe 0.46→0.83, CAGR 5.4%→19.9%): adaptive tuning adds NOTHING (not "destroys value"); closure stands; EXP-001 unknown-era explained |
-| EXP-007 | 2026-07-13 | Does a forward-looking (Kronos/VIX) or smoothing-only vol-input leg improve transition quality enough for a shadow slot? | PENDING (battery built; results after Tier-1 run) |
+| EXP-007 | 2026-07-13 | Does a forward-looking (Kronos/VIX) or smoothing-only vol-input leg improve transition quality enough for a shadow slot? | Clean negative — all three arms weight-fragile (flatness rule); no shadow slot; NEW finding: 2022 failure is chop endurance (early exit, 8 whipsaws, 132% capture), not late detection |
 
 ---
 
@@ -882,19 +882,80 @@ ran on main; **result: PASS** (zero divergent days, full 16-year period).
 Command (Tier-1 run, read-only): `jutsu audit battery --strategy v3_5b --workers 4`.
 Smoke: `jutsu audit battery --strategy v3_5b --smoke`.
 
-**Results.** PENDING — fill after the Tier-1 campaign: per-arm × per-episode
-transition tables, signal AUC vs the 0.815-0.828 bar, era-sliced 2022 portfolio
-deltas with bootstrap CIs, the flatness SIGN diagnostic, the per-arm verdict, and
-the Tier-2 trigger decision. Reports land in
-`claudedocs/audit/<date>/report_regime_battery_v3_5b.md`.
+**Results (Tier-1 campaign complete 2026-07-13; 10 portfolio backtests + signal
+replays, 0 errors).**
 
-**Verdict / decisions.** PENDING (battery pending — filled after the Tier-1 run).
+*Battery verdicts — ALL THREE GATED ARMS FAIL; no shadow promotion; Tier 2 not
+triggered:*
+
+| arm | AUC | exit_lag_2022 | whipsaw_ratio | dd_capture_2022 | ret2022 | verdict |
+|---|---|---|---|---|---|---|
+| stock | 0.712 | −7 | 1.000 | 1.324 | −45.9% | baseline |
+| kronos @0.5 | 0.716 | −5 | **0.625** | **1.076** | **−36.9%** | fails: signal+flatness |
+| vix @0.5 | 0.694 | **−15** | 0.750 | 1.267 | −43.9% | fails: signal+flatness |
+| smoothing @0.5 | 0.690 | −6 | 1.000 | 1.279 | −44.3% | fails: signal+flatness |
+
+- **Flatness killed every arm — the diagnostic did exactly what it was built for.**
+  kronos's 2022 improvement (dd_capture 1.324→1.076, whipsaw 8→5 flips, +9pp 2022
+  return — reproducing the Kronos program's ema5_blend effect on our engine) FLIPS
+  SIGN at w=0.75 (dd_capture 1.367, worse than stock). vix and smoothing flip on
+  whipsaw/dd_capture as well. Every improvement was weight-fragile; none is
+  evidence of robust information. All Sharpe CIs include zero (as expected,
+  n≈1-episode power).
+- **Methodological finding — the AUC bar was window-mis-calibrated:** the
+  0.815–0.828 bar came from the Kronos program's 2018+ window; on OUR windows the
+  STOCK arm's own raw vol_z scores 0.712. The floor as applied was unattainable
+  for every arm including baseline. This did not change the outcome (flatness
+  fails all three independently), but the gate definition must be amended for any
+  future battery: the AUC floor should be *stock's AUC on the same window*, not a
+  foreign-window constant.
+- **The transition profile (the standing deliverable) rewrote our understanding
+  of the 2022 failure:**
+  - v3.5b **exited EARLY in 2022** (exit_lag −7: defensive a week before the
+    peak) yet still captured **132% of QQQ's drawdown** — because it whipsawed 8
+    times and spent 172 days defensive through a year of chop, repeatedly selling
+    lows and missing rebounds. **The 2022 failure mode is not late exits — it is
+    chop endurance.** Earlier detection (vix arm exited at −15) did NOT help
+    (capture still 1.267).
+  - COVID-2020: all arms identical (exit +4, capture 0.385) — fast crashes are
+    already handled well (vol-crush override); the blend adds nothing there.
+  - euro2011 / china2015 / q4_2018: the strategy NEVER went defensive (0
+    defensive days) through 15–20% QQQ corrections — defense only engages in
+    mega-vol events. Documented as profile fact (arguably a feature: it avoided
+    whipsaw in corrections; 2022 shows the cost when a correction becomes a
+    year-long bear).
+
+**Verdict / decisions.**
+1. **Clean negative: no vol-input arm earns a shadow slot.** The forward-looking
+   legs carry real but weight-fragile effects; per the pre-registered rule,
+   fragile = fail. The Kronos ema5_blend line of inquiry is now closed on our
+   side too (their program's surviving deliverable, killed by the flatness
+   diagnostic on the real engine). The user's weight-robustness amendment was
+   decisive — gating at 0.5 alone might have passed kronos.
+2. **New sharp hypothesis for the next phase (from the profile, not the
+   battery):** the improvement target is **chop endurance during long grinds** —
+   dwell-time/hysteresis asymmetry, re-entry discipline, or chop-regime detection
+   — NOT earlier crash detection. 2022's damage came from 8 whipsaw cycles after
+   a correctly-early exit. This is a different mechanism than every candidate
+   tested so far.
+3. Gate amendment recorded for future batteries: window-matched AUC floor
+   (vs stock, same window) replaces the foreign-window constant.
+4. The n≈1-episode power caution held: all portfolio CIs include zero. Any future
+   transition-quality candidate must be designed around the chop mechanism where
+   per-cycle observations (dozens of whipsaw events) give more statistical power
+   than per-episode ones.
 
 **Artifacts.**
-- Spec: `docs/superpowers/specs/2026-07-13-regime-battery-design.md` (commit `dd5a847`).
+- Spec: `docs/superpowers/specs/2026-07-13-regime-battery-design.md` (`dd5a847`).
 - Plan: `docs/superpowers/plans/2026-07-13-regime-battery-phase1.md`.
-- Report path (post-run): `claudedocs/audit/<date>/report_regime_battery_v3_5b.md`.
-- Campaign JSONL (post-run): `claudedocs/audit/<date>/v3_5b/` (battery arm JSONL).
+- Report: `claudedocs/audit/2026-07-13/report_regime_battery_v3_5b.md`.
+- Code merged to main @ `a0cf5c5` (354 canonical tests; adapter identity gate
+  PASSED over 2010–2026). Serena: `regime_battery_shipped_tier1_running_2026-07-13`
+  (+ results memory).
 
-**Follow-ups spawned.** (Conditional) Tier 2 if kronos uniquely survives and vix does
-not; (conditional) Phase-2 shadow spec if any arm survives all gates.
+**Follow-ups spawned.** Tier 2: NOT triggered (kronos failed Tier 1). Phase-2
+shadow spec: NOT triggered (no survivor). NEW: chop-endurance investigation
+(EXP-008 candidate — characterize the 8 whipsaw cycles of 2022: what flipped the
+vol state back to Low mid-bear; test dwell-time minimums / asymmetric hysteresis
+/ chop-regime input in the same battery harness, which is fully reusable).
+Gate amendment (window-matched AUC floor) for any battery re-run.
