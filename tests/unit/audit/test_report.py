@@ -582,3 +582,74 @@ def test_render_battery_section_has_auc_bar_and_verdicts():
     assert "SURVIVES" in md
     assert "Tier 2" in md
     assert "None" not in md
+
+
+def test_render_battery_section_skipped_verdict_renders_without_crash():
+    """render_battery_section renders 'skipped (not evaluated)' for skipped arms."""
+    from jutsu_engine.audit.report import render_battery_section
+    summary = {
+        "strategy_id": "v3_5b",
+        "arm_rows": [
+            {"arm": "stock", "weight": None, "auc": 0.82, "exit_lag_2022": 5,
+             "whipsaw_ratio": 1.0, "dd_capture_2022": 0.9, "ret2022": -0.30,
+             "sharpe_ci": (0.0, 0.0), "verdict": "baseline"},
+            {"arm": "kronos", "weight": 0.5, "auc": None, "exit_lag_2022": None,
+             "whipsaw_ratio": None, "dd_capture_2022": None, "ret2022": None,
+             "sharpe_ci": (float("nan"), float("nan")),
+             "verdict": "skipped (not evaluated)"},
+        ],
+        "flatness_rows": [],
+        "tier2_trigger": "kronos did not survive Tier 1 -> Tier 2 NOT triggered",
+    }
+    md = render_battery_section(summary)
+    assert "skipped (not evaluated)" in md
+    assert "None" not in md   # _fmt must render N/A, not literal None
+
+
+def test_render_battery_section_excl_sign_renders_without_crash():
+    """render_battery_section renders 'excl' for excluded flatness metrics without crash."""
+    from jutsu_engine.audit.report import render_battery_section
+    summary = {
+        "strategy_id": "v3_5b",
+        "arm_rows": [
+            {"arm": "stock", "weight": None, "auc": 0.82, "exit_lag_2022": 5,
+             "whipsaw_ratio": 1.0, "dd_capture_2022": 0.9, "ret2022": -0.30,
+             "sharpe_ci": (0.0, 0.0), "verdict": "baseline"},
+            {"arm": "smoothing", "weight": 0.5, "auc": 0.82, "exit_lag_2022": 3,
+             "whipsaw_ratio": 0.8, "dd_capture_2022": 0.7, "ret2022": -0.13,
+             "sharpe_ci": (-0.02, 0.05), "verdict": "fails: flatness"},
+        ],
+        "flatness_rows": [
+            {"arm": "smoothing", "exit_lag_sign_ok": "excl",
+             "whipsaw_sign_ok": False, "dd_capture_sign_ok": "excl",
+             "flatness_pass": False},
+        ],
+        "tier2_trigger": "kronos did not survive Tier 1 -> Tier 2 NOT triggered",
+    }
+    md = render_battery_section(summary)
+    assert "excl" in md
+    assert "FAIL" in md
+    assert "None" not in md
+
+
+def test_render_transition_section_multi_arm_multi_episode():
+    """render_transition_section renders rows for multiple arms and episodes correctly."""
+    from jutsu_engine.audit.report import render_transition_section
+    rows = [
+        {"arm": "stock", "episode": "bear2022", "exit_lag_days": -3,
+         "reentry_lag_days": 5, "drawdown_capture": 0.65,
+         "whipsaw_flips": 2, "days_defensive": 100},
+        {"arm": "stock", "episode": "covid2020", "exit_lag_days": 1,
+         "reentry_lag_days": 8, "drawdown_capture": 0.80,
+         "whipsaw_flips": 3, "days_defensive": 25},
+        {"arm": "smoothing", "episode": "bear2022", "exit_lag_days": -5,
+         "reentry_lag_days": 3, "drawdown_capture": 0.55,
+         "whipsaw_flips": 1, "days_defensive": 110},
+    ]
+    md = render_transition_section(rows)
+    # Negative exit_lag must render as a number (not garbled)
+    assert "| stock | bear2022 | -3 |" in md
+    assert "| stock | covid2020 | 1 |" in md
+    assert "| smoothing | bear2022 | -5 |" in md
+    # No literal None in output
+    assert "None" not in md

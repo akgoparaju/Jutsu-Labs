@@ -489,12 +489,15 @@ def _resolve_run_dir_battery(run_date_str, strategy_id):
 
 def _run_battery_and_report(strategy_id, arms, workers, smoke, run_dir):
     """Run the battery for one strategy and write its report; return the report path."""
+    import pandas as pd
     from jutsu_engine.audit.battery import (
         run_battery, evaluate_arm, summarize_battery, bootstrap_sharpe_delta_ci,
+        TIER1_PORTFOLIO_START,
     )
-    from jutsu_engine.audit.report import render_battery_section, write_battery_report
+    from jutsu_engine.audit.report import (
+        render_battery_section, render_transition_section, write_battery_report,
+    )
     from jutsu_engine.audit import transitions as tr
-    from jutsu_engine.audit.battery import TIER1_PORTFOLIO_START
 
     # --smoke: restrict to stock + smoothing, else honor --arms (default: all).
     selected = None
@@ -523,7 +526,14 @@ def _run_battery_and_report(strategy_id, arms, workers, smoke, run_dir):
         return ci_cache[arm_id]
 
     summary = summarize_battery(strategy_id, result["rows"], sharpe_ci_fn=sharpe_ci_fn)
-    md = render_battery_section(summary)
+
+    # Per-episode transition profile (spec §13 / Fix 3): for each gated arm that has
+    # a regime CSV (not skipped), score ALL portfolio_scored=True episodes and render
+    # via render_transition_section. Stock arm first (baseline transition profile).
+    # bear2022 is the only GATING episode; others are profile/diagnostic.
+    transition_md = _build_transition_section(result["rows"], tr, TIER1_PORTFOLIO_START)
+
+    md = transition_md + render_battery_section(summary)
     return write_battery_report(run_dir, strategy_id, md)
 
 
@@ -545,6 +555,66 @@ def _battery_sharpe_ci(rows, arm_id):
     return bootstrap_sharpe_delta_ci(
         m["Strategy_Daily_Return_arm"].values,
         m["Strategy_Daily_Return_stock"].values, n_boot=1000, seed=42)
+
+
+def _build_transition_section(rows: list, tr, portfolio_start) -> str:
+    """Build the per-episode transition profile markdown section for the battery report.
+
+    For each arm that has a regime timeseries CSV (i.e. was not skipped), scores ALL
+    episodes with portfolio_scored=True via score_episode_portfolio. Stock arm is
+    emitted first (spec §13 baseline transition profile). Skipped arms and arms without
+    a CSV are silently omitted from the table. bear2022 is the only GATING episode;
+    the others are profile/diagnostic — they are all rendered but never drive verdict.
+
+    The regime CSV already contains QQQ_Daily_Return (BacktestRunner output contract);
+    score_episode_portfolio reads it directly alongside Strategy_Daily_Return and Vol.
+    """
+    import pandas as pd
+    from jutsu_engine.audit.report import render_transition_section
+
+    all_episodes = [ep for ep in tr.load_episodes() if ep.portfolio_scored]
+    by_arm = {r.get("arm"): r for r in rows}
+
+    # Stock arm first, then other non-diagnostic arms in battery order (gated only).
+    from jutsu_engine.audit.battery import battery_arms
+    ordered_arm_ids = (
+        ["stock"]
+        + [a["id"] for a in battery_arms()
+           if a["gated"] and a["id"] != "stock"]
+    )
+
+    transition_rows = []
+    for arm_id in ordered_arm_ids:
+        row = by_arm.get(arm_id)
+        if not row or row.get("skipped_arm") or not row.get("regime_timeseries_csv"):
+            continue
+        csv_path = row["regime_timeseries_csv"]
+        try:
+            ts = pd.read_csv(csv_path)
+        except Exception:  # noqa: BLE001
+            continue
+        ts_trimmed = tr.trim_warmup(ts, portfolio_start)
+        for ep in all_episodes:
+            try:
+                scored = tr.score_episode_portfolio(ts_trimmed, ep,
+                                                    start=portfolio_start)
+            except Exception:  # noqa: BLE001
+                scored = {"exit_lag_days": None, "reentry_lag_days": None,
+                          "drawdown_capture": None, "whipsaw_flips": 0,
+                          "days_defensive": 0}
+            transition_rows.append({
+                "arm": arm_id,
+                "episode": ep.id,
+                "exit_lag_days": scored.get("exit_lag_days"),
+                "reentry_lag_days": scored.get("reentry_lag_days"),
+                "drawdown_capture": scored.get("drawdown_capture"),
+                "whipsaw_flips": scored.get("whipsaw_flips"),
+                "days_defensive": scored.get("days_defensive"),
+            })
+
+    if not transition_rows:
+        return ""
+    return render_transition_section(transition_rows) + "\n---\n\n"
 
 
 @audit.command("battery")

@@ -259,7 +259,10 @@ def run_regime_backtest(strategy_id: str, vol_input_series, vol_blend_weight,
 # Battery campaign runner (Task 11) — checkpointed per-arm evaluation
 # ---------------------------------------------------------------------------
 
-from jutsu_engine.audit.plateau import append_result, load_completed_hashes, params_hash
+import json
+import os
+
+from jutsu_engine.audit.plateau import load_completed_hashes, params_hash
 
 # Tier-1 windows (spec §8): portfolio 2019-08 -> 2025-12; signal 1999->present for
 # non-kronos arms, 2019-08 -> 2025-12 for kronos (its parquet coverage).
@@ -275,14 +278,41 @@ def _arm_hash(arm: dict) -> str:
     return params_hash({"arm": arm["id"], "weight": arm["weight"]})
 
 
+def _append_battery_row(path: Path, row: dict) -> None:
+    """Append one battery row as a JSONL line, fsynced. Writes ALL fields (unlike
+    plateau.append_result which filters by _RESULT_KEYS, stripping battery-specific
+    keys such as arm, skipped_arm, exit_lag_2022, dd_capture_2022, auc,
+    regime_timeseries_csv, etc. that are essential for summarize_battery and the
+    transition-profile section).
+
+    Crash-safety: identical partial-write protection to plateau.append_result — a
+    leading newline guards against concatenating onto a dangling fragment.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Detect partial-write: if the last byte is not a newline, prefix a newline so
+    # the new row is not concatenated onto any dangling fragment from a prior crash.
+    ends_with_newline = True
+    if path.exists() and path.stat().st_size > 0:
+        with open(path, "rb") as _f:
+            _f.seek(-1, 2)
+            ends_with_newline = _f.read(1) == b"\n"
+    prefix = "" if ends_with_newline else "\n"
+    with open(path, "a") as f:
+        f.write(prefix + json.dumps(row, default=str) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
 def run_battery(strategy_id: str, run_dir, arm_fn, campaign_file=None,
                 progress=lambda msg: None) -> dict:
     """Run (or resume) the battery: evaluate each arm, checkpoint each row to JSONL.
 
     arm_fn(arm, run_dir) -> result row dict (injectable so the orchestration is unit-
-    tested without the engine; the default real evaluator is evaluate_arm). Reuses the
-    plateau append_result (fsync) + load_completed_hashes (resume) primitives; a re-run
-    skips arms whose hash is already present. Single-writer: this parent writes, arm_fn
+    tested without the engine; the default real evaluator is evaluate_arm). Uses
+    _append_battery_row (fsync, ALL fields) for checkpointing — NOT plateau.append_result
+    which silently strips battery-specific keys via _RESULT_KEYS. Resume uses
+    load_completed_hashes from plateau. Single-writer: this parent writes, arm_fn
     only computes.
     """
     from pathlib import Path as _Path
@@ -302,8 +332,9 @@ def run_battery(strategy_id: str, run_dir, arm_fn, campaign_file=None,
         row = arm_fn(arm, run_dir)
         row["hash"] = h
         row["kind"] = "battery"
-        row["param"] = arm["id"]
-        append_result(campaign_file, row)     # fsync; single-writer
+        row["param"] = arm["id"]    # legacy compat key (plateau schema)
+        row["arm"] = arm["id"]      # canonical battery key consumed by summarize_battery
+        _append_battery_row(campaign_file, row)  # fsync; writes ALL fields (not filtered)
     return {"strategy_id": strategy_id, "rows": _reload_rows(campaign_file),
             "campaign_file": str(campaign_file)}
 
@@ -484,7 +515,19 @@ def summarize_battery(strategy_id: str, rows: list, sharpe_ci_fn) -> dict:
     'diagnostic' for the _lo/_hi neighbors. tier2_trigger states whether the kronos arm
     survived (spec §8: Tier 2 runs only if kronos survives Tier 1).
     """
-    by_id = {r["arm"]: r for r in rows}
+    # Filter to rows that carry an 'arm' key — plateau/OAT rows from the same JSONL
+    # file (kind=oat/joint) may be interleaved with battery rows (kind=battery) when
+    # the campaign file is reused across runs; non-arm rows must be excluded here.
+    # Legacy compat: earlier battery checkpoints used 'param' instead of 'arm'.
+    # Normalise them so a checkpoint resume produces the correct summary.
+    def _norm_arm_row(r: dict) -> dict:
+        if r.get("arm") is None and r.get("param") is not None:
+            r = dict(r)
+            r["arm"] = r["param"]
+        return r
+    battery_rows = [_norm_arm_row(r) for r in rows
+                    if r.get("arm") is not None or r.get("param") is not None]
+    by_id = {r["arm"]: r for r in battery_rows}
     stock = by_id.get("stock", {})
     stock_whip = stock.get("whipsaw_2022") or 0
 
@@ -501,6 +544,11 @@ def summarize_battery(strategy_id: str, rows: list, sharpe_ci_fn) -> dict:
     arm_rows, flatness_rows = [], []
     kronos_survives = False
 
+    def _is_skipped(arm_id: str) -> bool:
+        """True when the arm row carries skipped_arm=True or is entirely absent."""
+        row = by_id.get(arm_id)
+        return row is None or bool(row.get("skipped_arm"))
+
     for arm in battery_arms():
         r = dict(by_id.get(arm["id"], {}))
         r["arm"] = arm["id"]
@@ -509,6 +557,14 @@ def summarize_battery(strategy_id: str, rows: list, sharpe_ci_fn) -> dict:
         if arm["id"] == "stock":
             r["sharpe_ci"] = (0.0, 0.0)
             r["verdict"] = "baseline"
+            arm_rows.append(r)
+            continue
+
+        # Skipped arms (e.g. excluded by --smoke / --arms) get a neutral verdict and
+        # are excluded from gate scoring and the flatness table entirely.
+        if _is_skipped(arm["id"]):
+            r["sharpe_ci"] = (float("nan"), float("nan"))
+            r["verdict"] = "skipped (not evaluated)"
             arm_rows.append(r)
             continue
 
@@ -524,24 +580,38 @@ def summarize_battery(strategy_id: str, rows: list, sharpe_ci_fn) -> dict:
         sig = signal_gate(exit_delta, r["whipsaw_ratio"], r.get("auc") or 0.0)
         port = portfolio_gate(dd_delta, ret_delta, r["sharpe_ci"])
 
-        # flatness over the arm's _lo/_hi neighbors
-        at50 = {"exit_lag": exit_delta, "whipsaw_ratio": r["whipsaw_ratio"] - 1.0,
-                "dd_capture": dd_delta}
+        # flatness over the arm's _lo/_hi neighbors — only when BOTH neighbors were
+        # evaluated (not skipped). If either neighbor is skipped, the sign rule cannot
+        # be applied and the flatness gate is treated as inconclusive (fails safe).
         lo_id, hi_id = f"{arm['id']}_lo", f"{arm['id']}_hi"
-        at_lo = {"exit_lag": _delta(lo_id, "exit_lag_2022"),
-                 "whipsaw_ratio": (_whip_ratio(lo_id) - 1.0),
-                 "dd_capture": _delta(lo_id, "dd_capture_2022")}
-        at_hi = {"exit_lag": _delta(hi_id, "exit_lag_2022"),
-                 "whipsaw_ratio": (_whip_ratio(hi_id) - 1.0),
-                 "dd_capture": _delta(hi_id, "dd_capture_2022")}
-        flat = flatness_diagnostic(at50, at_lo, at_hi)
-        flatness_rows.append({
-            "arm": arm["id"],
-            "exit_lag_sign_ok": _same_sign(at50["exit_lag"], at_lo["exit_lag"], at_hi["exit_lag"]),
-            "whipsaw_sign_ok": _same_sign(at50["whipsaw_ratio"], at_lo["whipsaw_ratio"], at_hi["whipsaw_ratio"]),
-            "dd_capture_sign_ok": _same_sign(at50["dd_capture"], at_lo["dd_capture"], at_hi["dd_capture"]),
-            "flatness_pass": flat,
-        })
+        if _is_skipped(lo_id) or _is_skipped(hi_id):
+            # Cannot compute flatness without both neighbors; treat as fail-safe.
+            flat = False
+            flatness_rows.append({
+                "arm": arm["id"],
+                "exit_lag_sign_ok": "excl",
+                "whipsaw_sign_ok": "excl",
+                "dd_capture_sign_ok": "excl",
+                "flatness_pass": False,
+                "note": "neighbors skipped",
+            })
+        else:
+            at50 = {"exit_lag": exit_delta, "whipsaw_ratio": r["whipsaw_ratio"] - 1.0,
+                    "dd_capture": dd_delta}
+            at_lo = {"exit_lag": _delta(lo_id, "exit_lag_2022"),
+                     "whipsaw_ratio": (_whip_ratio(lo_id) - 1.0),
+                     "dd_capture": _delta(lo_id, "dd_capture_2022")}
+            at_hi = {"exit_lag": _delta(hi_id, "exit_lag_2022"),
+                     "whipsaw_ratio": (_whip_ratio(hi_id) - 1.0),
+                     "dd_capture": _delta(hi_id, "dd_capture_2022")}
+            flat = flatness_diagnostic(at50, at_lo, at_hi)
+            flatness_rows.append({
+                "arm": arm["id"],
+                "exit_lag_sign_ok": _sign_display(at50["exit_lag"], at_lo["exit_lag"], at_hi["exit_lag"]),
+                "whipsaw_sign_ok": _sign_display(at50["whipsaw_ratio"], at_lo["whipsaw_ratio"], at_hi["whipsaw_ratio"]),
+                "dd_capture_sign_ok": _sign_display(at50["dd_capture"], at_lo["dd_capture"], at_hi["dd_capture"]),
+                "flatness_pass": flat,
+            })
 
         survives = arm_survives(sig, port, flat)
         if survives:
@@ -568,7 +638,12 @@ def summarize_battery(strategy_id: str, rows: list, sharpe_ci_fn) -> dict:
 
 
 def _same_sign(*vals) -> bool:
-    """True if all non-None values share the same sign (0 counts as its own sign)."""
+    """True if all non-None values share the same sign (0 counts as its own sign).
+
+    NOTE: None/NaN inputs are coerced to sign 0 here (used only in legacy paths;
+    the gate-display path uses _sign_display which renders "excl" for non-finite
+    values, mirroring flatness_diagnostic's exclusion logic).
+    """
     signs = []
     for v in vals:
         if v is None or (isinstance(v, float) and math.isnan(v)):
@@ -576,3 +651,29 @@ def _same_sign(*vals) -> bool:
         else:
             signs.append((v > 0) - (v < 0))
     return len(set(signs)) == 1
+
+
+def _sign_display(v0, vl, vh):
+    """Gate-display sign-consistency indicator aligned with flatness_diagnostic exclusion.
+
+    Returns "excl" when ANY of the three values is None or non-finite (matching the
+    flatness_diagnostic exclusion rule exactly — the gate excludes these rather than
+    treating them as True or False). Returns True when all three finite values share
+    the same sign, False otherwise. This is the correct display value for the battery
+    report's flatness table: "excl" means the metric could not be evaluated, not that
+    it passed.
+
+    NaN comparison (e.g. NaN < 0) always yields False in Python, so a gate check like
+    `(x < 0)` would silently FAIL rather than skip for NaN — the "or 0.0" coercion in
+    earlier code did NOT help because NaN is truthy in a boolean context only when
+    non-zero; the gate fails via the comparison returning False, not via coercion.
+    """
+    def _is_excl(x) -> bool:
+        return x is None or (isinstance(x, float) and not math.isfinite(x))
+
+    if _is_excl(v0) or _is_excl(vl) or _is_excl(vh):
+        return "excl"
+    s0 = (v0 > 0) - (v0 < 0)
+    sl = (vl > 0) - (vl < 0)
+    sh = (vh > 0) - (vh < 0)
+    return (sl == s0) and (sh == s0)

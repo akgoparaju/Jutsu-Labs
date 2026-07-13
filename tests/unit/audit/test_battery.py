@@ -231,3 +231,184 @@ def test_summarize_battery_assigns_verdicts_and_tier2():
     assert verdicts["smoothing"] == "SURVIVES"
     assert "kronos did not survive" in summary["tier2_trigger"] or \
            "Tier 2 NOT triggered" in summary["tier2_trigger"]
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: skipped-arm verdict semantics
+# ---------------------------------------------------------------------------
+
+def _make_skipped_rows():
+    """Minimal row set: stock evaluated; kronos and vix skipped; smoothing evaluated."""
+    return [
+        {"arm": "stock", "weight": None, "auc": 0.82, "exit_lag_2022": 5,
+         "whipsaw_2022": 6, "dd_capture_2022": 0.9, "ret2022": -0.30},
+        # kronos and vix are skipped (e.g. --smoke or --arms smoothing)
+        {"arm": "kronos", "weight": 0.5, "skipped_arm": True, "error": None},
+        {"arm": "vix", "weight": 0.5, "skipped_arm": True, "error": None},
+        # smoothing + neighbors evaluated
+        {"arm": "smoothing", "weight": 0.5, "auc": 0.82, "exit_lag_2022": 3,
+         "whipsaw_2022": 4, "dd_capture_2022": 0.7, "ret2022": -0.13},
+        {"arm": "smoothing_lo", "weight": 0.25, "auc": 0.82, "exit_lag_2022": 4,
+         "whipsaw_2022": 5, "dd_capture_2022": 0.8, "ret2022": -0.20},
+        {"arm": "smoothing_hi", "weight": 0.75, "auc": 0.82, "exit_lag_2022": 2,
+         "whipsaw_2022": 3, "dd_capture_2022": 0.6, "ret2022": -0.10},
+        # diagnostic neighbors of skipped kronos/vix are also absent (skipped)
+        {"arm": "kronos_lo", "weight": 0.25, "skipped_arm": True, "error": None},
+        {"arm": "kronos_hi", "weight": 0.75, "skipped_arm": True, "error": None},
+        {"arm": "vix_lo", "weight": 0.25, "skipped_arm": True, "error": None},
+        {"arm": "vix_hi", "weight": 0.75, "skipped_arm": True, "error": None},
+    ]
+
+
+def test_skipped_arms_get_skipped_verdict():
+    """Skipped arms (skipped_arm=True) receive verdict 'skipped (not evaluated)'."""
+    from jutsu_engine.audit.battery import summarize_battery
+    rows = _make_skipped_rows()
+    summary = summarize_battery("v3_5b", rows, sharpe_ci_fn=lambda _: (-0.02, 0.05))
+    verdicts = {r["arm"]: r["verdict"] for r in summary["arm_rows"]}
+    assert verdicts["kronos"] == "skipped (not evaluated)"
+    assert verdicts["vix"] == "skipped (not evaluated)"
+
+
+def test_skipped_arms_do_not_affect_surviving_arms():
+    """Skipped kronos/vix do not contaminate smoothing's verdict or the flatness table."""
+    from jutsu_engine.audit.battery import summarize_battery
+    rows = _make_skipped_rows()
+    summary = summarize_battery("v3_5b", rows, sharpe_ci_fn=lambda _: (-0.02, 0.05))
+    verdicts = {r["arm"]: r["verdict"] for r in summary["arm_rows"]}
+    assert verdicts["smoothing"] == "SURVIVES"
+    assert verdicts["stock"] == "baseline"
+    # Flatness table must only contain smoothing (not kronos or vix which were skipped)
+    flatness_arm_ids = {r["arm"] for r in summary["flatness_rows"]}
+    assert "kronos" not in flatness_arm_ids
+    assert "vix" not in flatness_arm_ids
+    assert "smoothing" in flatness_arm_ids
+
+
+def test_skipped_arms_excluded_from_flatness_table():
+    """Skipped gated arms produce no flatness row — they are excluded, not scored."""
+    from jutsu_engine.audit.battery import summarize_battery
+    rows = _make_skipped_rows()
+    summary = summarize_battery("v3_5b", rows, sharpe_ci_fn=lambda _: (-0.02, 0.05))
+    flatness_arm_ids = [r["arm"] for r in summary["flatness_rows"]]
+    # kronos and vix were skipped — must not appear
+    assert "kronos" not in flatness_arm_ids
+    assert "vix" not in flatness_arm_ids
+
+
+# ---------------------------------------------------------------------------
+# Fix 4: _sign_display exclusion semantics
+# ---------------------------------------------------------------------------
+
+def test_sign_display_returns_excl_for_none():
+    """_sign_display returns 'excl' when any value is None (mirrors flatness exclusion)."""
+    from jutsu_engine.audit.battery import _sign_display
+    assert _sign_display(None, -1.0, -0.5) == "excl"
+    assert _sign_display(-1.0, None, -0.5) == "excl"
+    assert _sign_display(-1.0, -0.5, None) == "excl"
+
+
+def test_sign_display_returns_excl_for_inf():
+    """_sign_display returns 'excl' when any value is ±inf (mirrors flatness exclusion)."""
+    from jutsu_engine.audit.battery import _sign_display
+    assert _sign_display(float("inf"), -1.0, -0.5) == "excl"
+    assert _sign_display(-1.0, float("-inf"), -0.5) == "excl"
+    assert _sign_display(-1.0, -0.5, float("nan")) == "excl"
+
+
+def test_sign_display_returns_true_when_all_same_sign():
+    """_sign_display returns True when all three finite values share the same sign."""
+    from jutsu_engine.audit.battery import _sign_display
+    assert _sign_display(-1.0, -2.0, -0.5) is True
+    assert _sign_display(0.1, 0.2, 0.3) is True
+    assert _sign_display(0.0, 0.0, 0.0) is True
+
+
+def test_sign_display_returns_false_on_sign_flip():
+    """_sign_display returns False when a sign flip is present."""
+    from jutsu_engine.audit.battery import _sign_display
+    assert _sign_display(-1.0, -2.0, 0.5) is False   # hi flips positive
+    assert _sign_display(1.0, -0.5, 0.3) is False     # lo flips negative
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: per-episode transition section in the battery report (smoke-style)
+# ---------------------------------------------------------------------------
+
+def _make_fake_ts_csv(tmp_path, arm_id: str, episodes_dates: list) -> str:
+    """Write a minimal regime timeseries CSV that covers the given episode date ranges."""
+    import pandas as pd
+    from datetime import date, timedelta
+    # Build a daily series spanning 2019-08-01 to 2025-12-31 covering all episodes.
+    start = date(2019, 8, 1)
+    end = date(2025, 12, 31)
+    days = []
+    d = start
+    while d <= end:
+        days.append(d)
+        d += timedelta(days=1)
+    n = len(days)
+    # Defensive in first half (cells 4-6), offensive in second half (cells 1-3)
+    cells = [f"Cell_{4 if i < n // 2 else 1}" for i in range(n)]
+    dates_str = [f"{d} 00:00:00-08:00" for d in days]
+    df = pd.DataFrame({
+        "Date": dates_str,
+        "Regime": cells,
+        "Trend": ["Sideways"] * n,
+        "Vol": (["High"] * (n // 2) + ["Low"] * (n - n // 2)),
+        "QQQ_Close": [300.0] * n,
+        "QQQ_Daily_Return": [-0.005 if i < n // 2 else 0.002 for i in range(n)],
+        "Portfolio_Value": [10000.0] * n,
+        "Strategy_Daily_Return": [-0.003 if i < n // 2 else 0.001 for i in range(n)],
+    })
+    out = tmp_path / f"regime_{arm_id}.csv"
+    df.to_csv(out, index=False)
+    return str(out)
+
+
+def test_build_transition_section_includes_stock_arm_first(tmp_path, monkeypatch):
+    """_build_transition_section emits stock arm rows first with all portfolio_scored episodes."""
+    import jutsu_engine.cli.commands.audit as audit_cli
+    from jutsu_engine.audit import transitions as tr
+
+    stock_csv = _make_fake_ts_csv(tmp_path, "stock", [])
+    smoothing_csv = _make_fake_ts_csv(tmp_path, "smoothing", [])
+
+    rows = [
+        {"arm": "stock", "weight": None, "regime_timeseries_csv": stock_csv},
+        {"arm": "smoothing", "weight": 0.5, "regime_timeseries_csv": smoothing_csv},
+        # skipped arms
+        {"arm": "kronos", "weight": 0.5, "skipped_arm": True, "error": None},
+        {"arm": "vix", "weight": 0.5, "skipped_arm": True, "error": None},
+    ]
+
+    from jutsu_engine.audit.battery import TIER1_PORTFOLIO_START
+    md = audit_cli._build_transition_section(rows, tr, TIER1_PORTFOLIO_START)
+
+    # Must contain the transition-metrics header
+    assert "Transition metrics" in md
+    # Stock rows must appear before smoothing rows
+    stock_pos = md.index("| stock |")
+    smooth_pos = md.index("| smoothing |")
+    assert stock_pos < smooth_pos, "stock arm must appear before smoothing in transition section"
+    # At least one portfolio_scored episode must appear
+    all_episodes = [ep for ep in tr.load_episodes() if ep.portfolio_scored]
+    for ep in all_episodes:
+        assert ep.id in md, f"episode {ep.id} missing from transition section"
+    # Skipped arms must not appear in the transition section
+    assert "| kronos |" not in md
+    assert "| vix |" not in md
+
+
+def test_build_transition_section_empty_when_no_csvs(tmp_path):
+    """_build_transition_section returns empty string when no arm has a regime CSV."""
+    import jutsu_engine.cli.commands.audit as audit_cli
+    from jutsu_engine.audit import transitions as tr
+    from jutsu_engine.audit.battery import TIER1_PORTFOLIO_START
+
+    rows = [
+        {"arm": "stock", "weight": None, "skipped_arm": False},  # no regime_timeseries_csv
+        {"arm": "kronos", "weight": 0.5, "skipped_arm": True},
+    ]
+    md = audit_cli._build_transition_section(rows, tr, TIER1_PORTFOLIO_START)
+    assert md == ""

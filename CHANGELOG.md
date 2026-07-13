@@ -29,9 +29,15 @@ diagnostic-only strategy file.
   `tests/unit/cli/test_battery_cli.py`
 
 Review-driven fixes applied during implementation:
-- **Signed exit-lag semantics**: exit_lag_days is the 0-based index of the first
-  defensive row in the at_or_after_peak slice (not relative to run-start date);
-  negative lag is impossible by construction (exits before peak appear as 0).
+- **Signed exit-lag semantics** (corrected from earlier draft): `exit_lag_days` is a
+  SIGNED trading-row offset anchored at the first trading row on-or-after the episode
+  peak. When the strategy is defensive AT the anchor, `exit_lag = run_start − anchor ≤
+  0` (negative = de-risked before the peak; the prior defensive run earns credit from
+  its start). When offensive at the anchor, `exit_lag = first defensive row in-span −
+  anchor > 0`; None if never defensive in-span. Negative exit lag is possible and
+  meaningful; only the run CONTAINING the anchor earns pre-peak credit (a defensive dip
+  that ended before the anchor earns no credit). Earlier CHANGELOG text stating
+  "negative impossible" and "0-based index" was incorrect and is hereby superseded.
 - **AUC NaN policy**: `auc_vol_state_forward` returns `float('nan')` on single-class
   label vectors (mirrors Kronos VER1 convention); NaN rows dropped cleanly via gap
   threading in the report renderer (not forward-filled).

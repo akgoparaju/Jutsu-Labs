@@ -772,15 +772,26 @@ days_defensive per (arm × episode) at portfolio level; signal-level: flip
 lead/lag relative to episode peak, flip_count_ratio vs stock arm, AUC(vol-state@t+21)
 vs the raw-bar VER1 bar of 0.815–0.828.
 
-*Exit-lag semantics (SIGNED — critical correctness note).* `exit_lag_days` is the
-count of trading days from the episode peak row to the first row with a defensive
-cell (4/5/6) in the `at_or_after_peak` slice — measured as the 0-based index of
-that row, so 0 means the peak day itself was defensive, 1 means one trading day
-later, etc. A strategy that de-risks BEFORE the peak would show 0 (defensiveness
-had already started). `None` if the strategy never enters a defensive cell from
-peak through trough. This semantics was revised during review: earlier drafts defined
-exit_lag relative to the run-start date; the signed/index definition is the
-as-built engine truth.
+*Exit-lag semantics (SIGNED — as-built in `transitions.py`).* `exit_lag_days` is a
+SIGNED trading-row count with the following exact rules (source of truth:
+`score_episode_portfolio` docstring in `jutsu_engine/audit/transitions.py`):
+
+- **Anchor**: the first trading row on-or-after the episode peak. Weekend/holiday peaks
+  snap forward to the next trading day.
+- **Defensive at the anchor** (cell 4/5/6): walk backward to find the start of the
+  contiguous defensive run that *contains* the anchor. `exit_lag_days = run_start −
+  anchor ≤ 0`. Negative means the strategy de-risked before the peak. Only the run
+  containing the anchor earns credit: a prior defensive dip that *ended* before the
+  peak (strategy is offensive again at the anchor) earns **no negative credit**.
+- **Offensive at the anchor**: `exit_lag_days = first defensive row strictly after the
+  anchor and still within [peak, trough] − anchor > 0`. If no defensive row exists
+  in-span after the anchor → `None`.
+
+Key properties: negative exit lag is **not** impossible — it is the normal reading for
+a strategy that de-risked before the peak. `None` only arises when the strategy is
+offensive at the anchor and never de-risks within the episode span. Earlier drafts
+described a 0-based unsigned index ("negative impossible"); that was wrong and has been
+corrected here to match the code.
 
 *Input-series builders (Tasks 5-6, 8 for smoothing via replay).*
 - **`kronos`**: checksummed parquet `claudedocs/inputs/QQQ_kronos_base.parquet`
@@ -835,16 +846,22 @@ portfolio window 2019-08→2025-12 (~1,600 trading days each); ~1–1.5 min tota
 invariant, circuit breaker (from the plateau/DSR machinery). Smoke test: stock arm
 only, short window, ~15–30 s.
 
-*Gates (Tasks 9, 13) — pre-registered per spec §8.*
-- **Signal gate** (per arm): AUC > 0.815 AND flip lead/lag improves vs stock.
-- **Portfolio gate** (per arm): era-sliced 2022 Sharpe delta ≥ +0.05 with bootstrap
-  CI entirely above zero; drawdown_capture improvement vs stock in covid2020 + bear2022.
-- **Flatness SIGN rule**: if the w=0.25 and w=0.75 neighbors bracket sign changes,
-  the arm is flagged for weight sensitivity.
-- **Tier-2 trigger**: only if exactly `kronos` survives and vix does NOT — confirms
-  that the Kronos leg is the specific informational contribution, not just filter
-  smoothing. Trigger runs extended window 2010-02→2019-08 backfill + 2010→present
-  portfolio run.
+*Gates (Tasks 9, 13) — pre-registered per spec §8, as-implemented in `battery.py`.*
+- **Signal gate** (per arm): (`exit_lag_delta < 0` OR `whipsaw_ratio < 1.0`) AND
+  `auc >= 0.815`. `exit_lag_delta = arm_exit_lag − stock_exit_lag` (negative = arm
+  de-risked earlier = better); `whipsaw_ratio = arm_flips / stock_flips` (< 1 = fewer
+  flips = better). The gating episode is **bear2022**.
+- **Portfolio gate** (per arm): (`dd_capture_delta < 0` OR `ret2022_delta > 0`) AND
+  Sharpe bootstrap CI does not exclude zero on the negative side (`hi ≥ 0`).
+  `dd_capture_delta = arm_dd_capture − stock_dd_capture` (negative = better
+  protection). The gating episode is **bear2022**; the CI is a paired bootstrap of the
+  full-window Sharpe delta (underpowered by design; SYNTHESIS-001).
+- **Flatness SIGN rule**: each gate-relevant delta must keep its SIGN at both
+  diagnostic neighbors (w=0.25 and w=0.75). A sign flip at either neighbor = fragile =
+  FAIL even if the w=0.5 result passes.
+- **Tier-2 trigger**: only if `kronos` survives Tier 1 — confirms the Kronos leg is
+  the specific informational contribution. Trigger runs extended window 2010-02→2019-08
+  backfill + 2010→present portfolio run.
 
 *Identity regression gate.* Before any battery run: the adapter subclass (no injected
 series) must reproduce stock v3_5b daily regimes exactly over 2010-02→2026-07. This
