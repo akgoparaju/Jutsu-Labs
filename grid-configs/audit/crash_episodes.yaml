@@ -33,7 +33,7 @@ episodes:
     portfolio_scored: true
   - id: covid2020
     peak: 2020-02-19       # QQQ close 236.98 (verified)
-    trough: 2020-03-23
+    trough: 2020-03-16     # verified: QQQ close 169.30 (local min); was 2020-03-23 (170.46)
     recovery: 2020-06-05
     portfolio_scored: true
   - id: bear2022
@@ -43,6 +43,6 @@ episodes:
     portfolio_scored: true
   - id: spring2025
     peak: 2025-02-19
-    trough: 2025-04-08
+    trough: 2025-04-07     # verified: QQQ close 416.06 (local min); was 2025-04-08 (466.00, gap-up day)
     recovery: 2025-06-27
     portfolio_scored: true
