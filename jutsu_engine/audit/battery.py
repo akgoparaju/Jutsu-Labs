@@ -471,3 +471,108 @@ def _stock_signal_stream():
         if not bars.empty:
             md[sym] = bars
     return replay_signal_stream(runner, md)
+
+
+def summarize_battery(strategy_id: str, rows: list, sharpe_ci_fn) -> dict:
+    """Turn raw arm rows into the report summary: gate every gated arm, set verdicts.
+
+    rows: per-arm result dicts (from run_battery/evaluate_arm) with arm, weight, auc,
+    exit_lag_2022, whipsaw_2022, dd_capture_2022, ret2022. sharpe_ci_fn(arm_id) returns
+    the (lo, hi) bootstrap Sharpe-delta CI for that arm vs stock (injected so this stays
+    pure/testable; the CLI wires the real bootstrap_sharpe_delta_ci over aligned returns).
+    Verdicts: 'baseline' (stock), 'SURVIVES' / 'fails: <reason>' for gated arms,
+    'diagnostic' for the _lo/_hi neighbors. tier2_trigger states whether the kronos arm
+    survived (spec §8: Tier 2 runs only if kronos survives Tier 1).
+    """
+    by_id = {r["arm"]: r for r in rows}
+    stock = by_id.get("stock", {})
+    stock_whip = stock.get("whipsaw_2022") or 0
+
+    def _delta(arm_id, key):
+        a, s = by_id.get(arm_id, {}).get(key), stock.get(key)
+        if a is None or s is None:
+            return None
+        return a - s
+
+    def _whip_ratio(arm_id):
+        a = by_id.get(arm_id, {}).get("whipsaw_2022") or 0
+        return (a / stock_whip) if stock_whip else (float("inf") if a else 1.0)
+
+    arm_rows, flatness_rows = [], []
+    kronos_survives = False
+
+    for arm in battery_arms():
+        r = dict(by_id.get(arm["id"], {}))
+        r["arm"] = arm["id"]
+        r["weight"] = arm["weight"]
+        r["whipsaw_ratio"] = _whip_ratio(arm["id"]) if arm["id"] != "stock" else 1.0
+        if arm["id"] == "stock":
+            r["sharpe_ci"] = (0.0, 0.0)
+            r["verdict"] = "baseline"
+            arm_rows.append(r)
+            continue
+
+        r["sharpe_ci"] = sharpe_ci_fn(arm["id"])
+        if not arm["gated"]:
+            r["verdict"] = "diagnostic"
+            arm_rows.append(r)
+            continue
+
+        exit_delta = _delta(arm["id"], "exit_lag_2022") or 0.0
+        dd_delta = _delta(arm["id"], "dd_capture_2022") or 0.0
+        ret_delta = _delta(arm["id"], "ret2022") or 0.0
+        sig = signal_gate(exit_delta, r["whipsaw_ratio"], r.get("auc") or 0.0)
+        port = portfolio_gate(dd_delta, ret_delta, r["sharpe_ci"])
+
+        # flatness over the arm's _lo/_hi neighbors
+        at50 = {"exit_lag": exit_delta, "whipsaw_ratio": r["whipsaw_ratio"] - 1.0,
+                "dd_capture": dd_delta}
+        lo_id, hi_id = f"{arm['id']}_lo", f"{arm['id']}_hi"
+        at_lo = {"exit_lag": _delta(lo_id, "exit_lag_2022"),
+                 "whipsaw_ratio": (_whip_ratio(lo_id) - 1.0),
+                 "dd_capture": _delta(lo_id, "dd_capture_2022")}
+        at_hi = {"exit_lag": _delta(hi_id, "exit_lag_2022"),
+                 "whipsaw_ratio": (_whip_ratio(hi_id) - 1.0),
+                 "dd_capture": _delta(hi_id, "dd_capture_2022")}
+        flat = flatness_diagnostic(at50, at_lo, at_hi)
+        flatness_rows.append({
+            "arm": arm["id"],
+            "exit_lag_sign_ok": _same_sign(at50["exit_lag"], at_lo["exit_lag"], at_hi["exit_lag"]),
+            "whipsaw_sign_ok": _same_sign(at50["whipsaw_ratio"], at_lo["whipsaw_ratio"], at_hi["whipsaw_ratio"]),
+            "dd_capture_sign_ok": _same_sign(at50["dd_capture"], at_lo["dd_capture"], at_hi["dd_capture"]),
+            "flatness_pass": flat,
+        })
+
+        survives = arm_survives(sig, port, flat)
+        if survives:
+            r["verdict"] = "SURVIVES"
+            if arm["id"] == "kronos":
+                kronos_survives = True
+        else:
+            reasons = []
+            if not sig:
+                reasons.append("signal")
+            if not port:
+                reasons.append("portfolio")
+            if not flat:
+                reasons.append("flatness")
+            r["verdict"] = "fails: " + "+".join(reasons)
+        arm_rows.append(r)
+
+    tier2 = ("kronos SURVIVED Tier 1 -> Tier 2 TRIGGERED (backfill 2010-02->2019-08, "
+             "rebuild kronos CSV, re-run on 2010->present)" if kronos_survives else
+             "kronos did not survive Tier 1 -> Tier 2 NOT triggered")
+
+    return {"strategy_id": strategy_id, "arm_rows": arm_rows,
+            "flatness_rows": flatness_rows, "tier2_trigger": tier2}
+
+
+def _same_sign(*vals) -> bool:
+    """True if all non-None values share the same sign (0 counts as its own sign)."""
+    signs = []
+    for v in vals:
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            signs.append(0)
+        else:
+            signs.append((v > 0) - (v < 0))
+    return len(set(signs)) == 1

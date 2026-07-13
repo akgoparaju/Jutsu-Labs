@@ -206,3 +206,28 @@ def test_signal_stream_final_bar_matches_calculate_signals_db_gated():
     assert last["vol_state"] == final_signals["vol_state"]
     # z_score matches the final calculate_signals z (float compare, tight tolerance).
     assert abs(float(last["z_score"]) - float(final_signals["z_score"])) < 1e-9
+
+
+def test_summarize_battery_assigns_verdicts_and_tier2():
+    """summarize_battery runs the gates over arm rows and sets per-arm verdicts + Tier-2."""
+    from jutsu_engine.audit.battery import summarize_battery
+    # stock baseline + a surviving smoothing arm + its two neighbors (same-sign deltas)
+    rows = [
+        {"arm": "stock", "weight": None, "auc": 0.82, "exit_lag_2022": 5,
+         "whipsaw_2022": 6, "dd_capture_2022": 0.9, "ret2022": -0.30},
+        {"arm": "smoothing", "weight": 0.5, "auc": 0.82, "exit_lag_2022": 3,
+         "whipsaw_2022": 4, "dd_capture_2022": 0.7, "ret2022": -0.13},
+        {"arm": "smoothing_lo", "weight": 0.25, "auc": 0.82, "exit_lag_2022": 4,
+         "whipsaw_2022": 5, "dd_capture_2022": 0.8, "ret2022": -0.20},
+        {"arm": "smoothing_hi", "weight": 0.75, "auc": 0.82, "exit_lag_2022": 2,
+         "whipsaw_2022": 3, "dd_capture_2022": 0.6, "ret2022": -0.10},
+    ]
+    # deterministic bootstrap CI stub (overlaps zero -> no degradation)
+    def fake_ci(arm_id):
+        return (-0.02, 0.05)
+    summary = summarize_battery("v3_5b", rows, sharpe_ci_fn=fake_ci)
+    verdicts = {r["arm"]: r["verdict"] for r in summary["arm_rows"]}
+    assert verdicts["stock"] == "baseline"
+    assert verdicts["smoothing"] == "SURVIVES"
+    assert "kronos did not survive" in summary["tier2_trigger"] or \
+           "Tier 2 NOT triggered" in summary["tier2_trigger"]
