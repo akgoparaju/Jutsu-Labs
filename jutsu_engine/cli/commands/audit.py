@@ -458,3 +458,126 @@ v3_5d: DSR-only (family-level N)."""
         logger.error(f"DSR audit failed: {e}", exc_info=True)
         click.echo(click.style(f"✗ DSR audit failed: {e}", fg="red"), err=True)
         raise click.Abort()
+
+
+def _resolve_run_dir_battery(run_date_str, strategy_id):
+    """Midnight-safe run-dir resolution for battery campaign files."""
+    import re as _re
+    if run_date_str is not None:
+        try:
+            run_date = datetime.strptime(run_date_str, "%Y-%m-%d").date()
+        except ValueError:
+            raise click.BadParameter(
+                f"Invalid date format {run_date_str!r}; expected YYYY-MM-DD",
+                param_hint="--run-date")
+        return report_output_dir(run_date=run_date)
+    audit_base = report_output_dir().parent
+    pat = f"campaign_battery_{strategy_id}.jsonl"
+    _DATE_RE = _re.compile(r"^\d{4}-\d{2}-\d{2}$")
+    candidates = sorted(
+        (p for p in audit_base.glob(f"*/{strategy_id}/{pat}")
+         if _DATE_RE.match(p.parent.parent.name)),
+        key=lambda p: p.parent.parent.name, reverse=True)
+    if candidates:
+        newest = candidates[0]
+        click.echo(click.style(
+            f"  Resuming existing battery campaign: {newest} "
+            f"(pass --run-date to override)", fg="yellow"))
+        return newest.parent.parent
+    return report_output_dir()
+
+
+def _run_battery_and_report(strategy_id, arms, workers, smoke, run_dir):
+    """Run the battery for one strategy and write its report; return the report path."""
+    from jutsu_engine.audit.battery import (
+        run_battery, evaluate_arm, summarize_battery, bootstrap_sharpe_delta_ci,
+    )
+    from jutsu_engine.audit.report import render_battery_section, write_battery_report
+    from jutsu_engine.audit import transitions as tr
+    from jutsu_engine.audit.battery import TIER1_PORTFOLIO_START
+
+    # --smoke: restrict to stock + smoothing, else honor --arms (default: all).
+    selected = None
+    if smoke:
+        selected = {"stock", "smoothing"}
+    elif arms:
+        selected = set(arms) | {"stock"}
+
+    def arm_fn(arm, rd):
+        if selected is not None and arm["id"] not in selected \
+                and not (arm["id"].split("_")[0] in selected):
+            return {"arm": arm["id"], "weight": arm["weight"], "skipped_arm": True,
+                    "error": None}
+        return evaluate_arm(arm, rd)
+
+    result = run_battery(strategy_id, run_dir, arm_fn=arm_fn,
+                         progress=lambda m: click.echo(click.style(f"  {m}", fg="cyan")))
+
+    # Wire the real bootstrap CI over aligned stock-vs-arm daily returns.
+    ci_cache = {}
+
+    def sharpe_ci_fn(arm_id):
+        if arm_id in ci_cache:
+            return ci_cache[arm_id]
+        ci_cache[arm_id] = _battery_sharpe_ci(result["rows"], arm_id)
+        return ci_cache[arm_id]
+
+    summary = summarize_battery(strategy_id, result["rows"], sharpe_ci_fn=sharpe_ci_fn)
+    md = render_battery_section(summary)
+    return write_battery_report(run_dir, strategy_id, md)
+
+
+def _battery_sharpe_ci(rows, arm_id):
+    """Bootstrap Sharpe-delta CI for an arm vs stock from their regime-timeseries CSVs."""
+    import pandas as pd
+    from jutsu_engine.audit.battery import bootstrap_sharpe_delta_ci
+    from jutsu_engine.audit import transitions as tr
+    from jutsu_engine.audit.battery import TIER1_PORTFOLIO_START
+    by = {r.get("arm"): r for r in rows}
+    stock, arm = by.get("stock"), by.get(arm_id)
+    if not stock or not arm or not stock.get("regime_timeseries_csv") \
+            or not arm.get("regime_timeseries_csv"):
+        return (float("nan"), float("nan"))
+    a = tr.trim_warmup(pd.read_csv(arm["regime_timeseries_csv"]), TIER1_PORTFOLIO_START)
+    s = tr.trim_warmup(pd.read_csv(stock["regime_timeseries_csv"]), TIER1_PORTFOLIO_START)
+    m = a[["Date", "Strategy_Daily_Return"]].merge(
+        s[["Date", "Strategy_Daily_Return"]], on="Date", suffixes=("_arm", "_stock"))
+    return bootstrap_sharpe_delta_ci(
+        m["Strategy_Daily_Return_arm"].values,
+        m["Strategy_Daily_Return_stock"].values, n_boot=1000, seed=42)
+
+
+@audit.command("battery")
+@_STRATEGY_OPTION
+@click.option("--arms", multiple=True, default=(),
+              help="Restrict to these arm ids (repeatable; stock always included). "
+                   "Default: all 10 arms.")
+@click.option("--workers", type=int, default=1, show_default=True,
+              help="Parallel workers for the portfolio backtests (1 = serial).")
+@click.option("--smoke", is_flag=True, default=False,
+              help="Smoke mode: stock + smoothing only, short path, minutes.")
+@click.option("--run-date", "run_date", type=str, default=None, metavar="YYYY-MM-DD",
+              help="Use a specific dated run directory (midnight-safe resume).")
+def battery_cmd(strategy, arms, workers, smoke, run_date):
+    """EXP-007: vol-input ablation battery (stock/kronos/vix/smoothing) + verdicts."""
+    try:
+        for sid in _strategy_ids(strategy):
+            run_dir = _resolve_run_dir_battery(run_date, sid)
+            click.echo(f"[{sid}] battery (arms={list(arms) or 'all'}, "
+                       f"workers={workers}, smoke={smoke})")
+            out = _run_battery_and_report(sid, arms, workers, smoke, run_dir)
+            click.echo(click.style(f"  report: {out}", fg="green"))
+    except AuditDBUnavailable as e:
+        click.echo(click.style(f"✗ Database unavailable: {e}", fg="red"), err=True)
+        click.echo(click.style(
+            "  The battery is read-only and needs POSTGRES_* env vars (see .env). "
+            "Unit tests run without a DB; this command needs live data.",
+            fg="yellow"), err=True)
+        raise click.Abort()
+    except RuntimeError as e:
+        click.echo(click.style(f"✗ Battery aborted: {e}", fg="red"), err=True)
+        raise click.Abort()
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Battery failed: {e}", exc_info=True)
+        click.echo(click.style(f"✗ Battery failed: {e}", fg="red"), err=True)
+        raise click.Abort()
