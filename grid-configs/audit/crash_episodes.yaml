@@ -1,0 +1,48 @@
+# Crash-episode registry (versioned, human-curated — never inferred silently).
+# peak = QQQ closing high preceding the drawdown; trough = QQQ closing low.
+# Dates verified against market_data QQQ closes by test_episode_dates_match_qqq
+# (Task 2) and reviewed by a human before commit. Pre-2010 episodes (dotcom, gfc)
+# are signal-level scoring only (portfolio backtests start 2010-02 for TQQQ).
+# QQQ market_data span: 1999-03-10 .. 2026-07-10 (covers all episodes).
+version: 1
+episodes:
+  - id: dotcom
+    peak: 2000-03-27       # QQQ closing peak of the dot-com top
+    trough: 2002-10-09
+    recovery: 2015-01-13   # documentation only (first close above peak)
+    portfolio_scored: false
+  - id: gfc
+    peak: 2007-10-31
+    trough: 2009-03-09
+    recovery: 2011-02-14
+    portfolio_scored: false
+  - id: euro2011
+    peak: 2011-07-25
+    trough: 2011-10-03
+    recovery: 2012-01-20
+    portfolio_scored: true
+  - id: china2015
+    peak: 2015-07-20
+    trough: 2016-02-11
+    recovery: 2016-06-27
+    portfolio_scored: true
+  - id: q4_2018
+    peak: 2018-10-01
+    trough: 2018-12-24
+    recovery: 2019-04-15
+    portfolio_scored: true
+  - id: covid2020
+    peak: 2020-02-19       # QQQ close 236.98 (verified)
+    trough: 2020-03-23
+    recovery: 2020-06-05
+    portfolio_scored: true
+  - id: bear2022
+    peak: 2021-12-27       # QQQ 2021 closing high
+    trough: 2022-12-28
+    recovery: 2024-01-08
+    portfolio_scored: true
+  - id: spring2025
+    peak: 2025-02-19
+    trough: 2025-04-08
+    recovery: 2025-06-27
+    portfolio_scored: true
