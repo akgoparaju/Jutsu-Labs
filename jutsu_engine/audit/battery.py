@@ -132,6 +132,46 @@ def arm_survives(signal_pass: bool, portfolio_pass: bool, flatness_pass: bool) -
     return bool(signal_pass and portfolio_pass and flatness_pass)
 
 
+# ---------------------------------------------------------------------------
+# Paired bootstrap CI for the Sharpe delta (spec §8 portfolio gate)
+# ---------------------------------------------------------------------------
+
+import numpy as np
+
+
+def _sharpe(returns: np.ndarray, periods: int = 252) -> float:
+    """Annualised Sharpe of a daily-return array (NaN-tolerant, ddof=1)."""
+    r = returns[~np.isnan(returns)]
+    if len(r) < 2 or r.std(ddof=1) == 0:
+        return 0.0
+    return float(r.mean() / r.std(ddof=1) * np.sqrt(periods))
+
+
+def bootstrap_sharpe_delta_ci(arm_returns, stock_returns, n_boot: int = 1000,
+                              seed: int = 42, alpha: float = 0.05) -> tuple[float, float]:
+    """Paired-index bootstrap CI of (arm Sharpe - stock Sharpe) over aligned daily returns.
+
+    arm_returns and stock_returns are aligned daily-return arrays (same trading days;
+    caller intersects on Date first). Resamples the SHARED day index n_boot times
+    (paired, preserving the arm-vs-stock pairing per day) and returns the (alpha/2,
+    1-alpha/2) percentile CI of the Sharpe delta. Deterministic given seed. A CI
+    overlapping zero = 'no degradation' (portfolio_gate). Underpowered by design
+    (n~=1-crash-episode caution, SYNTHESIS-001) — the CI is reported, not over-trusted.
+    """
+    a = np.asarray(arm_returns, dtype=float)
+    s = np.asarray(stock_returns, dtype=float)
+    n = min(len(a), len(s))
+    a, s = a[:n], s[:n]
+    rng = np.random.default_rng(seed)
+    deltas = np.empty(n_boot, dtype=float)
+    for i in range(n_boot):
+        idx = rng.integers(0, n, size=n)
+        deltas[i] = _sharpe(a[idx]) - _sharpe(s[idx])
+    lo = float(np.percentile(deltas, 100 * alpha / 2))
+    hi = float(np.percentile(deltas, 100 * (1 - alpha / 2)))
+    return (lo, hi)
+
+
 def replay_signal_stream(runner, market_data: dict) -> pd.DataFrame:
     """Run a runner's calculate_signal_stream and shape it into a DataFrame.
 

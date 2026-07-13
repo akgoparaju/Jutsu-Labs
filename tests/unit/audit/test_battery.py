@@ -120,6 +120,27 @@ def test_flatness_inf_whipsaw_excluded_counted_loudly():
     assert n_excluded == 1         # whipsaw_ratio excluded (all inf, not just one side)
 
 
+def test_bootstrap_sharpe_delta_ci_zero_when_identical():
+    """bootstrap_sharpe_delta_ci returns a CI tightly around 0 for identical return series."""
+    from jutsu_engine.audit.battery import bootstrap_sharpe_delta_ci
+    rng = np.random.default_rng(0)
+    r = rng.normal(0.0005, 0.01, 500)
+    lo, hi = bootstrap_sharpe_delta_ci(r, r.copy(), n_boot=200, seed=7)
+    assert lo <= 0.0 <= hi
+    assert abs(hi - lo) < 0.05          # identical series -> near-zero spread
+
+
+def test_bootstrap_sharpe_delta_ci_is_deterministic_with_seed():
+    """A fixed seed makes the bootstrap CI reproducible."""
+    from jutsu_engine.audit.battery import bootstrap_sharpe_delta_ci
+    rng = np.random.default_rng(1)
+    a = rng.normal(0.001, 0.01, 300)
+    b = rng.normal(0.0005, 0.01, 300)
+    ci1 = bootstrap_sharpe_delta_ci(a, b, n_boot=200, seed=42)
+    ci2 = bootstrap_sharpe_delta_ci(a, b, n_boot=200, seed=42)
+    assert ci1 == ci2
+
+
 def test_signal_stream_final_bar_matches_calculate_signals_db_gated():
     """calculate_signal_stream's last record equals calculate_signals' final signal."""
     from sqlalchemy import text
